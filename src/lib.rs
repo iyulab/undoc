@@ -67,6 +67,9 @@ pub mod pptx;
 
 pub mod render;
 
+#[cfg(feature = "ffi")]
+pub mod ffi;
+
 // Re-exports
 pub use container::{OoxmlContainer, Relationship, Relationships};
 pub use detect::{detect_format_from_bytes, detect_format_from_path, FormatType};
