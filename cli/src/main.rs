@@ -2,6 +2,8 @@
 //!
 //! A command-line tool for extracting content from DOCX, XLSX, and PPTX files.
 
+mod update;
+
 use clap::{Parser, Subcommand, ValueEnum};
 use colored::*;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -100,14 +102,17 @@ enum Commands {
 
     /// Update undoc to the latest version
     Update {
-        /// Don't prompt for confirmation
-        #[arg(short, long)]
-        yes: bool,
-
-        /// Show available version without updating
+        /// Check only, don't install
         #[arg(long)]
         check: bool,
+
+        /// Force update even if on latest version
+        #[arg(long)]
+        force: bool,
     },
+
+    /// Show version information
+    Version,
 }
 
 /// Table rendering mode
@@ -333,12 +338,27 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
-        Commands::Update { yes, check } => {
-            update_command(yes, check)?;
+        Commands::Update { check, force } => {
+            if let Err(e) = update::run_update(check, force) {
+                eprintln!("{}: {}", "Error".red().bold(), e);
+                std::process::exit(1);
+            }
+        }
+
+        Commands::Version => {
+            print_version();
         }
     }
 
     Ok(())
+}
+
+fn print_version() {
+    println!("{} {}", "undoc".green().bold(), env!("CARGO_PKG_VERSION"));
+    println!("High-performance Microsoft Office document extraction to Markdown");
+    println!();
+    println!("Supported formats: DOCX, XLSX, PPTX");
+    println!("Repository: https://github.com/iyulab/undoc");
 }
 
 fn create_spinner(message: &str) -> ProgressBar {
@@ -368,79 +388,6 @@ fn write_output(path: Option<&PathBuf>, content: &str) -> Result<(), Box<dyn std
     Ok(())
 }
 
-fn update_command(yes: bool, check: bool) -> Result<(), Box<dyn std::error::Error>> {
-    use self_update::cargo_crate_version;
-
-    println!("{}", "Checking for updates...".cyan());
-
-    let status = self_update::backends::github::Update::configure()
-        .repo_owner("iyulab")
-        .repo_name("undoc")
-        .bin_name("undoc")
-        .show_download_progress(true)
-        .current_version(cargo_crate_version!())
-        .build()?;
-
-    let latest = status.get_latest_release()?;
-    let current = cargo_crate_version!();
-
-    println!(
-        "{}: {}",
-        "Current version".bold(),
-        current
-    );
-    println!(
-        "{}: {}",
-        "Latest version".bold(),
-        latest.version
-    );
-
-    if latest.version == current {
-        println!(
-            "\n{} You are running the latest version!",
-            "✓".green().bold()
-        );
-        return Ok(());
-    }
-
-    if check {
-        println!(
-            "\n{} Update available: {} -> {}",
-            "!".yellow().bold(),
-            current,
-            latest.version
-        );
-        return Ok(());
-    }
-
-    if !yes {
-        print!(
-            "\nUpdate to version {}? [y/N] ",
-            latest.version.cyan()
-        );
-        io::stdout().flush()?;
-
-        let mut input = String::new();
-        io::stdin().read_line(&mut input)?;
-
-        if !input.trim().eq_ignore_ascii_case("y") {
-            println!("Update cancelled.");
-            return Ok(());
-        }
-    }
-
-    println!("\n{}", "Downloading update...".cyan());
-
-    let update_status = status.update()?;
-
-    println!(
-        "\n{} Updated to version {}!",
-        "✓".green().bold(),
-        update_status.version()
-    );
-
-    Ok(())
-}
 
 #[cfg(test)]
 mod tests {

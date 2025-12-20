@@ -5,27 +5,24 @@
 [![CI](https://github.com/iyulab/undoc/actions/workflows/ci.yml/badge.svg)](https://github.com/iyulab/undoc/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A high-performance Rust library for extracting Microsoft Office documents (DOCX, XLSX, PPTX) into structured Markdown with assets.
+A high-performance Rust library for extracting content from Microsoft Office documents (DOCX, XLSX, PPTX) to Markdown, plain text, and JSON.
 
 ## Features
 
 - **Multi-format support**: DOCX (Word), XLSX (Excel), PPTX (PowerPoint)
 - **Multiple output formats**: Markdown, Plain Text, JSON (with full metadata)
-- **Structure preservation**: Headings, lists, tables, inline formatting, slides
+- **Structure preservation**: Headings, lists, tables, inline formatting
 - **Asset extraction**: Images, charts, and embedded media
+- **Text cleanup**: Multiple presets for LLM training data preparation
 - **Self-update**: Built-in update mechanism via GitHub releases
 - **C-ABI FFI**: Native library for C#, Python, and other languages
 - **Parallel processing**: Uses Rayon for multi-section documents
-- **Async support**: Optional Tokio integration
 
 ---
 
 ## Table of Contents
 
 - [Installation](#installation)
-  - [Pre-built Binaries (Recommended)](#pre-built-binaries-recommended)
-  - [Updating](#updating)
-  - [Install via Cargo](#install-via-cargo)
 - [CLI Usage](#cli-usage)
 - [Rust Library Usage](#rust-library-usage)
 - [C# / .NET Integration](#c--net-integration)
@@ -52,7 +49,7 @@ Expand-Archive -Path "undoc.zip" -DestinationPath "."
 Move-Item -Path "undoc.exe" -Destination "$env:LOCALAPPDATA\Microsoft\WindowsApps\"
 
 # Verify installation
-undoc --version
+undoc version
 ```
 
 #### Linux (x64)
@@ -72,7 +69,7 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 source ~/.bashrc
 
 # Verify installation
-undoc --version
+undoc version
 ```
 
 #### macOS
@@ -90,7 +87,7 @@ tar -xzf undoc-cli-aarch64-apple-darwin.tar.gz
 sudo mv undoc /usr/local/bin/
 
 # Verify
-undoc --version
+undoc version
 ```
 
 #### Available Binaries
@@ -133,99 +130,145 @@ cargo add undoc
 
 ## CLI Usage
 
-### Basic Conversion
-
-```bash
-# Convert DOCX/XLSX/PPTX to Markdown (creates <filename>_output/ directory)
-undoc document.docx
-undoc spreadsheet.xlsx
-undoc presentation.pptx
-
-# Specify output directory
-undoc document.docx ./output
-
-# Using subcommand
-undoc convert document.docx -o ./output
-```
-
-### Output Structure
-
-**DOCX Output:**
-```
-document_output/
-├── extract.md      # Markdown output
-├── extract.txt     # Plain text output
-├── content.json    # Full structured JSON
-└── media/          # Extracted images
-    ├── image1.png
-    └── image2.jpg
-```
-
-**XLSX Output:**
-```
-spreadsheet_output/
-├── extract.md      # All sheets as Markdown tables
-├── extract.txt     # Tab-separated values
-├── content.json    # Full structured JSON with formulas
-└── charts/         # Extracted chart images
-    └── chart1.png
-```
-
-**PPTX Output:**
-```
-presentation_output/
-├── extract.md      # Slides as Markdown sections
-├── extract.txt     # Plain text (slide by slide)
-├── content.json    # Full structured JSON with notes
-└── media/          # Extracted images and media
-    ├── slide1_image1.png
-    └── slide2_video.mp4
-```
-
-### Cleanup Options (for LLM Training Data)
-
-```bash
-# Default cleanup - balanced normalization
-undoc document.docx --cleanup
-
-# Minimal cleanup - essential normalization only
-undoc document.docx --cleanup-minimal
-
-# Aggressive cleanup - maximum purification
-undoc document.docx --cleanup-aggressive
-```
-
 ### Commands
 
 ```bash
-undoc --help                    # Show help
-undoc --version                 # Show version
-undoc version                   # Show detailed version info
-undoc update --check            # Check for updates
-undoc update                    # Self-update to latest version
-undoc convert FILE [OPTIONS]    # Convert with explicit subcommand
+undoc markdown <file> [OPTIONS]    # Convert to Markdown (alias: md)
+undoc text <file> [OPTIONS]        # Convert to plain text
+undoc json <file> [OPTIONS]        # Convert to JSON
+undoc info <file>                  # Show document information
+undoc extract <file> [OPTIONS]     # Extract resources (images, media)
+undoc update [OPTIONS]             # Self-update to latest version
+undoc version                      # Show version information
+```
+
+### Convert to Markdown
+
+```bash
+# Basic conversion (output to stdout)
+undoc markdown document.docx
+
+# Save to file
+undoc markdown document.docx -o output.md
+
+# With YAML frontmatter
+undoc markdown document.docx --frontmatter -o output.md
+
+# With text cleanup for LLM training
+undoc markdown document.docx --cleanup standard -o cleaned.md
+
+# Table rendering options
+undoc markdown spreadsheet.xlsx --table-mode html -o output.md
+
+# Limit heading depth
+undoc markdown document.docx --max-heading 3 -o output.md
+```
+
+#### Markdown Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `-o, --output` | Output file path | stdout |
+| `-f, --frontmatter` | Include YAML frontmatter | false |
+| `--table-mode` | Table rendering: `markdown`, `html`, `ascii` | markdown |
+| `--cleanup` | Text cleanup: `minimal`, `standard`, `aggressive` | none |
+| `--max-heading` | Maximum heading level (1-6) | 6 |
+
+### Convert to Plain Text
+
+```bash
+# Basic extraction
+undoc text document.docx
+
+# With cleanup
+undoc text document.docx --cleanup standard -o output.txt
+```
+
+### Convert to JSON
+
+```bash
+# Pretty-printed JSON
+undoc json document.docx -o output.json
+
+# Compact JSON
+undoc json document.docx --compact -o output.json
+```
+
+### Show Document Information
+
+```bash
+undoc info document.docx
+```
+
+Output:
+```
+Document Information
+────────────────────────────────────────
+File: document.docx
+Format: Docx
+Sections: 5
+Resources: 3
+Title: My Document
+Author: John Doe
+Pages/Slides/Sheets: 10
+Created: 2025-01-15T10:30:00Z
+Modified: 2025-01-20T14:45:00Z
+
+Content Statistics
+────────────────────────────────────────
+Words: 2500
+Characters: 15000
+```
+
+### Extract Resources
+
+```bash
+# Extract to current directory
+undoc extract presentation.pptx
+
+# Extract to specific directory
+undoc extract presentation.pptx -o ./media
+```
+
+### Self-Update
+
+```bash
+# Check for updates
+undoc update --check
+
+# Update to latest version
+undoc update
+
+# Force reinstall
+undoc update --force
 ```
 
 ### Examples
 
 ```bash
-# Basic conversion
-undoc report.docx
+# Convert Word document to Markdown with frontmatter
+undoc md report.docx --frontmatter -o report.md
 
-# Convert with cleanup for AI training
-undoc report.docx ./cleaned --cleanup-aggressive
+# Convert Excel to Markdown tables
+undoc md data.xlsx -o tables.md
 
-# Convert Excel with specific sheets
-undoc data.xlsx --sheets "Sheet1,Summary"
+# Convert PowerPoint to Markdown
+undoc md presentation.pptx -o slides.md
 
-# Convert PowerPoint with speaker notes
-undoc slides.pptx --include-notes
+# Extract all images from a document
+undoc extract report.docx -o ./images
+
+# Get document metadata
+undoc info document.docx
+
+# Convert with aggressive cleanup for AI training
+undoc md document.docx --cleanup aggressive -o cleaned.md
 
 # Batch conversion (shell)
-for f in *.docx; do undoc "$f" --cleanup; done
+for f in *.docx; do undoc md "$f" -o "${f%.docx}.md"; done
 
 # Batch conversion (PowerShell)
-Get-ChildItem *.docx,*.xlsx,*.pptx | ForEach-Object { undoc $_.FullName --cleanup }
+Get-ChildItem *.docx | ForEach-Object { undoc md $_.FullName -o "$($_.BaseName).md" }
 ```
 
 ---
@@ -235,126 +278,91 @@ Get-ChildItem *.docx,*.xlsx,*.pptx | ForEach-Object { undoc $_.FullName --cleanu
 ### Quick Start
 
 ```rust
-use undoc::{parse_file, to_markdown};
+use undoc::{parse_file, render};
 
 fn main() -> undoc::Result<()> {
-    // Simple text extraction
-    let text = undoc::extract_text("document.docx")?;
-    println!("{}", text);
+    // Parse document
+    let doc = parse_file("document.docx")?;
 
     // Convert to Markdown
-    let markdown = to_markdown("document.docx")?;
-    std::fs::write("output.md", markdown)?;
+    let options = render::RenderOptions::default();
+    let markdown = render::to_markdown(&doc, &options)?;
+    println!("{}", markdown);
+
+    // Get plain text
+    let text = render::to_text(&doc, &options)?;
+
+    // Get JSON
+    let json = render::to_json(&doc, render::JsonFormat::Pretty)?;
 
     Ok(())
 }
 ```
 
-### Format-Specific APIs
+### Render Options
 
 ```rust
-use undoc::{Docx, Xlsx, Pptx};
+use undoc::render::{RenderOptions, CleanupPreset, TableFallback};
 
-// Word documents
-let doc = Docx::open("report.docx")?;
-let markdown = doc.to_markdown()?;
-let images = doc.extract_images()?;
+let options = RenderOptions::new()
+    .with_frontmatter(true)
+    .with_table_fallback(TableFallback::Html)
+    .with_cleanup_preset(CleanupPreset::Aggressive)
+    .with_max_heading(3);
 
-// Excel spreadsheets
-let workbook = Xlsx::open("data.xlsx")?;
-for sheet in workbook.sheets() {
-    println!("Sheet: {}", sheet.name());
-    let table = sheet.to_markdown_table()?;
-    println!("{}", table);
-}
+let markdown = render::to_markdown(&doc, &options)?;
+```
 
-// PowerPoint presentations
-let ppt = Pptx::open("slides.pptx")?;
-for (i, slide) in ppt.slides().enumerate() {
-    println!("## Slide {}\n", i + 1);
-    println!("{}", slide.to_markdown()?);
-    if let Some(notes) = slide.speaker_notes() {
-        println!("\n> Notes: {}", notes);
+### Working with Document Structure
+
+```rust
+use undoc::parse_file;
+
+let doc = parse_file("document.docx")?;
+
+// Access metadata
+println!("Title: {:?}", doc.metadata.title);
+println!("Author: {:?}", doc.metadata.author);
+println!("Created: {:?}", doc.metadata.created);
+
+// Iterate sections
+for section in &doc.sections {
+    println!("Section: {:?}", section.name);
+    for element in &section.elements {
+        // Process paragraphs, tables, etc.
     }
 }
+
+// Extract resources
+for (id, resource) in &doc.resources {
+    let filename = resource.suggested_filename(id);
+    std::fs::write(&filename, &resource.data)?;
+}
 ```
 
-## Output Formats
-
-undoc provides four complementary output formats:
-
-| Format | Method | Description |
-|--------|--------|-------------|
-| **RawContent** | `doc.raw_content()` | JSON with full metadata, styles, structure |
-| **RawText** | `doc.plain_text()` | Pure text without formatting |
-| **Markdown** | `to_markdown()` | Structured Markdown |
-| **Media** | `doc.resources` | Extracted binary assets |
-
-### RawContent (JSON)
-
-Get the complete document structure with all metadata:
+### Format Detection
 
 ```rust
-let doc = undoc::parse_file("document.docx")?;
-let json = doc.raw_content();
+use undoc::{detect_format_from_path, detect_format_from_bytes, FormatType};
 
-// JSON includes:
-// - metadata: title, author, created, modified
-// - sections: paragraphs, tables (DOCX)
-// - sheets: cells, formulas, merged ranges (XLSX)
-// - slides: shapes, text, notes, transitions (PPTX)
-// - styles: bold, italic, underline, font, color
-// - images, charts, embedded objects
+// From file path
+let format = detect_format_from_path("document.docx")?;
+assert_eq!(format, FormatType::Docx);
+
+// From bytes
+let data = std::fs::read("document.docx")?;
+let format = detect_format_from_bytes(&data)?;
 ```
 
-## Builder API
-
-```rust
-use undoc::{Undoc, TableFallback};
-
-let markdown = Undoc::new()
-    .with_images(true)
-    .with_image_dir("./assets")
-    .with_table_fallback(TableFallback::Html)
-    .with_frontmatter()
-    .lenient()  // Skip invalid sections
-    .parse("document.docx")?
-    .to_markdown()?;
-```
-
-### Excel-Specific Options
-
-```rust
-use undoc::Xlsx;
-
-let workbook = Xlsx::open("data.xlsx")?
-    .with_formulas(true)      // Include formula expressions
-    .with_hidden_sheets(false) // Skip hidden sheets
-    .with_merged_cells(true);  // Handle merged cell ranges
-
-let markdown = workbook.to_markdown()?;
-```
-
-### PowerPoint-Specific Options
-
-```rust
-use undoc::Pptx;
-
-let presentation = Pptx::open("slides.pptx")?
-    .with_speaker_notes(true)   // Include speaker notes
-    .with_slide_numbers(true)   // Add slide numbers
-    .with_animations(false);    // Skip animation metadata
-
-let markdown = presentation.to_markdown()?;
-```
+---
 
 ## C# / .NET Integration
 
-undoc provides C-ABI compatible bindings for seamless integration with C# and .NET applications.
+undoc provides C-ABI compatible bindings for integration with C# and .NET applications.
 
 ### Getting the Native Library
 
-Build from source or download from [GitHub Releases](https://github.com/iyulab/undoc/releases):
+Download from [GitHub Releases](https://github.com/iyulab/undoc/releases):
 
 | Platform | Library File |
 |----------|-------------|
@@ -362,229 +370,111 @@ Build from source or download from [GitHub Releases](https://github.com/iyulab/u
 | Linux x64 | `libundoc.so` |
 | macOS | `libundoc.dylib` |
 
+Or build from source:
+
 ```bash
-# Build native library from source
-cargo build --release
-# Output: target/release/undoc.dll (Windows)
-#         target/release/libundoc.so (Linux)
-#         target/release/libundoc.dylib (macOS)
+cargo build --release --features ffi
 ```
 
-### Quick Start
+### C# Wrapper Usage
 
 ```csharp
 using Undoc;
 
-// Parse document once, access multiple outputs
-using var doc = OfficeDocument.Parse("document.docx");
+// Parse and convert to Markdown
+string markdown = UndocNative.ToMarkdown("document.docx");
 
-// Get Markdown
-string markdown = doc.Markdown;
-File.WriteAllText("output.md", markdown);
+// Parse and convert to plain text
+string text = UndocNative.ToText("document.docx");
 
-// Get plain text
-string text = doc.RawText;
+// Parse and convert to JSON
+string json = UndocNative.ToJson("document.docx");
 
-// Get full structured JSON (metadata, styles, formatting)
-string json = doc.RawContent;
-
-// Extract all images
-foreach (var image in doc.Images)
-{
-    image.SaveTo($"./images/{image.Name}");
-    Console.WriteLine($"Saved: {image.Name} ({image.Size} bytes)");
-}
-
-// Document statistics
-Console.WriteLine($"Format: {doc.Format}");  // Docx, Xlsx, or Pptx
-Console.WriteLine($"Pages/Sheets/Slides: {doc.Count}");
+// From byte array
+byte[] data = File.ReadAllBytes("document.docx");
+string markdown = UndocNative.ToMarkdownFromBytes(data);
 ```
 
-### Excel-Specific Usage
+See [bindings/csharp/Undoc.cs](bindings/csharp/Undoc.cs) for the complete wrapper implementation.
 
-```csharp
-using var workbook = ExcelDocument.Parse("data.xlsx");
+---
 
-foreach (var sheet in workbook.Sheets)
+## Output Formats
+
+### Markdown
+
+Structured Markdown with preserved formatting:
+
+- **Headings**: Document headings → `#`, `##`, `###`
+- **Lists**: Ordered and unordered with nesting
+- **Tables**: Markdown tables (with HTML/ASCII fallback for complex layouts)
+- **Inline styles**: Bold (`**`), italic (`*`), underline, strikethrough
+- **Hyperlinks**: Preserved as Markdown links
+- **Images**: Reference-style image links
+
+### Plain Text
+
+Pure text content without formatting markers.
+
+### JSON
+
+Complete document structure with metadata:
+
+```json
 {
-    Console.WriteLine($"Sheet: {sheet.Name}");
-    Console.WriteLine($"Rows: {sheet.RowCount}, Columns: {sheet.ColumnCount}");
-    
-    // Access cells
-    var value = sheet.GetCell("A1");
-    var formula = sheet.GetFormula("B2");
-    
-    // Export sheet as Markdown table
-    File.WriteAllText($"{sheet.Name}.md", sheet.ToMarkdown());
-}
-```
-
-### PowerPoint-Specific Usage
-
-```csharp
-using var presentation = PptxDocument.Parse("slides.pptx");
-
-for (int i = 0; i < presentation.SlideCount; i++)
-{
-    var slide = presentation.GetSlide(i);
-    Console.WriteLine($"Slide {i + 1}: {slide.Title}");
-    
-    if (slide.HasSpeakerNotes)
-    {
-        Console.WriteLine($"  Notes: {slide.SpeakerNotes}");
-    }
+  "metadata": {
+    "title": "Document Title",
+    "author": "Author Name",
+    "created": "2025-01-15T10:30:00Z",
+    "modified": "2025-01-20T14:45:00Z"
+  },
+  "sections": [...],
+  "resources": [...]
 }
 ```
 
-### With Cleanup Options
-
-```csharp
-var options = new ConversionOptions
-{
-    EnableCleanup = true,
-    CleanupPreset = CleanupPreset.Aggressive,  // For LLM training
-    IncludeFrontmatter = true,
-    TableFallback = TableFallback.Html
-};
-
-using var doc = OfficeDocument.Parse("document.docx", options);
-File.WriteAllText("cleaned.md", doc.Markdown);
-```
-
-### Static Methods (Simple API)
-
-```csharp
-// One-liner conversion
-string markdown = OfficeConverter.ToMarkdown("document.docx");
-
-// With cleanup
-string cleanedMarkdown = OfficeConverter.ToMarkdown("document.docx", enableCleanup: true);
-
-// Plain text extraction
-string text = OfficeConverter.ExtractText("spreadsheet.xlsx");
-
-// From byte array or stream
-byte[] data = File.ReadAllBytes("presentation.pptx");
-string md = OfficeConverter.BytesToMarkdown(data);
-```
-
-### ASP.NET Core Example
-
-```csharp
-[ApiController]
-[Route("api/[controller]")]
-public class DocumentController : ControllerBase
-{
-    [HttpPost("convert")]
-    public async Task<IActionResult> ConvertDocument(IFormFile file)
-    {
-        if (file == null) return BadRequest("No file");
-
-        var ext = Path.GetExtension(file.FileName).ToLower();
-        if (!new[] { ".docx", ".xlsx", ".pptx" }.Contains(ext))
-            return BadRequest("Unsupported format");
-
-        using var ms = new MemoryStream();
-        await file.CopyToAsync(ms);
-
-        try
-        {
-            var markdown = OfficeConverter.BytesToMarkdown(ms.ToArray(), enableCleanup: true);
-            return Ok(new { markdown });
-        }
-        catch (UndocException ex)
-        {
-            return BadRequest(new { error = ex.Message });
-        }
-    }
-}
-```
-
-See [C# Integration Guide](docs/csharp-integration.md) for complete documentation.
+---
 
 ## Supported Formats
 
-| Format | Extension | Container | Status |
-|--------|-----------|-----------|--------|
-| Word | .docx | ZIP/XML (OOXML) | ✅ Supported |
-| Excel | .xlsx | ZIP/XML (OOXML) | ✅ Supported |
-| PowerPoint | .pptx | ZIP/XML (OOXML) | ✅ Supported |
-| Legacy Word | .doc | OLE/CFB | 🔜 Planned |
-| Legacy Excel | .xls | OLE/CFB | 🔜 Planned |
-| Legacy PowerPoint | .ppt | OLE/CFB | 🔜 Planned |
+| Format | Extension | Status |
+|--------|-----------|--------|
+| Word | .docx | Supported |
+| Excel | .xlsx | Supported |
+| PowerPoint | .pptx | Supported |
 
-## Structure Preservation
-
-undoc maintains document structure during conversion:
-
-### DOCX (Word)
-- **Headings**: Heading styles → `#`, `##`, `###`
-- **Lists**: Ordered and unordered with nesting
-- **Tables**: Cell spans, alignment, HTML fallback for complex tables
-- **Images**: Extracted with Markdown references
-- **Inline styles**: Bold (`**`), italic (`*`), underline (`<u>`), strikethrough (`~~`)
-- **Hyperlinks**: Preserved as Markdown links
-- **Footnotes/Endnotes**: Converted to reference-style notes
-
-### XLSX (Excel)
-- **Sheets**: Each sheet as a separate section
-- **Tables**: Markdown tables with alignment
-- **Formulas**: Optional formula preservation
-- **Merged cells**: Proper span handling
-- **Charts**: Extracted as images
-- **Data types**: Numbers, dates, currencies formatted appropriately
-
-### PPTX (PowerPoint)
-- **Slides**: Each slide as a section with `---` separators
-- **Titles**: Slide titles as headings
-- **Bullet points**: Converted to Markdown lists
-- **Tables**: Same as DOCX handling
-- **Images**: Extracted with references
-- **Speaker notes**: Optional inclusion as blockquotes
-- **Shapes with text**: Text content extracted
+---
 
 ## Feature Flags
 
 | Feature | Description | Default |
 |---------|-------------|---------|
-| `docx` | Word document support | ✅ |
-| `xlsx` | Excel spreadsheet support | ✅ |
-| `pptx` | PowerPoint presentation support | ✅ |
-| `legacy` | Legacy .doc/.xls/.ppt support | ❌ |
-| `async` | Async I/O with Tokio | ❌ |
-| `ffi` | C-ABI foreign function interface | ❌ |
+| `ffi` | C-ABI foreign function interface | No |
 
 ```toml
-# Cargo.toml - customize features
+# Cargo.toml - enable FFI
 [dependencies]
-undoc = { version = "0.1", default-features = false, features = ["docx", "xlsx"] }
+undoc = { version = "0.1", features = ["ffi"] }
 ```
+
+---
 
 ## Performance
 
 - Parallel section/sheet/slide processing with Rayon
-- Zero-copy XML parsing where possible
-- Memory-efficient streaming for large documents
-- Lazy image extraction
+- Efficient XML parsing with quick-xml
+- Memory-efficient handling of large documents
 
-Run benchmarks:
-```bash
-cargo bench
-```
-
-## Comparison with Similar Tools
-
-| Feature | undoc | python-docx | Apache POI | pandoc |
-|---------|-------|-------------|------------|--------|
-| Language | Rust | Python | Java | Haskell |
-| DOCX | ✅ | ✅ | ✅ | ✅ |
-| XLSX | ✅ | ❌ | ✅ | ❌ |
-| PPTX | ✅ | ❌ | ✅ | ❌ |
-| Markdown output | ✅ | ❌ | ❌ | ✅ |
-| C# bindings | ✅ | ❌ | ❌ | ❌ |
-| Parallel processing | ✅ | ❌ | ❌ | ❌ |
-| Self-update | ✅ | ❌ | ❌ | ❌ |
+---
 
 ## License
 
 MIT License - see [LICENSE](LICENSE) for details.
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+## Related Projects
+
+- [unhwp](https://github.com/iyulab/unhwp) - Korean HWP document extraction

@@ -16,5 +16,5 @@ undoc = { path = ".." }
 clap = { version = "4.5", features = ["derive"] }
 colored = "2.1"
 indicatif = "0.17"
-self_update = "0.41"
-tokio = { version = "1.42", features = ["rt-multi-thread", "macros"] }
+self_update = { version = "0.41", features = ["archive-zip", "archive-tar", "compression-flate2"] }
+semver = "1.0"

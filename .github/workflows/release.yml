@@ -1,0 +1,210 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Cargo.toml'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check-version:
+    name: Check Version Change
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.get_version.outputs.version }}
+      should_release: ${{ steps.check.outputs.should_release }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Get version from Cargo.toml
+        id: get_version
+        run: |
+          VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Check if version changed
+        id: check
+        run: |
+          git diff HEAD~1 HEAD -- Cargo.toml | grep -q '^+version = ' && echo "should_release=true" >> $GITHUB_OUTPUT || echo "should_release=false" >> $GITHUB_OUTPUT
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: check-version
+    if: needs.check-version.outputs.should_release == 'true'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            lib_name: undoc.dll
+            cli_name: undoc.exe
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            lib_name: libundoc.so
+            cli_name: undoc
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            lib_name: libundoc.dylib
+            cli_name: undoc
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            lib_name: libundoc.dylib
+            cli_name: undoc
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+
+      - name: Build library
+        run: cargo build --release --target ${{ matrix.target }} -p undoc --features ffi
+
+      - name: Build CLI
+        run: cargo build --release --target ${{ matrix.target }} -p undoc-cli
+
+      - name: Prepare artifacts (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts-lib
+          New-Item -ItemType Directory -Force -Path artifacts-cli
+          Copy-Item "target/${{ matrix.target }}/release/${{ matrix.lib_name }}" -Destination "artifacts-lib/"
+          Copy-Item "target/${{ matrix.target }}/release/${{ matrix.cli_name }}" -Destination "artifacts-cli/"
+          Copy-Item "include/undoc.h" -Destination "artifacts-lib/"
+
+      - name: Prepare artifacts (Unix)
+        if: matrix.os != 'windows-latest'
+        run: |
+          mkdir -p artifacts-lib artifacts-cli
+          cp "target/${{ matrix.target }}/release/${{ matrix.lib_name }}" artifacts-lib/ || true
+          cp "target/${{ matrix.target }}/release/${{ matrix.cli_name }}" artifacts-cli/
+          cp include/undoc.h artifacts-lib/
+
+      - name: Upload lib artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: undoc-lib-${{ matrix.target }}
+          path: artifacts-lib/
+
+      - name: Upload cli artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: undoc-cli-${{ matrix.target }}
+          path: artifacts-cli/
+
+  publish-crates:
+    name: Publish to crates.io
+    needs: [check-version, build]
+    if: needs.check-version.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Publish to crates.io
+        run: cargo publish --token ${{ secrets.CARGO_REGISTRY_TOKEN }} --allow-dirty
+        continue-on-error: true
+
+  release:
+    name: Create GitHub Release
+    needs: [check-version, build]
+    if: needs.check-version.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare release assets
+        run: |
+          cd artifacts
+          # Package lib artifacts
+          for dir in undoc-lib-*/; do
+            target="${dir%/}"
+            target="${target#undoc-lib-}"
+            cd "$dir"
+            if [[ "$target" == *"windows"* ]]; then
+              zip "../undoc-lib-$target.zip" *
+            else
+              tar -czvf "../undoc-lib-$target.tar.gz" *
+            fi
+            cd ..
+          done
+          # Package cli artifacts
+          for dir in undoc-cli-*/; do
+            target="${dir%/}"
+            target="${target#undoc-cli-}"
+            cd "$dir"
+            if [[ "$target" == *"windows"* ]]; then
+              zip "../undoc-cli-$target.zip" *
+            else
+              tar -czvf "../undoc-cli-$target.tar.gz" *
+            fi
+            cd ..
+          done
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.check-version.outputs.version }}
+          name: Release v${{ needs.check-version.outputs.version }}
+          body: |
+            ## undoc v${{ needs.check-version.outputs.version }}
+
+            High-performance Microsoft Office document extraction to Markdown.
+
+            ### Downloads
+
+            #### CLI (Command-line tool)
+            | Platform | Architecture | File |
+            |----------|--------------|------|
+            | Windows | x64 | `undoc-cli-x86_64-pc-windows-msvc.zip` |
+            | Linux | x64 | `undoc-cli-x86_64-unknown-linux-gnu.tar.gz` |
+            | macOS | Intel | `undoc-cli-x86_64-apple-darwin.tar.gz` |
+            | macOS | Apple Silicon | `undoc-cli-aarch64-apple-darwin.tar.gz` |
+
+            #### Library (FFI / C-ABI)
+            | Platform | Architecture | File |
+            |----------|--------------|------|
+            | Windows | x64 | `undoc-lib-x86_64-pc-windows-msvc.zip` |
+            | Linux | x64 | `undoc-lib-x86_64-unknown-linux-gnu.tar.gz` |
+            | macOS | Intel | `undoc-lib-x86_64-apple-darwin.tar.gz` |
+            | macOS | Apple Silicon | `undoc-lib-aarch64-apple-darwin.tar.gz` |
+
+            ### Installation
+
+            #### Rust/Cargo
+            ```bash
+            cargo install undoc-cli
+            ```
+
+            #### CLI Self-Update
+            ```bash
+            undoc update        # Update to latest version
+            undoc update --check  # Check for updates only
+            ```
+
+            #### C# / .NET
+            Download `undoc-lib-*.zip` for your platform and use the provided C# bindings.
+          files: |
+            artifacts/*.zip
+            artifacts/*.tar.gz
+          draft: false
+          prerelease: false
