@@ -23,36 +23,32 @@ impl SharedStrings {
 
         loop {
             match reader.read_event_into(&mut buf) {
-                Ok(quick_xml::events::Event::Start(e)) => {
-                    match e.name().as_ref() {
-                        b"si" => {
-                            in_si = true;
-                            current_text.clear();
-                        }
-                        b"t" if in_si => {
-                            in_t = true;
-                        }
-                        _ => {}
+                Ok(quick_xml::events::Event::Start(e)) => match e.name().as_ref() {
+                    b"si" => {
+                        in_si = true;
+                        current_text.clear();
                     }
-                }
+                    b"t" if in_si => {
+                        in_t = true;
+                    }
+                    _ => {}
+                },
                 Ok(quick_xml::events::Event::Text(e)) => {
                     if in_t {
                         let text = e.unescape().unwrap_or_default();
                         current_text.push_str(&text);
                     }
                 }
-                Ok(quick_xml::events::Event::End(e)) => {
-                    match e.name().as_ref() {
-                        b"si" => {
-                            strings.push(current_text.clone());
-                            in_si = false;
-                        }
-                        b"t" => {
-                            in_t = false;
-                        }
-                        _ => {}
+                Ok(quick_xml::events::Event::End(e)) => match e.name().as_ref() {
+                    b"si" => {
+                        strings.push(current_text.clone());
+                        in_si = false;
                     }
-                }
+                    b"t" => {
+                        in_t = false;
+                    }
+                    _ => {}
+                },
                 Ok(quick_xml::events::Event::Eof) => break,
                 Err(e) => return Err(Error::XmlParse(e.to_string())),
                 _ => {}

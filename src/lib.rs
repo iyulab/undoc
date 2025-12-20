@@ -200,7 +200,10 @@ pub fn to_markdown(path: impl AsRef<Path>) -> Result<String> {
 /// let markdown = to_markdown_with_options("document.docx", &options)?;
 /// # Ok::<(), undoc::Error>(())
 /// ```
-pub fn to_markdown_with_options(path: impl AsRef<Path>, options: &render::RenderOptions) -> Result<String> {
+pub fn to_markdown_with_options(
+    path: impl AsRef<Path>,
+    options: &render::RenderOptions,
+) -> Result<String> {
     let doc = parse_file(path)?;
     render::to_markdown(&doc, options)
 }
@@ -330,11 +333,20 @@ mod tests {
             if Path::new(path).exists() {
                 match parse_file(path) {
                     Ok(doc) => {
-                        let md = render::to_markdown(&doc, &render::RenderOptions::default()).unwrap();
+                        let md =
+                            render::to_markdown(&doc, &render::RenderOptions::default()).unwrap();
                         let text = doc.plain_text();
                         println!("✓ {}", path);
-                        println!("  Sections: {}, Resources: {}", doc.sections.len(), doc.resources.len());
-                        println!("  Text length: {} chars, MD length: {} chars", text.len(), md.len());
+                        println!(
+                            "  Sections: {}, Resources: {}",
+                            doc.sections.len(),
+                            doc.resources.len()
+                        );
+                        println!(
+                            "  Text length: {} chars, MD length: {} chars",
+                            text.len(),
+                            md.len()
+                        );
 
                         // Check for common issues
                         if md.contains("DOCPROPERTY") || md.contains("HYPERLINK") {
@@ -367,11 +379,20 @@ mod tests {
             if Path::new(path).exists() {
                 match parse_file(path) {
                     Ok(doc) => {
-                        let md = render::to_markdown(&doc, &render::RenderOptions::default()).unwrap();
+                        let md =
+                            render::to_markdown(&doc, &render::RenderOptions::default()).unwrap();
                         let text = doc.plain_text();
                         println!("✓ {}", path);
-                        println!("  Slides: {}, Resources: {}", doc.sections.len(), doc.resources.len());
-                        println!("  Text length: {} chars, MD length: {} chars", text.len(), md.len());
+                        println!(
+                            "  Slides: {}, Resources: {}",
+                            doc.sections.len(),
+                            doc.resources.len()
+                        );
+                        println!(
+                            "  Text length: {} chars, MD length: {} chars",
+                            text.len(),
+                            md.len()
+                        );
 
                         // Count tables
                         let table_count = md.matches("| ---").count();
@@ -429,11 +450,16 @@ mod tests {
             if Path::new(path).exists() {
                 match parse_file(path) {
                     Ok(doc) => {
-                        let md = render::to_markdown(&doc, &render::RenderOptions::default()).unwrap();
+                        let md =
+                            render::to_markdown(&doc, &render::RenderOptions::default()).unwrap();
                         let text = doc.plain_text();
                         println!("✓ {}", path);
                         println!("  Sheets: {}", doc.sections.len());
-                        println!("  Text length: {} chars, MD length: {} chars", text.len(), md.len());
+                        println!(
+                            "  Text length: {} chars, MD length: {} chars",
+                            text.len(),
+                            md.len()
+                        );
 
                         // Count table rows
                         let row_count = md.matches("\n|").count();

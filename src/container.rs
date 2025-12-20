@@ -188,9 +188,8 @@ impl OoxmlContainer {
                 match reader.read_event_into(&mut buf) {
                     Ok(quick_xml::events::Event::Start(e)) => {
                         let name = e.name();
-                        current_element = Some(
-                            String::from_utf8_lossy(name.local_name().as_ref()).to_string(),
-                        );
+                        current_element =
+                            Some(String::from_utf8_lossy(name.local_name().as_ref()).to_string());
                     }
                     Ok(quick_xml::events::Event::Text(e)) => {
                         if let Some(ref elem) = current_element {
@@ -253,8 +252,8 @@ impl OoxmlContainer {
                             b"Type" => rel_type = String::from_utf8_lossy(&attr.value).to_string(),
                             b"Target" => target = String::from_utf8_lossy(&attr.value).to_string(),
                             b"TargetMode" => {
-                                external =
-                                    String::from_utf8_lossy(&attr.value).to_lowercase() == "external"
+                                external = String::from_utf8_lossy(&attr.value).to_lowercase()
+                                    == "external"
                             }
                             _ => {}
                         }

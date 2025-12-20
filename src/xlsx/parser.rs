@@ -134,8 +134,7 @@ impl XlsxParser {
                                         name = String::from_utf8_lossy(&attr.value).to_string();
                                     }
                                     b"sheetId" => {
-                                        sheet_id =
-                                            String::from_utf8_lossy(&attr.value).to_string();
+                                        sheet_id = String::from_utf8_lossy(&attr.value).to_string();
                                     }
                                     b"r:id" => {
                                         rel_id = String::from_utf8_lossy(&attr.value).to_string();

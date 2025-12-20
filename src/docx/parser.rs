@@ -127,8 +127,7 @@ impl DocxParser {
                         _ => {
                             if in_paragraph {
                                 paragraph_xml.push('<');
-                                paragraph_xml
-                                    .push_str(&String::from_utf8_lossy(name.as_ref()));
+                                paragraph_xml.push_str(&String::from_utf8_lossy(name.as_ref()));
                                 for attr in e.attributes().flatten() {
                                     paragraph_xml.push_str(&format!(
                                         " {}=\"{}\"",
@@ -211,8 +210,7 @@ impl DocxParser {
                         _ => {
                             if in_paragraph {
                                 paragraph_xml.push_str("</");
-                                paragraph_xml
-                                    .push_str(&String::from_utf8_lossy(name.as_ref()));
+                                paragraph_xml.push_str(&String::from_utf8_lossy(name.as_ref()));
                                 paragraph_xml.push('>');
                             } else if in_table {
                                 table_xml.push_str("</");
@@ -249,123 +247,119 @@ impl DocxParser {
 
         loop {
             match reader.read_event_into(&mut buf) {
-                Ok(quick_xml::events::Event::Start(ref e)) => {
-                    match e.name().as_ref() {
-                        b"w:pPr" => in_ppr = true,
-                        b"w:rPr" => in_rpr = true,
-                        b"w:r" => {
-                            in_run = true;
-                            current_style = TextStyle::default();
-                        }
-                        b"w:t" => in_text = true,
-                        b"w:instrText" => in_instr_text = true,
-                        b"w:hyperlink" => {
-                            for attr in e.attributes().flatten() {
-                                if attr.key.as_ref() == b"r:id" {
-                                    let rel_id = String::from_utf8_lossy(&attr.value);
-                                    if let Some(rel) = self.relationships.get(&rel_id) {
-                                        current_hyperlink = Some(rel.target.clone());
-                                    }
-                                }
-                            }
-                        }
-                        _ => {}
+                Ok(quick_xml::events::Event::Start(ref e)) => match e.name().as_ref() {
+                    b"w:pPr" => in_ppr = true,
+                    b"w:rPr" => in_rpr = true,
+                    b"w:r" => {
+                        in_run = true;
+                        current_style = TextStyle::default();
                     }
-                }
-                Ok(quick_xml::events::Event::Empty(ref e)) => {
-                    match e.name().as_ref() {
-                        b"w:pStyle" if in_ppr => {
-                            for attr in e.attributes().flatten() {
-                                if attr.key.as_ref() == b"w:val" {
-                                    let style_id = String::from_utf8_lossy(&attr.value);
-                                    para.style_id = Some(style_id.to_string());
-                                    para.heading = self.styles.get_heading_level(&style_id);
+                    b"w:t" => in_text = true,
+                    b"w:instrText" => in_instr_text = true,
+                    b"w:hyperlink" => {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.as_ref() == b"r:id" {
+                                let rel_id = String::from_utf8_lossy(&attr.value);
+                                if let Some(rel) = self.relationships.get(&rel_id) {
+                                    current_hyperlink = Some(rel.target.clone());
                                 }
                             }
                         }
-                        b"w:jc" if in_ppr => {
-                            for attr in e.attributes().flatten() {
-                                if attr.key.as_ref() == b"w:val" {
-                                    let val = String::from_utf8_lossy(&attr.value);
-                                    para.alignment = match val.as_ref() {
-                                        "center" => TextAlignment::Center,
-                                        "right" => TextAlignment::Right,
-                                        "both" | "distribute" => TextAlignment::Justify,
-                                        _ => TextAlignment::Left,
-                                    };
-                                }
-                            }
-                        }
-                        b"w:b" if in_rpr => {
-                            let val = get_bool_attr(e, b"w:val");
-                            current_style.bold = val.unwrap_or(true);
-                        }
-                        b"w:i" if in_rpr => {
-                            let val = get_bool_attr(e, b"w:val");
-                            current_style.italic = val.unwrap_or(true);
-                        }
-                        b"w:u" if in_rpr => {
-                            for attr in e.attributes().flatten() {
-                                if attr.key.as_ref() == b"w:val" {
-                                    let val = String::from_utf8_lossy(&attr.value);
-                                    current_style.underline = val != "none";
-                                }
-                            }
-                        }
-                        b"w:strike" if in_rpr => {
-                            let val = get_bool_attr(e, b"w:val");
-                            current_style.strikethrough = val.unwrap_or(true);
-                        }
-                        b"w:vertAlign" if in_rpr => {
-                            for attr in e.attributes().flatten() {
-                                if attr.key.as_ref() == b"w:val" {
-                                    let val = String::from_utf8_lossy(&attr.value);
-                                    match val.as_ref() {
-                                        "superscript" => current_style.superscript = true,
-                                        "subscript" => current_style.subscript = true,
-                                        _ => {}
-                                    }
-                                }
-                            }
-                        }
-                        b"w:sz" if in_rpr => {
-                            for attr in e.attributes().flatten() {
-                                if attr.key.as_ref() == b"w:val" {
-                                    let val = String::from_utf8_lossy(&attr.value);
-                                    current_style.size = val.parse().ok();
-                                }
-                            }
-                        }
-                        b"w:color" if in_rpr => {
-                            for attr in e.attributes().flatten() {
-                                if attr.key.as_ref() == b"w:val" {
-                                    let val = String::from_utf8_lossy(&attr.value);
-                                    if val != "auto" {
-                                        current_style.color = Some(val.to_string());
-                                    }
-                                }
-                            }
-                        }
-                        b"w:highlight" if in_rpr => {
-                            for attr in e.attributes().flatten() {
-                                if attr.key.as_ref() == b"w:val" {
-                                    current_style.highlight =
-                                        Some(String::from_utf8_lossy(&attr.value).to_string());
-                                }
-                            }
-                        }
-                        b"w:rFonts" if in_rpr => {
-                            for attr in e.attributes().flatten() {
-                                if attr.key.as_ref() == b"w:ascii" {
-                                    current_style.font =
-                                        Some(String::from_utf8_lossy(&attr.value).to_string());
-                                    break;
-                                }
-                            }
-                        }
-                        _ => {}
                     }
-                }
+                    _ => {}
+                },
+                Ok(quick_xml::events::Event::Empty(ref e)) => match e.name().as_ref() {
+                    b"w:pStyle" if in_ppr => {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.as_ref() == b"w:val" {
+                                let style_id = String::from_utf8_lossy(&attr.value);
+                                para.style_id = Some(style_id.to_string());
+                                para.heading = self.styles.get_heading_level(&style_id);
+                            }
+                        }
+                    }
+                    b"w:jc" if in_ppr => {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.as_ref() == b"w:val" {
+                                let val = String::from_utf8_lossy(&attr.value);
+                                para.alignment = match val.as_ref() {
+                                    "center" => TextAlignment::Center,
+                                    "right" => TextAlignment::Right,
+                                    "both" | "distribute" => TextAlignment::Justify,
+                                    _ => TextAlignment::Left,
+                                };
+                            }
+                        }
+                    }
+                    b"w:b" if in_rpr => {
+                        let val = get_bool_attr(e, b"w:val");
+                        current_style.bold = val.unwrap_or(true);
+                    }
+                    b"w:i" if in_rpr => {
+                        let val = get_bool_attr(e, b"w:val");
+                        current_style.italic = val.unwrap_or(true);
+                    }
+                    b"w:u" if in_rpr => {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.as_ref() == b"w:val" {
+                                let val = String::from_utf8_lossy(&attr.value);
+                                current_style.underline = val != "none";
+                            }
+                        }
+                    }
+                    b"w:strike" if in_rpr => {
+                        let val = get_bool_attr(e, b"w:val");
+                        current_style.strikethrough = val.unwrap_or(true);
+                    }
+                    b"w:vertAlign" if in_rpr => {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.as_ref() == b"w:val" {
+                                let val = String::from_utf8_lossy(&attr.value);
+                                match val.as_ref() {
+                                    "superscript" => current_style.superscript = true,
+                                    "subscript" => current_style.subscript = true,
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+                    b"w:sz" if in_rpr => {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.as_ref() == b"w:val" {
+                                let val = String::from_utf8_lossy(&attr.value);
+                                current_style.size = val.parse().ok();
+                            }
+                        }
+                    }
+                    b"w:color" if in_rpr => {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.as_ref() == b"w:val" {
+                                let val = String::from_utf8_lossy(&attr.value);
+                                if val != "auto" {
+                                    current_style.color = Some(val.to_string());
+                                }
+                            }
+                        }
+                    }
+                    b"w:highlight" if in_rpr => {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.as_ref() == b"w:val" {
+                                current_style.highlight =
+                                    Some(String::from_utf8_lossy(&attr.value).to_string());
+                            }
+                        }
+                    }
+                    b"w:rFonts" if in_rpr => {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.as_ref() == b"w:ascii" {
+                                current_style.font =
+                                    Some(String::from_utf8_lossy(&attr.value).to_string());
+                                break;
+                            }
+                        }
+                    }
+                    _ => {}
+                },
                 Ok(quick_xml::events::Event::Text(ref e)) => {
                     // Only extract text from w:t elements, skip w:instrText (field codes)
                     if in_run && in_text && !in_instr_text {
@@ -380,17 +374,15 @@ impl DocxParser {
                         }
                     }
                 }
-                Ok(quick_xml::events::Event::End(ref e)) => {
-                    match e.name().as_ref() {
-                        b"w:pPr" => in_ppr = false,
-                        b"w:rPr" => in_rpr = false,
-                        b"w:r" => in_run = false,
-                        b"w:t" => in_text = false,
-                        b"w:instrText" => in_instr_text = false,
-                        b"w:hyperlink" => current_hyperlink = None,
-                        _ => {}
-                    }
-                }
+                Ok(quick_xml::events::Event::End(ref e)) => match e.name().as_ref() {
+                    b"w:pPr" => in_ppr = false,
+                    b"w:rPr" => in_rpr = false,
+                    b"w:r" => in_run = false,
+                    b"w:t" => in_text = false,
+                    b"w:instrText" => in_instr_text = false,
+                    b"w:hyperlink" => current_hyperlink = None,
+                    _ => {}
+                },
                 Ok(quick_xml::events::Event::Eof) => break,
                 Err(e) => return Err(Error::XmlParse(e.to_string())),
                 _ => {}
@@ -492,58 +484,54 @@ impl DocxParser {
 
         loop {
             match reader.read_event_into(&mut buf) {
-                Ok(quick_xml::events::Event::Start(ref e)) => {
-                    match e.name().as_ref() {
-                        b"w:tr" => {
-                            in_row = true;
-                            current_row = Some(Row {
-                                cells: Vec::new(),
-                                is_header: false,
-                                height: None,
-                            });
-                            is_header_row = false;
-                        }
-                        b"w:tc" => {
-                            in_cell = true;
-                            cell_text.clear();
-                            col_span = 1;
-                            row_span = 1;
-                        }
-                        b"w:p" if in_cell => {
-                            in_paragraph = true;
-                        }
-                        b"w:t" => in_text = true,
-                        b"w:instrText" => in_instr_text = true,
-                        _ => {}
+                Ok(quick_xml::events::Event::Start(ref e)) => match e.name().as_ref() {
+                    b"w:tr" => {
+                        in_row = true;
+                        current_row = Some(Row {
+                            cells: Vec::new(),
+                            is_header: false,
+                            height: None,
+                        });
+                        is_header_row = false;
                     }
-                }
-                Ok(quick_xml::events::Event::Empty(ref e)) => {
-                    match e.name().as_ref() {
-                        b"w:tblHeader" if in_row => {
-                            is_header_row = true;
-                        }
-                        b"w:gridSpan" if in_cell => {
-                            for attr in e.attributes().flatten() {
-                                if attr.key.as_ref() == b"w:val" {
-                                    let val = String::from_utf8_lossy(&attr.value);
-                                    col_span = val.parse().unwrap_or(1);
-                                }
-                            }
-                        }
-                        b"w:vMerge" if in_cell => {
-                            let mut has_val = false;
-                            for attr in e.attributes().flatten() {
-                                if attr.key.as_ref() == b"w:val" {
-                                    has_val = true;
-                                }
-                            }
-                            if !has_val {
-                                row_span = 0;
-                            }
-                        }
-                        _ => {}
+                    b"w:tc" => {
+                        in_cell = true;
+                        cell_text.clear();
+                        col_span = 1;
+                        row_span = 1;
                     }
-                }
+                    b"w:p" if in_cell => {
+                        in_paragraph = true;
+                    }
+                    b"w:t" => in_text = true,
+                    b"w:instrText" => in_instr_text = true,
+                    _ => {}
+                },
+                Ok(quick_xml::events::Event::Empty(ref e)) => match e.name().as_ref() {
+                    b"w:tblHeader" if in_row => {
+                        is_header_row = true;
+                    }
+                    b"w:gridSpan" if in_cell => {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.as_ref() == b"w:val" {
+                                let val = String::from_utf8_lossy(&attr.value);
+                                col_span = val.parse().unwrap_or(1);
+                            }
+                        }
+                    }
+                    b"w:vMerge" if in_cell => {
+                        let mut has_val = false;
+                        for attr in e.attributes().flatten() {
+                            if attr.key.as_ref() == b"w:val" {
+                                has_val = true;
+                            }
+                        }
+                        if !has_val {
+                            row_span = 0;
+                        }
+                    }
+                    _ => {}
+                },
                 Ok(quick_xml::events::Event::Text(ref e)) => {
                     // Only extract text from w:t elements, skip w:instrText (field codes)
                     if in_paragraph && in_cell && in_text && !in_instr_text {
@@ -551,40 +539,38 @@ impl DocxParser {
                         cell_text.push_str(&text);
                     }
                 }
-                Ok(quick_xml::events::Event::End(ref e)) => {
-                    match e.name().as_ref() {
-                        b"w:tr" => {
-                            if let Some(mut row) = current_row.take() {
-                                row.is_header = is_header_row;
-                                table.add_row(row);
-                            }
-                            in_row = false;
+                Ok(quick_xml::events::Event::End(ref e)) => match e.name().as_ref() {
+                    b"w:tr" => {
+                        if let Some(mut row) = current_row.take() {
+                            row.is_header = is_header_row;
+                            table.add_row(row);
                         }
-                        b"w:tc" => {
-                            if row_span > 0 {
-                                let cell = Cell {
-                                    content: vec![Paragraph::with_text(&cell_text)],
-                                    col_span,
-                                    row_span,
-                                    alignment: CellAlignment::Left,
-                                    vertical_alignment: VerticalAlignment::default(),
-                                    is_header: is_header_row,
-                                    background: None,
-                                };
-                                if let Some(ref mut row) = current_row {
-                                    row.cells.push(cell);
-                                }
-                            }
-                            in_cell = false;
-                        }
-                        b"w:p" => {
-                            in_paragraph = false;
-                        }
-                        b"w:t" => in_text = false,
-                        b"w:instrText" => in_instr_text = false,
-                        _ => {}
+                        in_row = false;
                     }
-                }
+                    b"w:tc" => {
+                        if row_span > 0 {
+                            let cell = Cell {
+                                content: vec![Paragraph::with_text(&cell_text)],
+                                col_span,
+                                row_span,
+                                alignment: CellAlignment::Left,
+                                vertical_alignment: VerticalAlignment::default(),
+                                is_header: is_header_row,
+                                background: None,
+                            };
+                            if let Some(ref mut row) = current_row {
+                                row.cells.push(cell);
+                            }
+                        }
+                        in_cell = false;
+                    }
+                    b"w:p" => {
+                        in_paragraph = false;
+                    }
+                    b"w:t" => in_text = false,
+                    b"w:instrText" => in_instr_text = false,
+                    _ => {}
+                },
                 Ok(quick_xml::events::Event::Eof) => break,
                 Err(e) => return Err(Error::XmlParse(e.to_string())),
                 _ => {}

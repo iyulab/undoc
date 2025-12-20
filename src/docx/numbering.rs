@@ -1,8 +1,8 @@
 //! DOCX numbering (list) parsing.
 
-use std::collections::HashMap;
 use crate::error::{Error, Result};
 use crate::model::ListType;
+use std::collections::HashMap;
 
 /// Abstract numbering definition.
 #[derive(Debug, Clone)]
@@ -75,41 +75,38 @@ impl NumberingMap {
 
         loop {
             match reader.read_event_into(&mut buf) {
-                Ok(quick_xml::events::Event::Start(e)) => {
-                    match e.name().as_ref() {
-                        b"w:abstractNum" => {
-                            let mut abstract_num = AbstractNum {
-                                id: String::new(),
-                                levels: Vec::new(),
-                            };
-                            for attr in e.attributes().flatten() {
-                                if attr.key.as_ref() == b"w:abstractNumId" {
-                                    abstract_num.id =
-                                        String::from_utf8_lossy(&attr.value).to_string();
-                                }
+                Ok(quick_xml::events::Event::Start(e)) => match e.name().as_ref() {
+                    b"w:abstractNum" => {
+                        let mut abstract_num = AbstractNum {
+                            id: String::new(),
+                            levels: Vec::new(),
+                        };
+                        for attr in e.attributes().flatten() {
+                            if attr.key.as_ref() == b"w:abstractNumId" {
+                                abstract_num.id = String::from_utf8_lossy(&attr.value).to_string();
                             }
-                            current_abstract = Some(abstract_num);
-                            in_abstract_num = true;
                         }
-                        b"w:lvl" if in_abstract_num => {
-                            let mut level = NumLevel {
-                                level: 0,
-                                start: 1,
-                                num_fmt: "bullet".to_string(),
-                                level_text: String::new(),
-                            };
-                            for attr in e.attributes().flatten() {
-                                if attr.key.as_ref() == b"w:ilvl" {
-                                    let val = String::from_utf8_lossy(&attr.value);
-                                    level.level = val.parse().unwrap_or(0);
-                                }
-                            }
-                            current_level = Some(level);
-                            in_lvl = true;
-                        }
-                        _ => {}
+                        current_abstract = Some(abstract_num);
+                        in_abstract_num = true;
                     }
-                }
+                    b"w:lvl" if in_abstract_num => {
+                        let mut level = NumLevel {
+                            level: 0,
+                            start: 1,
+                            num_fmt: "bullet".to_string(),
+                            level_text: String::new(),
+                        };
+                        for attr in e.attributes().flatten() {
+                            if attr.key.as_ref() == b"w:ilvl" {
+                                let val = String::from_utf8_lossy(&attr.value);
+                                level.level = val.parse().unwrap_or(0);
+                            }
+                        }
+                        current_level = Some(level);
+                        in_lvl = true;
+                    }
+                    _ => {}
+                },
                 Ok(quick_xml::events::Event::Empty(e)) => {
                     match e.name().as_ref() {
                         b"w:start" if in_lvl => {
@@ -148,26 +145,24 @@ impl NumberingMap {
                         _ => {}
                     }
                 }
-                Ok(quick_xml::events::Event::End(e)) => {
-                    match e.name().as_ref() {
-                        b"w:abstractNum" => {
-                            if let Some(abstract_num) = current_abstract.take() {
-                                map.abstract_nums
-                                    .insert(abstract_num.id.clone(), abstract_num);
-                            }
-                            in_abstract_num = false;
+                Ok(quick_xml::events::Event::End(e)) => match e.name().as_ref() {
+                    b"w:abstractNum" => {
+                        if let Some(abstract_num) = current_abstract.take() {
+                            map.abstract_nums
+                                .insert(abstract_num.id.clone(), abstract_num);
                         }
-                        b"w:lvl" => {
-                            if let Some(level) = current_level.take() {
-                                if let Some(ref mut abstract_num) = current_abstract {
-                                    abstract_num.levels.push(level);
-                                }
-                            }
-                            in_lvl = false;
-                        }
-                        _ => {}
+                        in_abstract_num = false;
                     }
-                }
+                    b"w:lvl" => {
+                        if let Some(level) = current_level.take() {
+                            if let Some(ref mut abstract_num) = current_abstract {
+                                abstract_num.levels.push(level);
+                            }
+                        }
+                        in_lvl = false;
+                    }
+                    _ => {}
+                },
                 Ok(quick_xml::events::Event::Eof) => break,
                 Err(e) => return Err(Error::XmlParse(e.to_string())),
                 _ => {}

@@ -105,9 +105,7 @@ impl Resource {
     /// Create an image resource.
     pub fn image(data: Vec<u8>, filename: Option<String>) -> Self {
         let size = data.len();
-        let mime_type = filename
-            .as_ref()
-            .and_then(|f| Self::mime_from_filename(f));
+        let mime_type = filename.as_ref().and_then(|f| Self::mime_from_filename(f));
         Self {
             resource_type: ResourceType::Image,
             filename,
@@ -200,7 +198,10 @@ impl Resource {
 
     /// Check if this is an image.
     pub fn is_image(&self) -> bool {
-        matches!(self.resource_type, ResourceType::Image | ResourceType::Chart)
+        matches!(
+            self.resource_type,
+            ResourceType::Image | ResourceType::Chart
+        )
     }
 
     /// Check if this is a media file (audio/video).

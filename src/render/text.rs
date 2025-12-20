@@ -104,9 +104,8 @@ fn render_paragraph_text(para: &Paragraph) -> String {
             let first_char = run.text.chars().next();
 
             if let (Some(last), Some(first)) = (last_char, first_char) {
-                let needs_space = !last.is_whitespace()
-                    && !first.is_whitespace()
-                    && !is_no_space_before(first);
+                let needs_space =
+                    !last.is_whitespace() && !first.is_whitespace() && !is_no_space_before(first);
                 if needs_space {
                     output.push(' ');
                 }
@@ -121,7 +120,10 @@ fn render_paragraph_text(para: &Paragraph) -> String {
 
 /// Check if a character should NOT have a space before it.
 fn is_no_space_before(c: char) -> bool {
-    matches!(c, '.' | ',' | ':' | ';' | '!' | '?' | ')' | ']' | '}' | '"' | '\'' | '…')
+    matches!(
+        c,
+        '.' | ',' | ':' | ';' | '!' | '?' | ')' | ']' | '}' | '"' | '\'' | '…'
+    )
 }
 
 /// Render a table to plain text (ASCII table).

@@ -54,25 +54,25 @@ fn normalize_unicode(text: &str) -> String {
         .replace('\u{2212}', "-") // minus sign
         .replace('\u{2012}', "-") // figure dash
         // Various quotes
-        .replace('\u{2018}', "'")  // left single quote
-        .replace('\u{2019}', "'")  // right single quote
+        .replace('\u{2018}', "'") // left single quote
+        .replace('\u{2019}', "'") // right single quote
         .replace('\u{201C}', "\"") // left double quote
         .replace('\u{201D}', "\"") // right double quote
         .replace('\u{201E}', "\"") // double low-9 quote
         .replace('\u{00AB}', "\"") // left guillemet
         .replace('\u{00BB}', "\"") // right guillemet
         // Various spaces
-        .replace('\u{00A0}', " ")  // non-breaking space
-        .replace('\u{2002}', " ")  // en space
-        .replace('\u{2003}', " ")  // em space
-        .replace('\u{2009}', " ")  // thin space
-        .replace('\u{200A}', " ")  // hair space
-        .replace('\u{202F}', " ")  // narrow no-break space
+        .replace('\u{00A0}', " ") // non-breaking space
+        .replace('\u{2002}', " ") // en space
+        .replace('\u{2003}', " ") // em space
+        .replace('\u{2009}', " ") // thin space
+        .replace('\u{200A}', " ") // hair space
+        .replace('\u{202F}', " ") // narrow no-break space
         // Zero-width characters (remove)
-        .replace('\u{200B}', "")   // zero-width space
-        .replace('\u{200C}', "")   // zero-width non-joiner
-        .replace('\u{200D}', "")   // zero-width joiner
-        .replace('\u{FEFF}', "")   // byte order mark
+        .replace('\u{200B}', "") // zero-width space
+        .replace('\u{200C}', "") // zero-width non-joiner
+        .replace('\u{200D}', "") // zero-width joiner
+        .replace('\u{FEFF}', "") // byte order mark
 }
 
 /// Remove Private Use Area (PUA) characters.
@@ -155,12 +155,7 @@ fn should_skip_line(line: &str) -> bool {
 /// Check if line is a page number.
 fn is_page_number(line: &str) -> bool {
     // Simple page number patterns
-    let patterns = [
-        "Page ",
-        "page ",
-        "- ",
-        "— ",
-    ];
+    let patterns = ["Page ", "page ", "- ", "— "];
 
     for pattern in patterns {
         if let Some(rest) = line.strip_prefix(pattern) {

@@ -172,10 +172,7 @@ pub unsafe extern "C" fn undoc_parse_file(path: *const c_char) -> *mut UndocDocu
 /// - Returns null on error. Use `undoc_last_error` to get the error message.
 /// - The returned handle must be freed with `undoc_free_document`.
 #[no_mangle]
-pub unsafe extern "C" fn undoc_parse_bytes(
-    data: *const u8,
-    len: usize,
-) -> *mut UndocDocument {
+pub unsafe extern "C" fn undoc_parse_bytes(data: *const u8, len: usize) -> *mut UndocDocument {
     clear_last_error();
 
     if data.is_null() {
@@ -226,10 +223,7 @@ pub unsafe extern "C" fn undoc_free_document(doc: *mut UndocDocument) {
 /// - Returns null on error. Use `undoc_last_error` to get the error message.
 /// - The returned string must be freed with `undoc_free_string`.
 #[no_mangle]
-pub unsafe extern "C" fn undoc_to_markdown(
-    doc: *const UndocDocument,
-    flags: c_int,
-) -> *mut c_char {
+pub unsafe extern "C" fn undoc_to_markdown(doc: *const UndocDocument, flags: c_int) -> *mut c_char {
     clear_last_error();
 
     if doc.is_null() {
@@ -324,10 +318,7 @@ pub unsafe extern "C" fn undoc_to_text(doc: *const UndocDocument) -> *mut c_char
 /// - Returns null on error. Use `undoc_last_error` to get the error message.
 /// - The returned string must be freed with `undoc_free_string`.
 #[no_mangle]
-pub unsafe extern "C" fn undoc_to_json(
-    doc: *const UndocDocument,
-    format: c_int,
-) -> *mut c_char {
+pub unsafe extern "C" fn undoc_to_json(doc: *const UndocDocument, format: c_int) -> *mut c_char {
     clear_last_error();
 
     if doc.is_null() {

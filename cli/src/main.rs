@@ -381,10 +381,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     output.display()
                 );
             } else {
-                println!(
-                    "{} No resources found in document",
-                    "!".yellow().bold()
-                );
+                println!("{} No resources found in document", "!".yellow().bold());
             }
         }
 

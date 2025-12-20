@@ -2,7 +2,9 @@
 use undoc::container::OoxmlContainer;
 
 fn main() {
-    let path = std::env::args().nth(1).unwrap_or("test-files/file_example_PPT_1MB.pptx".to_string());
+    let path = std::env::args()
+        .nth(1)
+        .unwrap_or("test-files/file_example_PPT_1MB.pptx".to_string());
     let container = OoxmlContainer::open(&path).expect("Failed to open file");
 
     println!("=== Files in archive ===");

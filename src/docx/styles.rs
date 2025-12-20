@@ -1,8 +1,8 @@
 //! DOCX styles parsing.
 
-use std::collections::HashMap;
 use crate::error::{Error, Result};
 use crate::model::{HeadingLevel, TextStyle};
+use std::collections::HashMap;
 
 /// Style type (paragraph, character, table, etc.)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -152,15 +152,18 @@ impl StyleMap {
                                         };
                                     }
                                     b"w:default" => {
-                                        let is_default = String::from_utf8_lossy(&attr.value) == "1";
+                                        let is_default =
+                                            String::from_utf8_lossy(&attr.value) == "1";
                                         if is_default {
                                             if let Some(ref style_type) = style.style_type {
                                                 match style_type {
                                                     StyleType::Paragraph => {
-                                                        map.default_paragraph = Some(style.id.clone());
+                                                        map.default_paragraph =
+                                                            Some(style.id.clone());
                                                     }
                                                     StyleType::Character => {
-                                                        map.default_character = Some(style.id.clone());
+                                                        map.default_character =
+                                                            Some(style.id.clone());
                                                     }
                                                     _ => {}
                                                 }
@@ -189,7 +192,8 @@ impl StyleMap {
                             b"w:name" => {
                                 for attr in e.attributes().flatten() {
                                     if attr.key.as_ref() == b"w:val" {
-                                        style.name = String::from_utf8_lossy(&attr.value).to_string();
+                                        style.name =
+                                            String::from_utf8_lossy(&attr.value).to_string();
                                     }
                                 }
                             }
@@ -268,25 +272,23 @@ impl StyleMap {
                         }
                     }
                 }
-                Ok(quick_xml::events::Event::End(e)) => {
-                    match e.name().as_ref() {
-                        b"w:style" => {
-                            if let Some(style) = current_style.take() {
-                                map.styles.insert(style.id.clone(), style);
-                            }
-                            in_style = false;
-                            in_ppr = false;
-                            in_rpr = false;
+                Ok(quick_xml::events::Event::End(e)) => match e.name().as_ref() {
+                    b"w:style" => {
+                        if let Some(style) = current_style.take() {
+                            map.styles.insert(style.id.clone(), style);
                         }
-                        b"w:pPr" => {
-                            in_ppr = false;
-                        }
-                        b"w:rPr" => {
-                            in_rpr = false;
-                        }
-                        _ => {}
+                        in_style = false;
+                        in_ppr = false;
+                        in_rpr = false;
                     }
-                }
+                    b"w:pPr" => {
+                        in_ppr = false;
+                    }
+                    b"w:rPr" => {
+                        in_rpr = false;
+                    }
+                    _ => {}
+                },
                 Ok(quick_xml::events::Event::Eof) => break,
                 Err(e) => return Err(Error::XmlParse(e.to_string())),
                 _ => {}

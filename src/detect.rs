@@ -128,7 +128,9 @@ pub fn detect_format_from_reader<R: Read + Seek>(reader: R) -> Result<FormatType
 }
 
 /// Fallback detection by checking folder structure.
-fn detect_by_folder_structure<R: Read + Seek>(archive: &mut zip::ZipArchive<R>) -> Result<FormatType> {
+fn detect_by_folder_structure<R: Read + Seek>(
+    archive: &mut zip::ZipArchive<R>,
+) -> Result<FormatType> {
     let names: Vec<String> = archive.file_names().map(String::from).collect();
 
     // Check for format-specific paths

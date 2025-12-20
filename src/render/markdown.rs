@@ -48,7 +48,11 @@ pub fn to_markdown(doc: &Document, options: &RenderOptions) -> Result<String> {
                 Block::SectionBreak => {
                     output.push_str("\n---\n\n");
                 }
-                Block::Image { resource_id, alt_text, .. } => {
+                Block::Image {
+                    resource_id,
+                    alt_text,
+                    ..
+                } => {
                     let alt = alt_text.as_deref().unwrap_or("image");
                     let path = format!("{}{}", options.image_path_prefix, resource_id);
                     output.push_str(&format!("![{}]({})\n\n", alt, path));
@@ -153,9 +157,8 @@ fn render_paragraph(para: &Paragraph, options: &RenderOptions) -> String {
             // - Previous run doesn't end with space/newline
             // - Current run doesn't start with space/punctuation
             if let (Some(last), Some(first)) = (last_char, first_char) {
-                let needs_space = !last.is_whitespace()
-                    && !first.is_whitespace()
-                    && !is_no_space_before(first);
+                let needs_space =
+                    !last.is_whitespace() && !first.is_whitespace() && !is_no_space_before(first);
                 if needs_space {
                     output.push(' ');
                 }
@@ -170,7 +173,10 @@ fn render_paragraph(para: &Paragraph, options: &RenderOptions) -> String {
 
 /// Check if a character should NOT have a space before it.
 fn is_no_space_before(c: char) -> bool {
-    matches!(c, '.' | ',' | ':' | ';' | '!' | '?' | ')' | ']' | '}' | '"' | '\'' | '…')
+    matches!(
+        c,
+        '.' | ',' | ':' | ';' | '!' | '?' | ')' | ']' | '}' | '"' | '\'' | '…'
+    )
 }
 
 /// Render a text run to Markdown.
@@ -339,7 +345,11 @@ fn render_table_html(table: &Table) -> String {
     for row in &table.rows {
         html.push_str("  <tr>\n");
         for cell in &row.cells {
-            let tag = if cell.is_header || row.is_header { "th" } else { "td" };
+            let tag = if cell.is_header || row.is_header {
+                "th"
+            } else {
+                "td"
+            };
             let mut attrs = String::new();
             if cell.col_span > 1 {
                 attrs.push_str(&format!(" colspan=\"{}\"", cell.col_span));
@@ -360,7 +370,7 @@ fn render_table_html(table: &Table) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{HeadingLevel, Section, TextStyle, Cell, Row};
+    use crate::model::{Cell, HeadingLevel, Row, Section, TextStyle};
 
     #[test]
     fn test_basic_paragraph() {
@@ -385,7 +395,8 @@ mod tests {
         let mut para = Paragraph::new();
         para.runs.push(TextRun::styled("bold", TextStyle::bold()));
         para.runs.push(TextRun::plain(" and "));
-        para.runs.push(TextRun::styled("italic", TextStyle::italic()));
+        para.runs
+            .push(TextRun::styled("italic", TextStyle::italic()));
 
         let options = RenderOptions::default();
         let md = render_paragraph(&para, &options);
@@ -396,7 +407,8 @@ mod tests {
     #[test]
     fn test_hyperlink() {
         let mut para = Paragraph::new();
-        para.runs.push(TextRun::link("click here", "https://example.com"));
+        para.runs
+            .push(TextRun::link("click here", "https://example.com"));
 
         let options = RenderOptions::default();
         let md = render_paragraph(&para, &options);
@@ -409,7 +421,11 @@ mod tests {
         let mut header = Row::header(vec![Cell::header("A"), Cell::header("B")]);
         header.is_header = true;
         table.add_row(header);
-        table.add_row(Row { cells: vec![Cell::with_text("1"), Cell::with_text("2")], is_header: false, height: None });
+        table.add_row(Row {
+            cells: vec![Cell::with_text("1"), Cell::with_text("2")],
+            is_header: false,
+            height: None,
+        });
 
         let options = RenderOptions::default();
         let md = render_table(&table, &options);

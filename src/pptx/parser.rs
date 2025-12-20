@@ -699,11 +699,7 @@ impl PptxParser {
         for file in self.container.list_files() {
             if file.starts_with("ppt/media/") {
                 if let Ok(data) = self.container.read_binary(&file) {
-                    let filename = file
-                        .rsplit('/')
-                        .next()
-                        .unwrap_or(&file)
-                        .to_string();
+                    let filename = file.rsplit('/').next().unwrap_or(&file).to_string();
                     let ext = std::path::Path::new(&file)
                         .extension()
                         .and_then(|e| e.to_str())
