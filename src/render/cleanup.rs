@@ -52,7 +52,9 @@ fn normalize_unicode(text: &str) -> String {
         )
         // Various spaces (non-breaking, en, em, thin, hair, narrow no-break)
         .replace(
-            ['\u{00A0}', '\u{2002}', '\u{2003}', '\u{2009}', '\u{200A}', '\u{202F}'],
+            [
+                '\u{00A0}', '\u{2002}', '\u{2003}', '\u{2009}', '\u{200A}', '\u{202F}',
+            ],
             " ",
         )
         // Zero-width characters (remove: zero-width space, non-joiner, joiner, BOM)
