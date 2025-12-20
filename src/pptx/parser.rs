@@ -3,7 +3,8 @@
 use crate::container::OoxmlContainer;
 use crate::error::{Error, Result};
 use crate::model::{
-    Block, Document, Metadata, Paragraph, Resource, ResourceType, Section, TextRun, TextStyle,
+    Block, Cell, Document, Metadata, Paragraph, Resource, ResourceType, Row, Section, Table,
+    TextRun, TextStyle,
 };
 use std::collections::HashMap;
 use std::path::Path;
@@ -171,9 +172,9 @@ impl PptxParser {
                 };
 
                 if let Ok(xml) = self.container.read_xml(&slide_path) {
-                    let paragraphs = self.parse_slide(&xml)?;
-                    for para in paragraphs {
-                        section.add_block(Block::Paragraph(para));
+                    let blocks = self.parse_slide_content(&xml)?;
+                    for block in blocks {
+                        section.add_block(block);
                     }
                 }
 
@@ -201,69 +202,356 @@ impl PptxParser {
 
     /// Parse metadata from docProps/core.xml.
     fn parse_metadata(&self) -> Result<Metadata> {
-        let mut meta = Metadata::default();
-
-        if let Ok(xml) = self.container.read_xml("docProps/core.xml") {
-            let mut reader = quick_xml::Reader::from_str(&xml);
-            reader.config_mut().trim_text(true);
-
-            let mut buf = Vec::new();
-            let mut current_element: Option<String> = None;
-
-            loop {
-                match reader.read_event_into(&mut buf) {
-                    Ok(quick_xml::events::Event::Start(e)) => {
-                        let name = e.name();
-                        current_element = Some(
-                            String::from_utf8_lossy(name.local_name().as_ref()).to_string(),
-                        );
-                    }
-                    Ok(quick_xml::events::Event::Text(e)) => {
-                        if let Some(ref elem) = current_element {
-                            let text = e.unescape().unwrap_or_default().to_string();
-                            match elem.as_str() {
-                                "title" => meta.title = Some(text),
-                                "creator" => meta.author = Some(text),
-                                "subject" => meta.subject = Some(text),
-                                "description" => meta.description = Some(text),
-                                "keywords" => {
-                                    meta.keywords = text
-                                        .split(|c| c == ',' || c == ';')
-                                        .map(|s| s.trim().to_string())
-                                        .filter(|s| !s.is_empty())
-                                        .collect();
-                                }
-                                "created" => meta.created = Some(text),
-                                "modified" => meta.modified = Some(text),
-                                _ => {}
-                            }
-                        }
-                    }
-                    Ok(quick_xml::events::Event::End(_)) => {
-                        current_element = None;
-                    }
-                    Ok(quick_xml::events::Event::Eof) => break,
-                    Err(_) => break,
-                    _ => {}
-                }
-                buf.clear();
-            }
-        }
-
+        // Use shared metadata parsing from container
+        let mut meta = self.container.parse_core_metadata()?;
         // Set slide count
         meta.page_count = Some(self.slides.len() as u32);
-
         Ok(meta)
     }
 
-    /// Parse a slide XML into paragraphs.
+    /// Parse a slide XML into paragraphs (legacy, kept for compatibility).
+    #[allow(dead_code)]
     fn parse_slide(&self, xml: &str) -> Result<Vec<Paragraph>> {
         self.parse_text_content(xml)
+    }
+
+    /// Parse slide XML into content blocks (paragraphs and tables).
+    fn parse_slide_content(&self, xml: &str) -> Result<Vec<Block>> {
+        let mut blocks = Vec::new();
+
+        // Parse text content first (title, headings usually come before tables)
+        let paragraphs = self.parse_text_content_excluding_tables(xml)?;
+        for para in paragraphs {
+            blocks.push(Block::Paragraph(para));
+        }
+
+        // Parse tables after text content
+        let tables = self.parse_tables(xml)?;
+        for table in tables {
+            blocks.push(Block::Table(table));
+        }
+
+        Ok(blocks)
     }
 
     /// Parse notes slide XML into paragraphs.
     fn parse_notes(&self, xml: &str) -> Result<Vec<Paragraph>> {
         self.parse_text_content(xml)
+    }
+
+    /// Parse all tables from slide XML.
+    fn parse_tables(&self, xml: &str) -> Result<Vec<Table>> {
+        let mut tables = Vec::new();
+        let mut reader = quick_xml::Reader::from_str(xml);
+        reader.config_mut().trim_text(true);
+
+        let mut buf = Vec::new();
+        let mut in_table = false;
+        let mut in_row = false;
+        let mut in_cell = false;
+        let mut in_txbody = false;
+        let mut in_paragraph = false;
+        let mut in_run = false;
+        let mut in_text = false;
+
+        let mut current_table = Table::new();
+        let mut current_row = Row::new();
+        let mut current_cell = Cell::new();
+        let mut current_paragraphs: Vec<Paragraph> = Vec::new();
+        let mut current_runs: Vec<TextRun> = Vec::new();
+        let mut current_text = String::new();
+        let mut current_style = TextStyle::default();
+
+        loop {
+            match reader.read_event_into(&mut buf) {
+                Ok(quick_xml::events::Event::Start(ref e)) => {
+                    let local_name = e.name().local_name();
+                    match local_name.as_ref() {
+                        // a:tbl - table
+                        b"tbl" => {
+                            in_table = true;
+                            current_table = Table::new();
+                        }
+                        // a:tr - table row
+                        b"tr" if in_table => {
+                            in_row = true;
+                            current_row = Row::new();
+                        }
+                        // a:tc - table cell
+                        b"tc" if in_row => {
+                            in_cell = true;
+                            current_cell = Cell::new();
+                            current_paragraphs.clear();
+                        }
+                        // a:txBody - text body in cell
+                        b"txBody" if in_cell => {
+                            in_txbody = true;
+                        }
+                        // a:p - paragraph
+                        b"p" if in_txbody => {
+                            in_paragraph = true;
+                            current_runs.clear();
+                        }
+                        // a:r - text run
+                        b"r" if in_paragraph => {
+                            in_run = true;
+                            current_text.clear();
+                            current_style = TextStyle::default();
+                        }
+                        // a:t - text element
+                        b"t" if in_run => {
+                            in_text = true;
+                        }
+                        // a:rPr - run properties
+                        b"rPr" if in_run => {
+                            for attr in e.attributes().flatten() {
+                                match attr.key.local_name().as_ref() {
+                                    b"b" => {
+                                        let val = String::from_utf8_lossy(&attr.value);
+                                        current_style.bold = val != "0" && val != "false";
+                                    }
+                                    b"i" => {
+                                        let val = String::from_utf8_lossy(&attr.value);
+                                        current_style.italic = val != "0" && val != "false";
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(quick_xml::events::Event::Empty(ref e)) => {
+                    let local_name = e.name().local_name();
+                    // Handle self-closing run properties
+                    if local_name.as_ref() == b"rPr" && in_run {
+                        for attr in e.attributes().flatten() {
+                            match attr.key.local_name().as_ref() {
+                                b"b" => {
+                                    let val = String::from_utf8_lossy(&attr.value);
+                                    current_style.bold = val != "0" && val != "false";
+                                }
+                                b"i" => {
+                                    let val = String::from_utf8_lossy(&attr.value);
+                                    current_style.italic = val != "0" && val != "false";
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+                Ok(quick_xml::events::Event::Text(ref e)) => {
+                    if in_text {
+                        let text = e.unescape().unwrap_or_default();
+                        current_text.push_str(&text);
+                    }
+                }
+                Ok(quick_xml::events::Event::End(ref e)) => {
+                    let local_name = e.name().local_name();
+                    match local_name.as_ref() {
+                        b"t" => {
+                            in_text = false;
+                        }
+                        b"r" => {
+                            if !current_text.is_empty() {
+                                current_runs.push(TextRun {
+                                    text: current_text.clone(),
+                                    style: current_style.clone(),
+                                    hyperlink: None,
+                                });
+                            }
+                            in_run = false;
+                        }
+                        b"p" if in_txbody => {
+                            if !current_runs.is_empty() {
+                                current_paragraphs.push(Paragraph {
+                                    runs: current_runs.clone(),
+                                    ..Default::default()
+                                });
+                            }
+                            in_paragraph = false;
+                        }
+                        b"txBody" => {
+                            in_txbody = false;
+                        }
+                        b"tc" => {
+                            current_cell.content = current_paragraphs.clone();
+                            current_row.add_cell(current_cell.clone());
+                            in_cell = false;
+                        }
+                        b"tr" => {
+                            if !current_row.is_empty() {
+                                // Mark first row as header
+                                if current_table.is_empty() {
+                                    current_row.is_header = true;
+                                }
+                                current_table.add_row(current_row.clone());
+                            }
+                            in_row = false;
+                        }
+                        b"tbl" => {
+                            if !current_table.is_empty() {
+                                tables.push(current_table.clone());
+                            }
+                            in_table = false;
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(quick_xml::events::Event::Eof) => break,
+                Err(e) => return Err(Error::XmlParse(e.to_string())),
+                _ => {}
+            }
+            buf.clear();
+        }
+
+        Ok(tables)
+    }
+
+    /// Parse text content excluding tables (paragraphs from shapes, not table cells).
+    fn parse_text_content_excluding_tables(&self, xml: &str) -> Result<Vec<Paragraph>> {
+        let mut paragraphs = Vec::new();
+        let mut reader = quick_xml::Reader::from_str(xml);
+        reader.config_mut().trim_text(true);
+
+        let mut buf = Vec::new();
+        let mut in_table = false;
+        let mut table_depth = 0;
+        let mut in_paragraph = false;
+        let mut in_run = false;
+        let mut in_text = false;
+        let mut current_runs: Vec<TextRun> = Vec::new();
+        let mut current_text = String::new();
+        let mut current_style = TextStyle::default();
+
+        loop {
+            match reader.read_event_into(&mut buf) {
+                Ok(quick_xml::events::Event::Start(ref e)) => {
+                    let local_name = e.name().local_name();
+                    match local_name.as_ref() {
+                        // Track table depth to skip table content
+                        b"tbl" => {
+                            in_table = true;
+                            table_depth += 1;
+                        }
+                        // a:p - paragraph (only if not in table)
+                        b"p" if !in_table => {
+                            in_paragraph = true;
+                            current_runs.clear();
+                        }
+                        // a:r - text run
+                        b"r" if in_paragraph && !in_table => {
+                            in_run = true;
+                            current_text.clear();
+                            current_style = TextStyle::default();
+                        }
+                        // a:t - text element
+                        b"t" if in_run && !in_table => {
+                            in_text = true;
+                        }
+                        // a:rPr - run properties
+                        b"rPr" if in_run && !in_table => {
+                            for attr in e.attributes().flatten() {
+                                match attr.key.local_name().as_ref() {
+                                    b"b" => {
+                                        let val = String::from_utf8_lossy(&attr.value);
+                                        current_style.bold = val != "0" && val != "false";
+                                    }
+                                    b"i" => {
+                                        let val = String::from_utf8_lossy(&attr.value);
+                                        current_style.italic = val != "0" && val != "false";
+                                    }
+                                    b"u" => {
+                                        let val = String::from_utf8_lossy(&attr.value);
+                                        current_style.underline = val != "none";
+                                    }
+                                    b"strike" => {
+                                        let val = String::from_utf8_lossy(&attr.value);
+                                        current_style.strikethrough =
+                                            val != "noStrike" && val != "0" && val != "false";
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(quick_xml::events::Event::Empty(ref e)) => {
+                    let local_name = e.name().local_name();
+                    if local_name.as_ref() == b"rPr" && in_run && !in_table {
+                        for attr in e.attributes().flatten() {
+                            match attr.key.local_name().as_ref() {
+                                b"b" => {
+                                    let val = String::from_utf8_lossy(&attr.value);
+                                    current_style.bold = val != "0" && val != "false";
+                                }
+                                b"i" => {
+                                    let val = String::from_utf8_lossy(&attr.value);
+                                    current_style.italic = val != "0" && val != "false";
+                                }
+                                b"u" => {
+                                    let val = String::from_utf8_lossy(&attr.value);
+                                    current_style.underline = val != "none";
+                                }
+                                b"strike" => {
+                                    let val = String::from_utf8_lossy(&attr.value);
+                                    current_style.strikethrough =
+                                        val != "noStrike" && val != "0" && val != "false";
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+                Ok(quick_xml::events::Event::Text(ref e)) => {
+                    if in_text && !in_table {
+                        let text = e.unescape().unwrap_or_default();
+                        current_text.push_str(&text);
+                    }
+                }
+                Ok(quick_xml::events::Event::End(ref e)) => {
+                    let local_name = e.name().local_name();
+                    match local_name.as_ref() {
+                        b"tbl" => {
+                            table_depth -= 1;
+                            if table_depth == 0 {
+                                in_table = false;
+                            }
+                        }
+                        b"t" if !in_table => {
+                            in_text = false;
+                        }
+                        b"r" if !in_table => {
+                            if !current_text.is_empty() {
+                                current_runs.push(TextRun {
+                                    text: current_text.clone(),
+                                    style: current_style.clone(),
+                                    hyperlink: None,
+                                });
+                            }
+                            in_run = false;
+                        }
+                        b"p" if !in_table => {
+                            if !current_runs.is_empty() {
+                                paragraphs.push(Paragraph {
+                                    runs: current_runs.clone(),
+                                    ..Default::default()
+                                });
+                            }
+                            in_paragraph = false;
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(quick_xml::events::Event::Eof) => break,
+                Err(e) => return Err(Error::XmlParse(e.to_string())),
+                _ => {}
+            }
+            buf.clear();
+        }
+
+        Ok(paragraphs)
     }
 
     /// Parse text content from slide or notes XML.
@@ -591,6 +879,40 @@ mod tests {
             println!("Title: {:?}", doc.metadata.title);
             println!("Author: {:?}", doc.metadata.author);
             println!("Page count: {:?}", doc.metadata.page_count);
+        }
+    }
+
+    #[test]
+    fn test_parse_tables() {
+        let path = "test-files/file_example_PPT_1MB.pptx";
+        if std::path::Path::new(path).exists() {
+            let mut parser = PptxParser::open(path).unwrap();
+            let doc = parser.parse().unwrap();
+
+            // Find tables in the document
+            let mut table_count = 0;
+            for section in &doc.sections {
+                for block in &section.content {
+                    if let Block::Table(table) = block {
+                        table_count += 1;
+                        println!(
+                            "Found table in {}: {} rows, {} cols",
+                            section.name.as_deref().unwrap_or("unnamed"),
+                            table.row_count(),
+                            table.column_count()
+                        );
+                        // Print table content
+                        for (i, row) in table.rows.iter().enumerate() {
+                            let cells: Vec<String> =
+                                row.cells.iter().map(|c| c.plain_text()).collect();
+                            println!("  Row {}: {:?}", i, cells);
+                        }
+                    }
+                }
+            }
+            println!("Total tables found: {}", table_count);
+            // The test file should have at least one table (Slide 3)
+            assert!(table_count > 0, "Expected at least one table in the PPTX");
         }
     }
 }

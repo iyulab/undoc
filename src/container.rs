@@ -1,6 +1,7 @@
 //! ZIP container abstraction for OOXML documents.
 
 use crate::error::{Error, Result};
+use crate::model::Metadata;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs::File;
@@ -168,6 +169,62 @@ impl OoxmlContainer {
     /// Read package-level relationships (_rels/.rels).
     pub fn read_package_relationships(&self) -> Result<Relationships> {
         self.parse_relationships("_rels/.rels")
+    }
+
+    /// Parse core metadata from docProps/core.xml.
+    ///
+    /// This is common to all OOXML formats (DOCX, XLSX, PPTX).
+    pub fn parse_core_metadata(&self) -> Result<Metadata> {
+        let mut meta = Metadata::default();
+
+        if let Ok(xml) = self.read_xml("docProps/core.xml") {
+            let mut reader = quick_xml::Reader::from_str(&xml);
+            reader.config_mut().trim_text(true);
+
+            let mut buf = Vec::new();
+            let mut current_element: Option<String> = None;
+
+            loop {
+                match reader.read_event_into(&mut buf) {
+                    Ok(quick_xml::events::Event::Start(e)) => {
+                        let name = e.name();
+                        current_element = Some(
+                            String::from_utf8_lossy(name.local_name().as_ref()).to_string(),
+                        );
+                    }
+                    Ok(quick_xml::events::Event::Text(e)) => {
+                        if let Some(ref elem) = current_element {
+                            let text = e.unescape().unwrap_or_default().to_string();
+                            match elem.as_str() {
+                                "title" => meta.title = Some(text),
+                                "creator" => meta.author = Some(text),
+                                "subject" => meta.subject = Some(text),
+                                "description" => meta.description = Some(text),
+                                "keywords" => {
+                                    meta.keywords = text
+                                        .split(|c| c == ',' || c == ';')
+                                        .map(|s| s.trim().to_string())
+                                        .filter(|s| !s.is_empty())
+                                        .collect();
+                                }
+                                "created" => meta.created = Some(text),
+                                "modified" => meta.modified = Some(text),
+                                _ => {}
+                            }
+                        }
+                    }
+                    Ok(quick_xml::events::Event::End(_)) => {
+                        current_element = None;
+                    }
+                    Ok(quick_xml::events::Event::Eof) => break,
+                    Err(_) => break,
+                    _ => {}
+                }
+                buf.clear();
+            }
+        }
+
+        Ok(meta)
     }
 
     /// Parse a relationships file.

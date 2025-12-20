@@ -199,58 +199,10 @@ impl XlsxParser {
 
     /// Parse metadata from docProps/core.xml.
     fn parse_metadata(&self) -> Result<Metadata> {
-        let mut meta = Metadata::default();
-
-        if let Ok(xml) = self.container.read_xml("docProps/core.xml") {
-            let mut reader = quick_xml::Reader::from_str(&xml);
-            reader.config_mut().trim_text(true);
-
-            let mut buf = Vec::new();
-            let mut current_element: Option<String> = None;
-
-            loop {
-                match reader.read_event_into(&mut buf) {
-                    Ok(quick_xml::events::Event::Start(e)) => {
-                        let name = e.name();
-                        current_element = Some(
-                            String::from_utf8_lossy(name.local_name().as_ref()).to_string(),
-                        );
-                    }
-                    Ok(quick_xml::events::Event::Text(e)) => {
-                        if let Some(ref elem) = current_element {
-                            let text = e.unescape().unwrap_or_default().to_string();
-                            match elem.as_str() {
-                                "title" => meta.title = Some(text),
-                                "creator" => meta.author = Some(text),
-                                "subject" => meta.subject = Some(text),
-                                "description" => meta.description = Some(text),
-                                "keywords" => {
-                                    meta.keywords = text
-                                        .split(|c| c == ',' || c == ';')
-                                        .map(|s| s.trim().to_string())
-                                        .filter(|s| !s.is_empty())
-                                        .collect();
-                                }
-                                "created" => meta.created = Some(text),
-                                "modified" => meta.modified = Some(text),
-                                _ => {}
-                            }
-                        }
-                    }
-                    Ok(quick_xml::events::Event::End(_)) => {
-                        current_element = None;
-                    }
-                    Ok(quick_xml::events::Event::Eof) => break,
-                    Err(_) => break,
-                    _ => {}
-                }
-                buf.clear();
-            }
-        }
-
+        // Use shared metadata parsing from container
+        let mut meta = self.container.parse_core_metadata()?;
         // Set sheet count
         meta.page_count = Some(self.sheets.len() as u32);
-
         Ok(meta)
     }
 

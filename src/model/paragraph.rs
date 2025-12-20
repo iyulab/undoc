@@ -346,6 +346,9 @@ impl Paragraph {
     /// with the same styling (common in Word documents with letter spacing).
     ///
     /// Example: `**시** **험**` becomes `**시험**` after merging.
+    ///
+    /// Smart spacing is applied when merging runs - spaces are added between
+    /// CJK text and ASCII alphanumeric characters, and between ASCII words.
     pub fn merge_adjacent_runs(&mut self) {
         if self.runs.len() <= 1 {
             return;
@@ -361,8 +364,13 @@ impl Paragraph {
             });
 
             if should_merge {
-                // Merge text with the last run
+                // Merge text with the last run, with smart spacing
                 if let Some(last) = merged.last_mut() {
+                    // Check if we need to add a space between the runs
+                    let needs_space = Self::needs_space_between(&last.text, &run.text);
+                    if needs_space {
+                        last.text.push(' ');
+                    }
                     last.text.push_str(&run.text);
                 }
             } else {
@@ -374,6 +382,59 @@ impl Paragraph {
         self.runs = merged;
     }
 
+    /// Determine if a space is needed between two text fragments when merging.
+    fn needs_space_between(prev: &str, next: &str) -> bool {
+        let last_char = match prev.chars().last() {
+            Some(c) => c,
+            None => return false,
+        };
+        let first_char = match next.chars().next() {
+            Some(c) => c,
+            None => return false,
+        };
+
+        // No space needed if either side already has whitespace
+        if last_char.is_whitespace() || first_char.is_whitespace() {
+            return false;
+        }
+
+        // No space before punctuation
+        if matches!(
+            first_char,
+            '.' | ',' | ':' | ';' | '!' | '?' | ')' | ']' | '}' | '"' | '\'' | '…' | '~'
+        ) {
+            return false;
+        }
+
+        // No space after opening brackets/quotes
+        if matches!(last_char, '(' | '[' | '{' | '"' | '\'') {
+            return false;
+        }
+
+        // For CJK characters followed by ASCII (or vice versa), add space
+        let last_is_cjk = is_cjk_char(last_char);
+        let first_is_cjk = is_cjk_char(first_char);
+        let last_is_ascii_alnum = last_char.is_ascii_alphanumeric();
+        let first_is_ascii_alnum = first_char.is_ascii_alphanumeric();
+
+        // CJK → ASCII alphanumeric: add space
+        if last_is_cjk && first_is_ascii_alnum {
+            return true;
+        }
+        // ASCII alphanumeric → CJK: add space
+        if last_is_ascii_alnum && first_is_cjk {
+            return true;
+        }
+
+        // ASCII → ASCII: add space between words
+        if last_is_ascii_alnum && first_is_ascii_alnum {
+            return true;
+        }
+
+        // CJK → CJK: no space needed (natural in CJK languages)
+        false
+    }
+
     /// Get a version of this paragraph with merged adjacent runs.
     ///
     /// This is a non-mutating version of `merge_adjacent_runs`.
@@ -382,6 +443,34 @@ impl Paragraph {
         para.merge_adjacent_runs();
         para
     }
+}
+
+/// Check if a character is a CJK (Chinese, Japanese, Korean) character.
+fn is_cjk_char(c: char) -> bool {
+    matches!(c,
+        // CJK Unified Ideographs
+        '\u{4E00}'..='\u{9FFF}' |
+        // CJK Unified Ideographs Extension A
+        '\u{3400}'..='\u{4DBF}' |
+        // CJK Unified Ideographs Extension B
+        '\u{20000}'..='\u{2A6DF}' |
+        // CJK Compatibility Ideographs
+        '\u{F900}'..='\u{FAFF}' |
+        // Hangul Syllables (Korean)
+        '\u{AC00}'..='\u{D7AF}' |
+        // Hangul Jamo
+        '\u{1100}'..='\u{11FF}' |
+        // Hangul Compatibility Jamo
+        '\u{3130}'..='\u{318F}' |
+        // Hiragana
+        '\u{3040}'..='\u{309F}' |
+        // Katakana
+        '\u{30A0}'..='\u{30FF}' |
+        // Katakana Phonetic Extensions
+        '\u{31F0}'..='\u{31FF}' |
+        // CJK Symbols and Punctuation
+        '\u{3000}'..='\u{303F}'
+    )
 }
 
 #[cfg(test)]

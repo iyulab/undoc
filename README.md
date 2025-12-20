@@ -12,6 +12,8 @@ A high-performance Rust library for extracting content from Microsoft Office doc
 - **Multi-format support**: DOCX (Word), XLSX (Excel), PPTX (PowerPoint)
 - **Multiple output formats**: Markdown, Plain Text, JSON (with full metadata)
 - **Structure preservation**: Headings, lists, tables, inline formatting
+- **PPTX table extraction**: Full table parsing from PowerPoint slides
+- **CJK text support**: Smart spacing for Korean, Chinese, Japanese content
 - **Asset extraction**: Images, charts, and embedded media
 - **Text cleanup**: Multiple presets for LLM training data preparation
 - **Self-update**: Built-in update mechanism via GitHub releases

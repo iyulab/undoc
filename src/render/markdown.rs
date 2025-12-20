@@ -210,11 +210,15 @@ fn render_run(run: &TextRun, options: &RenderOptions) -> String {
 
 /// Escape Markdown special characters.
 ///
-/// Only escapes characters that are **always** special in Markdown regardless of position:
-/// - `\` - escape character
-/// - `` ` `` - inline code
-/// - `*` and `_` - emphasis/bold
-/// - `|` - table delimiter
+/// Context-aware escaping - only escapes when the character could actually
+/// trigger markdown formatting:
+///
+/// - `\` - always escape (escape character)
+/// - `` ` `` - always escape (inline code)
+/// - `|` - always escape (table delimiter)
+/// - `*` and `_` - only escape when they could trigger emphasis:
+///   - NOT escaped after `(`, `[`, or whitespace (can't start emphasis)
+///   - NOT escaped before `)`, `]`, or whitespace (can't end emphasis)
 ///
 /// Characters NOT escaped (only special in specific contexts):
 /// - `()`, `[]`, `{}` - only special in link/image syntax `[text](url)`
@@ -224,12 +228,44 @@ fn render_run(run: &TextRun, options: &RenderOptions) -> String {
 /// - `.` - only special in ordered lists at line start (e.g., "1.")
 fn escape_markdown(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
-    for c in s.chars() {
+    let chars: Vec<char> = s.chars().collect();
+
+    for (i, &c) in chars.iter().enumerate() {
         match c {
-            // Only escape characters that are ALWAYS special regardless of position
-            '\\' | '`' | '*' | '_' | '|' => {
+            // Always escape
+            '\\' | '`' | '|' => {
                 result.push('\\');
                 result.push(c);
+            }
+            // Context-aware escaping for emphasis markers
+            '*' | '_' => {
+                let prev = if i > 0 { Some(chars[i - 1]) } else { None };
+                let next = chars.get(i + 1).copied();
+
+                // Don't escape if:
+                // 1. After opening bracket/paren, whitespace, or start of string
+                // 2. Before closing bracket/paren, whitespace, or end of string
+                // 3. Before colon (common in `*NOTE:` patterns)
+                //
+                // In CommonMark, emphasis requires BOTH:
+                // - A left-flanking `*` (followed by non-whitespace)
+                // - A matching right-flanking `*` (preceded by non-whitespace)
+                // If there's no matching pair, it won't render as emphasis.
+                let after_opener = prev.map_or(true, |p| {
+                    matches!(p, '(' | '[' | '{' | ':' | '-' | '/' | '\\') || p.is_whitespace()
+                });
+                let before_closer = next.map_or(true, |n| {
+                    matches!(n, ')' | ']' | '}' | ':' | '-' | '/' | '\\') || n.is_whitespace()
+                });
+
+                if after_opener || before_closer {
+                    // Safe to use without escaping
+                    result.push(c);
+                } else {
+                    // Could potentially trigger emphasis, escape it
+                    result.push('\\');
+                    result.push(c);
+                }
             }
             _ => result.push(c),
         }

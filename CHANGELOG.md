@@ -66,6 +66,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ZIP container handling with zip crate
 - Self-update mechanism using self_update crate
 
+## [0.1.1] - 2025-12-20
+
+### Added
+
+- **PPTX Table Parsing**
+  - Full table extraction from PowerPoint slides (`a:tbl` elements)
+  - Header row auto-detection for proper Markdown table rendering
+  - Table content ordering (text before tables on each slide)
+
+- **Smart Text Spacing**
+  - CJK (Korean, Chinese, Japanese) character detection
+  - Automatic spacing between CJK and ASCII characters
+  - Intelligent run merging with `merge_adjacent_runs()`
+
+### Fixed
+
+- **Markdown Over-escaping**
+  - Context-aware escaping for `*` and `_` characters
+  - Fixed `(\* note)` patterns being incorrectly escaped
+  - Fixed `*SYNC:` at line start being over-escaped
+  - Properly handle emphasis markers near punctuation
+
+### Changed
+
+- **Code Refactoring**
+  - Extracted `parse_core_metadata()` to shared container module
+  - Removed ~90 lines of duplicate code across DOCX/PPTX/XLSX parsers
+  - Improved code maintainability and single source of truth
+
 ## [Unreleased]
 
 ### Planned
