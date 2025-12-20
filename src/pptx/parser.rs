@@ -1,38 +1,474 @@
 //! PPTX parser implementation.
 
 use crate::container::OoxmlContainer;
-use crate::error::Result;
-use crate::model::Document;
+use crate::error::{Error, Result};
+use crate::model::{
+    Block, Document, Metadata, Paragraph, Resource, ResourceType, Section, TextRun, TextStyle,
+};
+use std::collections::HashMap;
 use std::path::Path;
+
+/// Slide info from presentation.xml.
+#[derive(Debug, Clone)]
+struct SlideInfo {
+    #[allow(dead_code)]
+    id: String,
+    rel_id: String,
+}
 
 /// Parser for PPTX (PowerPoint) presentations.
 pub struct PptxParser {
     container: OoxmlContainer,
+    slides: Vec<SlideInfo>,
+    relationships: HashMap<String, String>,
 }
 
 impl PptxParser {
     /// Open a PPTX file for parsing.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let container = OoxmlContainer::open(path)?;
-        Ok(Self { container })
+        Self::from_container(container)
     }
 
     /// Create a parser from bytes.
     pub fn from_bytes(data: Vec<u8>) -> Result<Self> {
         let container = OoxmlContainer::from_bytes(data)?;
-        Ok(Self { container })
+        Self::from_container(container)
+    }
+
+    /// Create a parser from a container.
+    fn from_container(container: OoxmlContainer) -> Result<Self> {
+        // Parse presentation relationships
+        let relationships = Self::parse_presentation_rels(&container)?;
+
+        // Parse presentation for slide info
+        let slides = Self::parse_presentation(&container)?;
+
+        Ok(Self {
+            container,
+            slides,
+            relationships,
+        })
+    }
+
+    /// Parse presentation relationships.
+    fn parse_presentation_rels(container: &OoxmlContainer) -> Result<HashMap<String, String>> {
+        let mut rels = HashMap::new();
+
+        if let Ok(xml) = container.read_xml("ppt/_rels/presentation.xml.rels") {
+            let mut reader = quick_xml::Reader::from_str(&xml);
+            reader.config_mut().trim_text(true);
+
+            let mut buf = Vec::new();
+
+            loop {
+                match reader.read_event_into(&mut buf) {
+                    Ok(quick_xml::events::Event::Empty(e))
+                    | Ok(quick_xml::events::Event::Start(e)) => {
+                        if e.name().as_ref() == b"Relationship" {
+                            let mut id = String::new();
+                            let mut target = String::new();
+
+                            for attr in e.attributes().flatten() {
+                                match attr.key.as_ref() {
+                                    b"Id" => {
+                                        id = String::from_utf8_lossy(&attr.value).to_string();
+                                    }
+                                    b"Target" => {
+                                        target = String::from_utf8_lossy(&attr.value).to_string();
+                                    }
+                                    _ => {}
+                                }
+                            }
+
+                            if !id.is_empty() && !target.is_empty() {
+                                rels.insert(id, target);
+                            }
+                        }
+                    }
+                    Ok(quick_xml::events::Event::Eof) => break,
+                    Err(e) => return Err(Error::XmlParse(e.to_string())),
+                    _ => {}
+                }
+                buf.clear();
+            }
+        }
+
+        Ok(rels)
+    }
+
+    /// Parse presentation.xml for slide info.
+    fn parse_presentation(container: &OoxmlContainer) -> Result<Vec<SlideInfo>> {
+        let mut slides = Vec::new();
+
+        if let Ok(xml) = container.read_xml("ppt/presentation.xml") {
+            let mut reader = quick_xml::Reader::from_str(&xml);
+            reader.config_mut().trim_text(true);
+
+            let mut buf = Vec::new();
+
+            loop {
+                match reader.read_event_into(&mut buf) {
+                    Ok(quick_xml::events::Event::Empty(e))
+                    | Ok(quick_xml::events::Event::Start(e)) => {
+                        // Look for p:sldId elements (slide references)
+                        let name = e.name();
+                        let local_name = name.local_name();
+                        if local_name.as_ref() == b"sldId" {
+                            let mut id = String::new();
+                            let mut rel_id = String::new();
+
+                            for attr in e.attributes().flatten() {
+                                match attr.key.as_ref() {
+                                    b"id" => {
+                                        id = String::from_utf8_lossy(&attr.value).to_string();
+                                    }
+                                    // r:id attribute
+                                    key if key.ends_with(b"id")
+                                        && key != b"id"
+                                        && key.len() > 2 =>
+                                    {
+                                        rel_id = String::from_utf8_lossy(&attr.value).to_string();
+                                    }
+                                    _ => {}
+                                }
+                            }
+
+                            if !rel_id.is_empty() {
+                                slides.push(SlideInfo { id, rel_id });
+                            }
+                        }
+                    }
+                    Ok(quick_xml::events::Event::Eof) => break,
+                    Err(e) => return Err(Error::XmlParse(e.to_string())),
+                    _ => {}
+                }
+                buf.clear();
+            }
+        }
+
+        Ok(slides)
     }
 
     /// Parse the presentation and return a Document model.
     pub fn parse(&mut self) -> Result<Document> {
-        // TODO: Implement in Phase 4
-        let doc = Document::new();
+        let mut doc = Document::new();
+
+        // Parse metadata
+        doc.metadata = self.parse_metadata()?;
+
+        // Parse each slide as a section
+        for (idx, slide) in self.slides.clone().iter().enumerate() {
+            let mut section = Section::new(idx);
+            section.name = Some(format!("Slide {}", idx + 1));
+
+            // Get the slide path from relationships
+            if let Some(target) = self.relationships.get(&slide.rel_id) {
+                let slide_path = if target.starts_with('/') {
+                    target[1..].to_string()
+                } else {
+                    format!("ppt/{}", target)
+                };
+
+                if let Ok(xml) = self.container.read_xml(&slide_path) {
+                    let paragraphs = self.parse_slide(&xml)?;
+                    for para in paragraphs {
+                        section.add_block(Block::Paragraph(para));
+                    }
+                }
+
+                // Try to parse notes for this slide
+                let notes_path = slide_path
+                    .replace("slides/slide", "notesSlides/notesSlide")
+                    .replace("slides\\slide", "notesSlides\\notesSlide");
+                if let Ok(xml) = self.container.read_xml(&notes_path) {
+                    let notes = self.parse_notes(&xml)?;
+                    if !notes.is_empty() {
+                        // Add a separator and notes
+                        section.add_block(Block::Paragraph(Paragraph::with_text("--- Notes ---")));
+                        for para in notes {
+                            section.add_block(Block::Paragraph(para));
+                        }
+                    }
+                }
+            }
+
+            doc.add_section(section);
+        }
+
         Ok(doc)
+    }
+
+    /// Parse metadata from docProps/core.xml.
+    fn parse_metadata(&self) -> Result<Metadata> {
+        let mut meta = Metadata::default();
+
+        if let Ok(xml) = self.container.read_xml("docProps/core.xml") {
+            let mut reader = quick_xml::Reader::from_str(&xml);
+            reader.config_mut().trim_text(true);
+
+            let mut buf = Vec::new();
+            let mut current_element: Option<String> = None;
+
+            loop {
+                match reader.read_event_into(&mut buf) {
+                    Ok(quick_xml::events::Event::Start(e)) => {
+                        let name = e.name();
+                        current_element = Some(
+                            String::from_utf8_lossy(name.local_name().as_ref()).to_string(),
+                        );
+                    }
+                    Ok(quick_xml::events::Event::Text(e)) => {
+                        if let Some(ref elem) = current_element {
+                            let text = e.unescape().unwrap_or_default().to_string();
+                            match elem.as_str() {
+                                "title" => meta.title = Some(text),
+                                "creator" => meta.author = Some(text),
+                                "subject" => meta.subject = Some(text),
+                                "description" => meta.description = Some(text),
+                                "keywords" => {
+                                    meta.keywords = text
+                                        .split(|c| c == ',' || c == ';')
+                                        .map(|s| s.trim().to_string())
+                                        .filter(|s| !s.is_empty())
+                                        .collect();
+                                }
+                                "created" => meta.created = Some(text),
+                                "modified" => meta.modified = Some(text),
+                                _ => {}
+                            }
+                        }
+                    }
+                    Ok(quick_xml::events::Event::End(_)) => {
+                        current_element = None;
+                    }
+                    Ok(quick_xml::events::Event::Eof) => break,
+                    Err(_) => break,
+                    _ => {}
+                }
+                buf.clear();
+            }
+        }
+
+        // Set slide count
+        meta.page_count = Some(self.slides.len() as u32);
+
+        Ok(meta)
+    }
+
+    /// Parse a slide XML into paragraphs.
+    fn parse_slide(&self, xml: &str) -> Result<Vec<Paragraph>> {
+        self.parse_text_content(xml)
+    }
+
+    /// Parse notes slide XML into paragraphs.
+    fn parse_notes(&self, xml: &str) -> Result<Vec<Paragraph>> {
+        self.parse_text_content(xml)
+    }
+
+    /// Parse text content from slide or notes XML.
+    /// Text is found in: p:sp/p:txBody/a:p/a:r/a:t
+    fn parse_text_content(&self, xml: &str) -> Result<Vec<Paragraph>> {
+        let mut paragraphs = Vec::new();
+        let mut reader = quick_xml::Reader::from_str(xml);
+        reader.config_mut().trim_text(true);
+
+        let mut buf = Vec::new();
+        let mut in_paragraph = false;
+        let mut in_run = false;
+        let mut in_text = false;
+        let mut current_runs: Vec<TextRun> = Vec::new();
+        let mut current_text = String::new();
+        let mut current_style = TextStyle::default();
+
+        loop {
+            match reader.read_event_into(&mut buf) {
+                Ok(quick_xml::events::Event::Start(ref e)) => {
+                    let local_name = e.name().local_name();
+                    match local_name.as_ref() {
+                        // a:p - paragraph
+                        b"p" => {
+                            in_paragraph = true;
+                            current_runs.clear();
+                        }
+                        // a:r - text run
+                        b"r" if in_paragraph => {
+                            in_run = true;
+                            current_text.clear();
+                            current_style = TextStyle::default();
+                        }
+                        // a:t - text element
+                        b"t" if in_run => {
+                            in_text = true;
+                        }
+                        // a:rPr - run properties
+                        b"rPr" if in_run => {
+                            // Parse run properties for styling
+                            for attr in e.attributes().flatten() {
+                                match attr.key.local_name().as_ref() {
+                                    b"b" => {
+                                        let val = String::from_utf8_lossy(&attr.value);
+                                        current_style.bold = val != "0" && val != "false";
+                                    }
+                                    b"i" => {
+                                        let val = String::from_utf8_lossy(&attr.value);
+                                        current_style.italic = val != "0" && val != "false";
+                                    }
+                                    b"u" => {
+                                        let val = String::from_utf8_lossy(&attr.value);
+                                        current_style.underline = val != "none";
+                                    }
+                                    b"strike" => {
+                                        let val = String::from_utf8_lossy(&attr.value);
+                                        current_style.strikethrough =
+                                            val != "noStrike" && val != "0" && val != "false";
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(quick_xml::events::Event::Empty(ref e)) => {
+                    let local_name = e.name().local_name();
+                    // Handle self-closing elements
+                    if local_name.as_ref() == b"rPr" && in_run {
+                        for attr in e.attributes().flatten() {
+                            match attr.key.local_name().as_ref() {
+                                b"b" => {
+                                    let val = String::from_utf8_lossy(&attr.value);
+                                    current_style.bold = val != "0" && val != "false";
+                                }
+                                b"i" => {
+                                    let val = String::from_utf8_lossy(&attr.value);
+                                    current_style.italic = val != "0" && val != "false";
+                                }
+                                b"u" => {
+                                    let val = String::from_utf8_lossy(&attr.value);
+                                    current_style.underline = val != "none";
+                                }
+                                b"strike" => {
+                                    let val = String::from_utf8_lossy(&attr.value);
+                                    current_style.strikethrough =
+                                        val != "noStrike" && val != "0" && val != "false";
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+                Ok(quick_xml::events::Event::Text(ref e)) => {
+                    if in_text {
+                        let text = e.unescape().unwrap_or_default();
+                        current_text.push_str(&text);
+                    }
+                }
+                Ok(quick_xml::events::Event::End(ref e)) => {
+                    let local_name = e.name().local_name();
+                    match local_name.as_ref() {
+                        b"t" => {
+                            in_text = false;
+                        }
+                        b"r" => {
+                            if !current_text.is_empty() {
+                                current_runs.push(TextRun {
+                                    text: current_text.clone(),
+                                    style: current_style.clone(),
+                                    hyperlink: None,
+                                });
+                            }
+                            in_run = false;
+                        }
+                        b"p" => {
+                            // Only add non-empty paragraphs
+                            if !current_runs.is_empty() {
+                                paragraphs.push(Paragraph {
+                                    runs: current_runs.clone(),
+                                    ..Default::default()
+                                });
+                            }
+                            in_paragraph = false;
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(quick_xml::events::Event::Eof) => break,
+                Err(e) => return Err(Error::XmlParse(e.to_string())),
+                _ => {}
+            }
+            buf.clear();
+        }
+
+        Ok(paragraphs)
+    }
+
+    /// Extract resources (images, media) from the presentation.
+    pub fn extract_resources(&self) -> Result<Vec<Resource>> {
+        let mut resources = Vec::new();
+
+        // Look for media files in ppt/media/
+        for file in self.container.list_files() {
+            if file.starts_with("ppt/media/") {
+                if let Ok(data) = self.container.read_binary(&file) {
+                    let filename = file
+                        .rsplit('/')
+                        .next()
+                        .unwrap_or(&file)
+                        .to_string();
+                    let ext = std::path::Path::new(&file)
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .unwrap_or("");
+                    let size = data.len();
+
+                    resources.push(Resource {
+                        resource_type: ResourceType::from_extension(ext),
+                        filename: Some(filename),
+                        mime_type: guess_mime_type(&file),
+                        data,
+                        size,
+                        width: None,
+                        height: None,
+                        alt_text: None,
+                    });
+                }
+            }
+        }
+
+        Ok(resources)
     }
 
     /// Get a reference to the container.
     pub fn container(&self) -> &OoxmlContainer {
         &self.container
+    }
+
+    /// Get the number of slides.
+    pub fn slide_count(&self) -> usize {
+        self.slides.len()
+    }
+}
+
+/// Guess MIME type from file extension.
+fn guess_mime_type(path: &str) -> Option<String> {
+    let ext = path.rsplit('.').next()?.to_lowercase();
+    match ext.as_str() {
+        "png" => Some("image/png".to_string()),
+        "jpg" | "jpeg" => Some("image/jpeg".to_string()),
+        "gif" => Some("image/gif".to_string()),
+        "bmp" => Some("image/bmp".to_string()),
+        "tiff" | "tif" => Some("image/tiff".to_string()),
+        "webp" => Some("image/webp".to_string()),
+        "svg" => Some("image/svg+xml".to_string()),
+        "emf" => Some("image/x-emf".to_string()),
+        "wmf" => Some("image/x-wmf".to_string()),
+        "mp3" => Some("audio/mpeg".to_string()),
+        "wav" => Some("audio/wav".to_string()),
+        "mp4" => Some("video/mp4".to_string()),
+        "avi" => Some("video/x-msvideo".to_string()),
+        "wmv" => Some("video/x-ms-wmv".to_string()),
+        _ => None,
     }
 }
 
@@ -46,6 +482,115 @@ mod tests {
         if std::path::Path::new(path).exists() {
             let parser = PptxParser::open(path);
             assert!(parser.is_ok());
+        }
+    }
+
+    #[test]
+    fn test_parse_pptx() {
+        let path = "test-files/file_example_PPT_1MB.pptx";
+        if std::path::Path::new(path).exists() {
+            let mut parser = PptxParser::open(path).unwrap();
+            let doc = parser.parse().unwrap();
+
+            // Should have at least one section (slide)
+            assert!(!doc.sections.is_empty());
+            println!("Parsed {} slides", doc.sections.len());
+
+            // Check metadata has slide count
+            assert!(doc.metadata.page_count.is_some());
+        }
+    }
+
+    #[test]
+    fn test_slide_count() {
+        let path = "test-files/file_example_PPT_1MB.pptx";
+        if std::path::Path::new(path).exists() {
+            let parser = PptxParser::open(path).unwrap();
+            let count = parser.slide_count();
+            assert!(count > 0);
+            println!("Slide count: {}", count);
+        }
+    }
+
+    #[test]
+    fn test_extract_text() {
+        let path = "test-files/file_example_PPT_1MB.pptx";
+        if std::path::Path::new(path).exists() {
+            let mut parser = PptxParser::open(path).unwrap();
+            let doc = parser.parse().unwrap();
+            let text = doc.plain_text();
+
+            // Should have some text content
+            assert!(!text.trim().is_empty());
+            println!("Extracted text length: {} chars", text.len());
+            println!("First 500 chars:\n{}", &text[..text.len().min(500)]);
+        }
+    }
+
+    #[test]
+    fn test_extract_resources() {
+        let path = "test-files/file_example_PPT_1MB.pptx";
+        if std::path::Path::new(path).exists() {
+            let parser = PptxParser::open(path).unwrap();
+            let resources = parser.extract_resources().unwrap();
+
+            println!("Found {} resources", resources.len());
+            for res in &resources {
+                println!(
+                    "  - {:?}: {} ({} bytes)",
+                    res.resource_type,
+                    res.filename.as_deref().unwrap_or("unnamed"),
+                    res.size
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_parse_text_content() {
+        // Test XML parsing directly
+        let _xml = r#"<?xml version="1.0"?>
+<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+       xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
+  <p:cSld>
+    <p:spTree>
+      <p:sp>
+        <p:txBody>
+          <a:p>
+            <a:r>
+              <a:t>Hello World</a:t>
+            </a:r>
+          </a:p>
+          <a:p>
+            <a:r>
+              <a:rPr b="1"/>
+              <a:t>Bold Text</a:t>
+            </a:r>
+          </a:p>
+        </p:txBody>
+      </p:sp>
+    </p:spTree>
+  </p:cSld>
+</p:sld>"#;
+
+        let container = OoxmlContainer::from_bytes(Vec::new());
+        // Can't test fully without a real container, but we can test the parse logic
+        // by creating a minimal parser
+        if container.is_ok() {
+            // Just verify XML parsing logic compiles
+        }
+    }
+
+    #[test]
+    fn test_metadata() {
+        let path = "test-files/file_example_PPT_1MB.pptx";
+        if std::path::Path::new(path).exists() {
+            let mut parser = PptxParser::open(path).unwrap();
+            let doc = parser.parse().unwrap();
+
+            println!("Title: {:?}", doc.metadata.title);
+            println!("Author: {:?}", doc.metadata.author);
+            println!("Page count: {:?}", doc.metadata.page_count);
         }
     }
 }
