@@ -40,39 +40,23 @@ fn normalize_unicode(text: &str) -> String {
     // Standardize bullets and dashes
     normalized
         // Various bullet characters
-        .replace('•', "•")
-        .replace('◦', "•")
-        .replace('▪', "•")
-        .replace('▫', "•")
-        .replace('●', "•")
-        .replace('○', "•")
-        .replace('■', "•")
-        .replace('□', "•")
-        // Various dashes
-        .replace('\u{2013}', "-") // en-dash
-        .replace('\u{2014}', "-") // em-dash
-        .replace('\u{2212}', "-") // minus sign
-        .replace('\u{2012}', "-") // figure dash
-        // Various quotes
-        .replace('\u{2018}', "'") // left single quote
-        .replace('\u{2019}', "'") // right single quote
-        .replace('\u{201C}', "\"") // left double quote
-        .replace('\u{201D}', "\"") // right double quote
-        .replace('\u{201E}', "\"") // double low-9 quote
-        .replace('\u{00AB}', "\"") // left guillemet
-        .replace('\u{00BB}', "\"") // right guillemet
-        // Various spaces
-        .replace('\u{00A0}', " ") // non-breaking space
-        .replace('\u{2002}', " ") // en space
-        .replace('\u{2003}', " ") // em space
-        .replace('\u{2009}', " ") // thin space
-        .replace('\u{200A}', " ") // hair space
-        .replace('\u{202F}', " ") // narrow no-break space
-        // Zero-width characters (remove)
-        .replace('\u{200B}', "") // zero-width space
-        .replace('\u{200C}', "") // zero-width non-joiner
-        .replace('\u{200D}', "") // zero-width joiner
-        .replace('\u{FEFF}', "") // byte order mark
+        .replace(['•', '◦', '▪', '▫', '●', '○', '■', '□'], "•")
+        // Various dashes (en-dash, em-dash, minus sign, figure dash)
+        .replace(['\u{2013}', '\u{2014}', '\u{2212}', '\u{2012}'], "-")
+        // Various single quotes (left single, right single)
+        .replace(['\u{2018}', '\u{2019}'], "'")
+        // Various double quotes (left, right, low-9, left guillemet, right guillemet)
+        .replace(
+            ['\u{201C}', '\u{201D}', '\u{201E}', '\u{00AB}', '\u{00BB}'],
+            "\"",
+        )
+        // Various spaces (non-breaking, en, em, thin, hair, narrow no-break)
+        .replace(
+            ['\u{00A0}', '\u{2002}', '\u{2003}', '\u{2009}', '\u{200A}', '\u{202F}'],
+            " ",
+        )
+        // Zero-width characters (remove: zero-width space, non-joiner, joiner, BOM)
+        .replace(['\u{200B}', '\u{200C}', '\u{200D}', '\u{FEFF}'], "")
 }
 
 /// Remove Private Use Area (PUA) characters.

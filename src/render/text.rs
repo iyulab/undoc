@@ -189,9 +189,9 @@ fn render_table_text(table: &Table) -> String {
 
         // For header row, prepend placeholder columns
         if row_idx == 0 && header_missing > 0 {
-            for j in 0..header_missing {
+            for (j, width) in widths.iter().take(header_missing).enumerate() {
                 let placeholder = if j == 0 { "#" } else { "" };
-                output.push_str(&format!(" {:width$} |", placeholder, width = widths[j]));
+                output.push_str(&format!(" {:width$} |", placeholder, width = *width));
             }
         }
 
@@ -205,8 +205,8 @@ fn render_table_text(table: &Table) -> String {
 
         // Pad data rows if they have fewer cells
         if row_idx > 0 {
-            for i in row.cells.len()..col_count {
-                output.push_str(&format!(" {:width$} |", "", width = widths[i]));
+            for width in widths.iter().take(col_count).skip(row.cells.len()) {
+                output.push_str(&format!(" {:width$} |", "", width = *width));
             }
         }
         output.push('\n');

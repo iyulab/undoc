@@ -358,7 +358,7 @@ impl Paragraph {
 
         for run in self.runs.drain(..) {
             // Check if we can merge with the last run
-            let should_merge = merged.last().map_or(false, |last: &TextRun| {
+            let should_merge = merged.last().is_some_and(|last: &TextRun| {
                 // Same style and same hyperlink (both None or both Some with same URL)
                 last.style == run.style && last.hyperlink == run.hyperlink
             });

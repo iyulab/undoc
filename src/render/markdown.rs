@@ -257,10 +257,10 @@ fn escape_markdown(s: &str) -> String {
                 // - A left-flanking `*` (followed by non-whitespace)
                 // - A matching right-flanking `*` (preceded by non-whitespace)
                 // If there's no matching pair, it won't render as emphasis.
-                let after_opener = prev.map_or(true, |p| {
+                let after_opener = prev.is_none_or(|p| {
                     matches!(p, '(' | '[' | '{' | ':' | '-' | '/' | '\\') || p.is_whitespace()
                 });
-                let before_closer = next.map_or(true, |n| {
+                let before_closer = next.is_none_or(|n| {
                     matches!(n, ')' | ']' | '}' | ':' | '-' | '/' | '\\') || n.is_whitespace()
                 });
 

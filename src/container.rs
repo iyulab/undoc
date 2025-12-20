@@ -201,7 +201,7 @@ impl OoxmlContainer {
                                 "description" => meta.description = Some(text),
                                 "keywords" => {
                                     meta.keywords = text
-                                        .split(|c| c == ',' || c == ';')
+                                        .split([',', ';'])
                                         .map(|s| s.trim().to_string())
                                         .filter(|s| !s.is_empty())
                                         .collect();
@@ -280,8 +280,8 @@ impl OoxmlContainer {
 
     /// Resolve a relative path from a base path.
     pub fn resolve_path(base: &str, relative: &str) -> String {
-        if relative.starts_with('/') {
-            return relative[1..].to_string();
+        if let Some(stripped) = relative.strip_prefix('/') {
+            return stripped.to_string();
         }
 
         let base_path = Path::new(base);

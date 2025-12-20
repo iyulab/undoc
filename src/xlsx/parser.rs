@@ -177,8 +177,8 @@ impl XlsxParser {
 
             // Get the sheet path from relationships
             if let Some(target) = self.relationships.get(&sheet.rel_id) {
-                let sheet_path = if target.starts_with('/') {
-                    target[1..].to_string()
+                let sheet_path = if let Some(stripped) = target.strip_prefix('/') {
+                    stripped.to_string()
                 } else {
                     format!("xl/{}", target)
                 };

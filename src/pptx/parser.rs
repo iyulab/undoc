@@ -165,8 +165,8 @@ impl PptxParser {
 
             // Get the slide path from relationships
             if let Some(target) = self.relationships.get(&slide.rel_id) {
-                let slide_path = if target.starts_with('/') {
-                    target[1..].to_string()
+                let slide_path = if let Some(stripped) = target.strip_prefix('/') {
+                    stripped.to_string()
                 } else {
                     format!("ppt/{}", target)
                 };
