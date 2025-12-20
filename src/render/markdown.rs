@@ -112,15 +112,19 @@ fn escape_yaml(s: &str) -> String {
 fn render_paragraph(para: &Paragraph, options: &RenderOptions) -> String {
     let mut output = String::new();
 
+    // Merge adjacent runs with the same style to avoid issues like:
+    // **시** **험** **합** -> **시험합**
+    let merged_para = para.with_merged_runs();
+
     // Handle heading
-    if para.heading.is_heading() {
-        let level = para.heading.level().min(options.max_heading_level);
+    if merged_para.heading.is_heading() {
+        let level = merged_para.heading.level().min(options.max_heading_level);
         output.push_str(&"#".repeat(level as usize));
         output.push(' ');
     }
 
     // Handle list items
-    if let Some(ref list_info) = para.list_info {
+    if let Some(ref list_info) = merged_para.list_info {
         let indent = "  ".repeat(list_info.level as usize);
         output.push_str(&indent);
         match list_info.list_type {
@@ -137,7 +141,7 @@ fn render_paragraph(para: &Paragraph, options: &RenderOptions) -> String {
     }
 
     // Render text runs with smart spacing
-    for (i, run) in para.runs.iter().enumerate() {
+    for (i, run) in merged_para.runs.iter().enumerate() {
         let run_text = render_run(run, options);
 
         // Add space between runs if needed
@@ -206,20 +210,24 @@ fn render_run(run: &TextRun, options: &RenderOptions) -> String {
 
 /// Escape Markdown special characters.
 ///
-/// Note: Periods (.) are NOT escaped as they only have special meaning
-/// in ordered lists at the start of a line (e.g., "1."), not in regular text.
+/// Only escapes characters that are **always** special in Markdown regardless of position:
+/// - `\` - escape character
+/// - `` ` `` - inline code
+/// - `*` and `_` - emphasis/bold
+/// - `|` - table delimiter
+///
+/// Characters NOT escaped (only special in specific contexts):
+/// - `()`, `[]`, `{}` - only special in link/image syntax `[text](url)`
+/// - `#` - only special at start of line (headings)
+/// - `+`, `-` - only special at start of line (lists) or `---` (rules)
+/// - `!` - only special before `[` (images)
+/// - `.` - only special in ordered lists at line start (e.g., "1.")
 fn escape_markdown(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
     for c in s.chars() {
         match c {
-            // Core formatting: backslash, backtick, asterisk, underscore
-            '\\' | '`' | '*' | '_' |
-            // Braces, brackets, parentheses
-            '{' | '}' | '[' | ']' | '(' | ')' |
-            // Block markers: hash, plus, minus
-            '#' | '+' | '-' |
-            // Exclamation (for images), pipe (for tables)
-            '!' | '|' => {
+            // Only escape characters that are ALWAYS special regardless of position
+            '\\' | '`' | '*' | '_' | '|' => {
                 result.push('\\');
                 result.push(c);
             }
@@ -323,9 +331,9 @@ mod tests {
         let para = Paragraph::with_text("Hello, World!");
         let options = RenderOptions::default();
         let md = render_paragraph(&para, &options);
-        // Period is NOT escaped (only special in ordered list context)
-        // Exclamation IS escaped (could trigger image syntax)
-        assert_eq!(md, "Hello, World\\!");
+        // Most punctuation is NOT escaped - only special in specific contexts
+        // Only `\`, `` ` ``, `*`, `_`, `|` are always escaped
+        assert_eq!(md, "Hello, World!");
     }
 
     #[test]

@@ -290,6 +290,8 @@ impl DocxParser {
         let mut in_ppr = false;
         let mut in_rpr = false;
         let mut in_run = false;
+        let mut in_text = false; // Track w:t elements (regular text)
+        let mut in_instr_text = false; // Track w:instrText elements (field codes to skip)
         let mut current_style = TextStyle::default();
         let mut current_hyperlink: Option<String> = None;
 
@@ -303,6 +305,8 @@ impl DocxParser {
                             in_run = true;
                             current_style = TextStyle::default();
                         }
+                        b"w:t" => in_text = true,
+                        b"w:instrText" => in_instr_text = true,
                         b"w:hyperlink" => {
                             for attr in e.attributes().flatten() {
                                 if attr.key.as_ref() == b"r:id" {
@@ -411,7 +415,8 @@ impl DocxParser {
                     }
                 }
                 Ok(quick_xml::events::Event::Text(ref e)) => {
-                    if in_run {
+                    // Only extract text from w:t elements, skip w:instrText (field codes)
+                    if in_run && in_text && !in_instr_text {
                         let text = e.unescape().unwrap_or_default().to_string();
                         if !text.is_empty() {
                             let run = TextRun {
@@ -428,6 +433,8 @@ impl DocxParser {
                         b"w:pPr" => in_ppr = false,
                         b"w:rPr" => in_rpr = false,
                         b"w:r" => in_run = false,
+                        b"w:t" => in_text = false,
+                        b"w:instrText" => in_instr_text = false,
                         b"w:hyperlink" => current_hyperlink = None,
                         _ => {}
                     }
@@ -523,6 +530,8 @@ impl DocxParser {
         let mut in_row = false;
         let mut in_cell = false;
         let mut in_paragraph = false;
+        let mut in_text = false; // Track w:t elements (regular text)
+        let mut in_instr_text = false; // Track w:instrText elements (field codes to skip)
         let mut current_row: Option<Row> = None;
         let mut cell_text = String::new();
         let mut is_header_row = false;
@@ -551,6 +560,8 @@ impl DocxParser {
                         b"w:p" if in_cell => {
                             in_paragraph = true;
                         }
+                        b"w:t" => in_text = true,
+                        b"w:instrText" => in_instr_text = true,
                         _ => {}
                     }
                 }
@@ -582,7 +593,8 @@ impl DocxParser {
                     }
                 }
                 Ok(quick_xml::events::Event::Text(ref e)) => {
-                    if in_paragraph && in_cell {
+                    // Only extract text from w:t elements, skip w:instrText (field codes)
+                    if in_paragraph && in_cell && in_text && !in_instr_text {
                         let text = e.unescape().unwrap_or_default();
                         cell_text.push_str(&text);
                     }
@@ -616,6 +628,8 @@ impl DocxParser {
                         b"w:p" => {
                             in_paragraph = false;
                         }
+                        b"w:t" => in_text = false,
+                        b"w:instrText" => in_instr_text = false,
                         _ => {}
                     }
                 }

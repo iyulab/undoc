@@ -339,6 +339,49 @@ impl Paragraph {
     pub fn is_list_item(&self) -> bool {
         self.list_info.is_some()
     }
+
+    /// Merge consecutive runs with the same style.
+    ///
+    /// This is useful for documents where each character or word is in a separate run
+    /// with the same styling (common in Word documents with letter spacing).
+    ///
+    /// Example: `**시** **험**` becomes `**시험**` after merging.
+    pub fn merge_adjacent_runs(&mut self) {
+        if self.runs.len() <= 1 {
+            return;
+        }
+
+        let mut merged: Vec<TextRun> = Vec::with_capacity(self.runs.len());
+
+        for run in self.runs.drain(..) {
+            // Check if we can merge with the last run
+            let should_merge = merged.last().map_or(false, |last: &TextRun| {
+                // Same style and same hyperlink (both None or both Some with same URL)
+                last.style == run.style && last.hyperlink == run.hyperlink
+            });
+
+            if should_merge {
+                // Merge text with the last run
+                if let Some(last) = merged.last_mut() {
+                    last.text.push_str(&run.text);
+                }
+            } else {
+                // Start a new run
+                merged.push(run);
+            }
+        }
+
+        self.runs = merged;
+    }
+
+    /// Get a version of this paragraph with merged adjacent runs.
+    ///
+    /// This is a non-mutating version of `merge_adjacent_runs`.
+    pub fn with_merged_runs(&self) -> Self {
+        let mut para = self.clone();
+        para.merge_adjacent_runs();
+        para
+    }
 }
 
 #[cfg(test)]
