@@ -202,6 +202,37 @@ pub fn to_markdown_with_options(path: impl AsRef<Path>, options: &render::Render
     render::to_markdown(&doc, options)
 }
 
+/// Convert a document to plain text with render options.
+///
+/// # Example
+///
+/// ```no_run
+/// use undoc::{to_text, render::RenderOptions};
+///
+/// let text = to_text("document.docx", &RenderOptions::default())?;
+/// # Ok::<(), undoc::Error>(())
+/// ```
+pub fn to_text(path: impl AsRef<Path>, options: &render::RenderOptions) -> Result<String> {
+    let doc = parse_file(path)?;
+    render::to_text(&doc, options)
+}
+
+/// Convert a document to JSON.
+///
+/// # Example
+///
+/// ```no_run
+/// use undoc::{to_json, render::JsonFormat};
+///
+/// let json = to_json("document.docx", JsonFormat::Pretty)?;
+/// std::fs::write("output.json", json)?;
+/// # Ok::<(), undoc::Error>(())
+/// ```
+pub fn to_json(path: impl AsRef<Path>, format: render::JsonFormat) -> Result<String> {
+    let doc = parse_file(path)?;
+    render::to_json(&doc, format)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

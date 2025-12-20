@@ -72,9 +72,8 @@ pub fn to_markdown(doc: &Document, options: &RenderOptions) -> Result<String> {
     }
 
     // Apply cleanup if configured
-    let result = if let Some(ref _cleanup) = options.cleanup {
-        // TODO: Implement cleanup in Phase 5
-        output.trim().to_string()
+    let result = if let Some(ref cleanup) = options.cleanup {
+        super::cleanup::clean_text(&output, cleanup)
     } else {
         output.trim().to_string()
     };
