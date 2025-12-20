@@ -96,12 +96,32 @@ fn render_paragraph_text(para: &Paragraph) -> String {
         }
     }
 
-    // Concatenate text runs
-    for run in &para.runs {
+    // Concatenate text runs with smart spacing
+    for (i, run) in para.runs.iter().enumerate() {
+        // Add space between runs if needed
+        if i > 0 && !run.text.is_empty() && !output.is_empty() {
+            let last_char = output.chars().last();
+            let first_char = run.text.chars().next();
+
+            if let (Some(last), Some(first)) = (last_char, first_char) {
+                let needs_space = !last.is_whitespace()
+                    && !first.is_whitespace()
+                    && !is_no_space_before(first);
+                if needs_space {
+                    output.push(' ');
+                }
+            }
+        }
+
         output.push_str(&run.text);
     }
 
     output
+}
+
+/// Check if a character should NOT have a space before it.
+fn is_no_space_before(c: char) -> bool {
+    matches!(c, '.' | ',' | ':' | ';' | '!' | '?' | ')' | ']' | '}' | '"' | '\'' | '…')
 }
 
 /// Render a table to plain text (ASCII table).
@@ -116,15 +136,34 @@ fn render_table_text(table: &Table) -> String {
         return String::new();
     }
 
+    // Check if header row has fewer cells than data rows
+    let header_missing = if let Some(first_row) = table.rows.first() {
+        if first_row.cells.len() < col_count {
+            col_count - first_row.cells.len()
+        } else {
+            0
+        }
+    } else {
+        0
+    };
+
     let mut widths: Vec<usize> = vec![0; col_count];
 
-    for row in &table.rows {
+    // Calculate widths accounting for header placeholders
+    for (row_idx, row) in table.rows.iter().enumerate() {
+        let offset = if row_idx == 0 { header_missing } else { 0 };
         for (i, cell) in row.cells.iter().enumerate() {
-            if i < col_count {
+            let col_idx = i + offset;
+            if col_idx < col_count {
                 let text = cell.plain_text().replace('\n', " ");
-                widths[i] = widths[i].max(text.len());
+                widths[col_idx] = widths[col_idx].max(text.len());
             }
         }
+    }
+
+    // Add width for header placeholders
+    if header_missing > 0 {
+        widths[0] = widths[0].max(1); // "#" placeholder
     }
 
     // Minimum width of 3 for readability
@@ -145,15 +184,28 @@ fn render_table_text(table: &Table) -> String {
     // Rows
     for (row_idx, row) in table.rows.iter().enumerate() {
         output.push('|');
-        for (i, cell) in row.cells.iter().enumerate() {
-            if i < col_count {
-                let text = cell.plain_text().replace('\n', " ");
-                output.push_str(&format!(" {:width$} |", text, width = widths[i]));
+
+        // For header row, prepend placeholder columns
+        if row_idx == 0 && header_missing > 0 {
+            for j in 0..header_missing {
+                let placeholder = if j == 0 { "#" } else { "" };
+                output.push_str(&format!(" {:width$} |", placeholder, width = widths[j]));
             }
         }
-        // Pad missing cells
-        for i in row.cells.len()..col_count {
-            output.push_str(&format!(" {:width$} |", "", width = widths[i]));
+
+        for (i, cell) in row.cells.iter().enumerate() {
+            let col_idx = if row_idx == 0 { i + header_missing } else { i };
+            if col_idx < col_count {
+                let text = cell.plain_text().replace('\n', " ");
+                output.push_str(&format!(" {:width$} |", text, width = widths[col_idx]));
+            }
+        }
+
+        // Pad data rows if they have fewer cells
+        if row_idx > 0 {
+            for i in row.cells.len()..col_count {
+                output.push_str(&format!(" {:width$} |", "", width = widths[i]));
+            }
         }
         output.push('\n');
 

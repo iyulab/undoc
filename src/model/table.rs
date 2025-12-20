@@ -220,9 +220,9 @@ impl Table {
         self.rows.len()
     }
 
-    /// Get the number of columns (from the first row).
+    /// Get the maximum number of columns across all rows.
     pub fn column_count(&self) -> usize {
-        self.rows.first().map(|r| r.effective_columns()).unwrap_or(0)
+        self.rows.iter().map(|r| r.effective_columns()).max().unwrap_or(0)
     }
 
     /// Check if the table is empty.

@@ -136,12 +136,37 @@ fn render_paragraph(para: &Paragraph, options: &RenderOptions) -> String {
         }
     }
 
-    // Render text runs
-    for run in &para.runs {
-        output.push_str(&render_run(run, options));
+    // Render text runs with smart spacing
+    for (i, run) in para.runs.iter().enumerate() {
+        let run_text = render_run(run, options);
+
+        // Add space between runs if needed
+        if i > 0 && !run_text.is_empty() && !output.is_empty() {
+            let last_char = output.chars().last();
+            let first_char = run_text.chars().next();
+
+            // Add space if:
+            // - Previous run doesn't end with space/newline
+            // - Current run doesn't start with space/punctuation
+            if let (Some(last), Some(first)) = (last_char, first_char) {
+                let needs_space = !last.is_whitespace()
+                    && !first.is_whitespace()
+                    && !is_no_space_before(first);
+                if needs_space {
+                    output.push(' ');
+                }
+            }
+        }
+
+        output.push_str(&run_text);
     }
 
     output
+}
+
+/// Check if a character should NOT have a space before it.
+fn is_no_space_before(c: char) -> bool {
+    matches!(c, '.' | ',' | ':' | ';' | '!' | '?' | ')' | ']' | '}' | '"' | '\'' | '…')
 }
 
 /// Render a text run to Markdown.
@@ -180,12 +205,21 @@ fn render_run(run: &TextRun, options: &RenderOptions) -> String {
 }
 
 /// Escape Markdown special characters.
+///
+/// Note: Periods (.) are NOT escaped as they only have special meaning
+/// in ordered lists at the start of a line (e.g., "1."), not in regular text.
 fn escape_markdown(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
     for c in s.chars() {
         match c {
-            '\\' | '`' | '*' | '_' | '{' | '}' | '[' | ']' | '(' | ')' | '#' | '+' | '-' | '.'
-            | '!' | '|' => {
+            // Core formatting: backslash, backtick, asterisk, underscore
+            '\\' | '`' | '*' | '_' |
+            // Braces, brackets, parentheses
+            '{' | '}' | '[' | ']' | '(' | ')' |
+            // Block markers: hash, plus, minus
+            '#' | '+' | '-' |
+            // Exclamation (for images), pipe (for tables)
+            '!' | '|' => {
                 result.push('\\');
                 result.push(c);
             }
@@ -217,13 +251,27 @@ fn render_table(table: &Table, options: &RenderOptions) -> String {
     // Render rows
     for (i, row) in table.rows.iter().enumerate() {
         output.push('|');
+
+        // For header row, prepend placeholder columns if header has fewer cells than data
+        if i == 0 && row.cells.len() < col_count {
+            let missing_cols = col_count - row.cells.len();
+            for j in 0..missing_cols {
+                // Use "#" for first missing column (likely row number), empty for others
+                let placeholder = if j == 0 { "#" } else { "" };
+                output.push_str(&format!(" {} |", placeholder));
+            }
+        }
+
         for cell in &row.cells {
             let text = cell.plain_text().replace('\n', " ").replace('|', "\\|");
             output.push_str(&format!(" {} |", text));
         }
-        // Pad if row has fewer cells
-        for _ in row.cells.len()..col_count {
-            output.push_str(" |");
+
+        // Pad data rows if they have fewer cells
+        if i > 0 {
+            for _ in row.cells.len()..col_count {
+                output.push_str(" |");
+            }
         }
         output.push('\n');
 
@@ -275,6 +323,8 @@ mod tests {
         let para = Paragraph::with_text("Hello, World!");
         let options = RenderOptions::default();
         let md = render_paragraph(&para, &options);
+        // Period is NOT escaped (only special in ordered list context)
+        // Exclamation IS escaped (could trigger image syntax)
         assert_eq!(md, "Hello, World\\!");
     }
 
@@ -335,7 +385,8 @@ mod tests {
         let options = RenderOptions::default();
         let md = to_markdown(&doc, &options).unwrap();
         assert!(md.contains("# Test Document"));
-        assert!(md.contains("This is a test\\."));
+        // Period is NOT escaped (only special in ordered list context)
+        assert!(md.contains("This is a test."));
     }
 
     #[test]

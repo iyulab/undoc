@@ -130,14 +130,40 @@ cargo add undoc
 
 ## CLI Usage
 
+### Quick Start
+
+```bash
+# Extract all formats (Markdown, text, JSON) + media to output directory
+undoc document.docx
+
+# Specify output directory
+undoc document.docx ./output
+
+# With text cleanup for LLM training
+undoc document.docx --cleanup aggressive
+```
+
+### Output Structure
+
+```
+document_output/
+├── extract.md      # Markdown output with frontmatter
+├── extract.txt     # Plain text output
+├── content.json    # Full structured JSON
+└── media/          # Extracted images and media
+    └── image1.jpeg
+```
+
 ### Commands
 
 ```bash
-undoc markdown <file> [OPTIONS]    # Convert to Markdown (alias: md)
-undoc text <file> [OPTIONS]        # Convert to plain text
-undoc json <file> [OPTIONS]        # Convert to JSON
+undoc <file> [output]              # Extract all formats (default)
+undoc convert <file> [OPTIONS]     # Same as above, explicit command
+undoc markdown <file> [OPTIONS]    # Convert to Markdown only (alias: md)
+undoc text <file> [OPTIONS]        # Convert to plain text only
+undoc json <file> [OPTIONS]        # Convert to JSON only
 undoc info <file>                  # Show document information
-undoc extract <file> [OPTIONS]     # Extract resources (images, media)
+undoc extract <file> [OPTIONS]     # Extract resources only
 undoc update [OPTIONS]             # Self-update to latest version
 undoc version                      # Show version information
 ```

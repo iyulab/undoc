@@ -20,15 +20,45 @@ use undoc::render::{CleanupPreset, JsonFormat, RenderOptions, TableFallback};
     version,
     about = "Extract content from Office documents",
     long_about = "undoc - High-performance Microsoft Office document extraction tool.\n\n\
-                  Converts DOCX, XLSX, and PPTX files to Markdown, plain text, or JSON."
+                  Converts DOCX, XLSX, and PPTX files to Markdown, plain text, or JSON.\n\n\
+                  Usage:\n  \
+                  undoc <file>              Extract all formats to output directory\n  \
+                  undoc <file> <output>     Extract to specified directory\n  \
+                  undoc md <file>           Convert to Markdown only"
 )]
 struct Cli {
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
+
+    /// Input file path (for default conversion)
+    #[arg(global = false)]
+    input: Option<PathBuf>,
+
+    /// Output directory (for default conversion)
+    #[arg(global = false)]
+    output: Option<PathBuf>,
+
+    /// Apply text cleanup preset
+    #[arg(long, global = true)]
+    cleanup: Option<CleanupMode>,
 }
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Convert a document (default command - extracts all formats)
+    Convert {
+        /// Input file path
+        input: PathBuf,
+
+        /// Output directory (default: <filename>_output)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+
+        /// Apply text cleanup
+        #[arg(long)]
+        cleanup: Option<CleanupMode>,
+    },
+
     /// Convert a document to Markdown
     #[command(visible_alias = "md")]
     Markdown {
@@ -167,7 +197,27 @@ fn main() {
 }
 
 fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
-    match cli.command {
+    // Handle default command (undoc <file> [output])
+    if cli.command.is_none() {
+        if let Some(input) = cli.input {
+            return run_convert(&input, cli.output.as_ref(), cli.cleanup);
+        } else {
+            // No input provided, show help
+            use clap::CommandFactory;
+            Cli::command().print_help()?;
+            return Ok(());
+        }
+    }
+
+    match cli.command.unwrap() {
+        Commands::Convert {
+            input,
+            output,
+            cleanup,
+        } => {
+            run_convert(&input, output.as_ref(), cleanup)?;
+        }
+
         Commands::Markdown {
             input,
             output,
@@ -353,6 +403,97 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Run the default convert command - extracts all formats to output directory
+fn run_convert(
+    input: &PathBuf,
+    output: Option<&PathBuf>,
+    cleanup: Option<CleanupMode>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let pb = create_spinner("Parsing document...");
+
+    // Determine output directory
+    let output_dir = match output {
+        Some(p) => p.clone(),
+        None => {
+            let stem = input
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            let parent = input.parent().unwrap_or(std::path::Path::new("."));
+            parent.join(format!("{}_output", stem))
+        }
+    };
+
+    // Create output directory
+    fs::create_dir_all(&output_dir)?;
+
+    // Parse document
+    let doc = undoc::parse_file(input)?;
+
+    // Prepare render options
+    let mut options = RenderOptions::new().with_frontmatter(true);
+    if let Some(mode) = cleanup {
+        options = options.with_cleanup_preset(mode.into());
+    }
+
+    // Generate Markdown
+    pb.set_message("Generating Markdown...");
+    let markdown = undoc::render::to_markdown(&doc, &options)?;
+    let md_path = output_dir.join("extract.md");
+    fs::write(&md_path, &markdown)?;
+
+    // Generate plain text
+    pb.set_message("Generating text...");
+    let text = undoc::render::to_text(&doc, &options)?;
+    let txt_path = output_dir.join("extract.txt");
+    fs::write(&txt_path, &text)?;
+
+    // Generate JSON
+    pb.set_message("Generating JSON...");
+    let json = undoc::render::to_json(&doc, JsonFormat::Pretty)?;
+    let json_path = output_dir.join("content.json");
+    fs::write(&json_path, &json)?;
+
+    // Extract resources
+    let mut resource_count = 0;
+    if !doc.resources.is_empty() {
+        pb.set_message("Extracting resources...");
+        let media_dir = output_dir.join("media");
+        fs::create_dir_all(&media_dir)?;
+
+        for (id, resource) in &doc.resources {
+            let filename = resource.suggested_filename(id);
+            let path = media_dir.join(&filename);
+            fs::write(&path, &resource.data)?;
+            resource_count += 1;
+        }
+    }
+
+    pb.finish_and_clear();
+
+    // Print summary
+    println!("{}", "Conversion Complete".green().bold());
+    println!("{}", "─".repeat(40));
+    println!("{}: {}", "Output".bold(), output_dir.display());
+    println!("  {} extract.md", "✓".green());
+    println!("  {} extract.txt", "✓".green());
+    println!("  {} content.json", "✓".green());
+    if resource_count > 0 {
+        println!("  {} media/ ({} files)", "✓".green(), resource_count);
+    }
+
+    // Print statistics
+    let word_count = text.split_whitespace().count();
+    println!("\n{}", "Statistics".cyan().bold());
+    println!("{}", "─".repeat(40));
+    println!("{}: {}", "Sections".bold(), doc.sections.len());
+    println!("{}: {}", "Words".bold(), word_count);
+    println!("{}: {}", "Resources".bold(), resource_count);
+
+    Ok(())
+}
+
 fn print_version() {
     println!("{} {}", "undoc".green().bold(), env!("CARGO_PKG_VERSION"));
     println!("High-performance Microsoft Office document extraction to Markdown");
@@ -387,7 +528,6 @@ fn write_output(path: Option<&PathBuf>, content: &str) -> Result<(), Box<dyn std
     }
     Ok(())
 }
-
 
 #[cfg(test)]
 mod tests {
