@@ -1,0 +1,20 @@
+[package]
+name = "undoc-cli"
+version = "0.1.0"
+edition = "2021"
+authors = ["iyulab"]
+description = "CLI for undoc - Microsoft Office document extraction"
+license = "MIT"
+repository = "https://github.com/iyulab/undoc"
+
+[[bin]]
+name = "undoc"
+path = "src/main.rs"
+
+[dependencies]
+undoc = { path = ".." }
+clap = { version = "4.5", features = ["derive"] }
+colored = "2.1"
+indicatif = "0.17"
+self_update = "0.41"
+tokio = { version = "1.42", features = ["rt-multi-thread", "macros"] }
