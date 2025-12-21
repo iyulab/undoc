@@ -510,6 +510,8 @@ impl DocxParser {
     /// Parse a table element.
     #[allow(clippy::only_used_in_recursion)] // &self needed for recursive nested table parsing
     fn parse_table(&self, xml: &str) -> Result<Table> {
+        use crate::model::InlineImage;
+
         let mut table = Table::new();
         let mut reader = quick_xml::Reader::from_str(xml);
         reader.config_mut().trim_text(true);
@@ -522,6 +524,8 @@ impl DocxParser {
         let mut in_rpr = false; // Track w:rPr (run properties for formatting)
         let mut in_text = false; // Track w:t elements (regular text)
         let mut in_instr_text = false; // Track w:instrText elements (field codes to skip)
+        let mut in_drawing = false; // Track w:drawing elements for images
+        let mut current_image_alt: Option<String> = None;
         let mut current_row: Option<Row> = None;
         let mut cell_paragraphs: Vec<Paragraph> = Vec::new();
         let mut cell_nested_tables: Vec<Table> = Vec::new();
@@ -593,6 +597,10 @@ impl DocxParser {
                         b"w:rPr" if in_run => in_rpr = true,
                         b"w:t" => in_text = true,
                         b"w:instrText" => in_instr_text = true,
+                        b"w:drawing" => {
+                            in_drawing = true;
+                            current_image_alt = None;
+                        }
                         _ => {}
                     }
                 }
@@ -657,6 +665,33 @@ impl DocxParser {
                         b"w:strike" if in_rpr => {
                             let val = get_bool_attr(e, b"w:val");
                             current_style.strikethrough = val.unwrap_or(true);
+                        }
+                        // Image handling: wp:docPr contains alt text
+                        b"wp:docPr" if in_drawing => {
+                            for attr in e.attributes().flatten() {
+                                if attr.key.as_ref() == b"descr" {
+                                    current_image_alt =
+                                        Some(String::from_utf8_lossy(&attr.value).to_string());
+                                }
+                            }
+                        }
+                        // Image handling: a:blip contains the image reference
+                        b"a:blip" if in_drawing => {
+                            for attr in e.attributes().flatten() {
+                                if attr.key.as_ref() == b"r:embed" {
+                                    let rel_id = String::from_utf8_lossy(&attr.value).to_string();
+                                    // Create inline image with the relationship ID
+                                    let image = InlineImage {
+                                        resource_id: rel_id,
+                                        alt_text: current_image_alt.clone(),
+                                        width: None,
+                                        height: None,
+                                    };
+                                    if let Some(ref mut para) = current_paragraph {
+                                        para.images.push(image);
+                                    }
+                                }
+                            }
                         }
                         _ => {}
                     }
@@ -754,6 +789,10 @@ impl DocxParser {
                         b"w:rPr" => in_rpr = false,
                         b"w:t" => in_text = false,
                         b"w:instrText" => in_instr_text = false,
+                        b"w:drawing" => {
+                            in_drawing = false;
+                            current_image_alt = None;
+                        }
                         _ => {}
                     }
                 }
