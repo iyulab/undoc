@@ -243,7 +243,8 @@ impl PptxParser {
     fn parse_tables(&self, xml: &str) -> Result<Vec<Table>> {
         let mut tables = Vec::new();
         let mut reader = quick_xml::Reader::from_str(xml);
-        reader.config_mut().trim_text(true);
+        // Don't trim text - preserve whitespace from xml:space="preserve" elements
+        reader.config_mut().trim_text(false);
 
         let mut buf = Vec::new();
         let mut in_table = false;
@@ -412,7 +413,8 @@ impl PptxParser {
     fn parse_text_content_excluding_tables(&self, xml: &str) -> Result<Vec<Paragraph>> {
         let mut paragraphs = Vec::new();
         let mut reader = quick_xml::Reader::from_str(xml);
-        reader.config_mut().trim_text(true);
+        // Don't trim text - preserve whitespace from xml:space="preserve" elements
+        reader.config_mut().trim_text(false);
 
         let mut buf = Vec::new();
         let mut in_table = false;
@@ -559,7 +561,8 @@ impl PptxParser {
     fn parse_text_content(&self, xml: &str) -> Result<Vec<Paragraph>> {
         let mut paragraphs = Vec::new();
         let mut reader = quick_xml::Reader::from_str(xml);
-        reader.config_mut().trim_text(true);
+        // Don't trim text - preserve whitespace from xml:space="preserve" elements
+        reader.config_mut().trim_text(false);
 
         let mut buf = Vec::new();
         let mut in_paragraph = false;

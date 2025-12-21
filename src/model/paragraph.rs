@@ -415,34 +415,23 @@ impl Paragraph {
             return false;
         }
 
-        // For CJK characters followed by ASCII (or vice versa), add space
-        let last_is_cjk = is_cjk_char(last_char);
-        let first_is_cjk = is_cjk_char(first_char);
-        let last_is_ascii_alnum = last_char.is_ascii_alphanumeric();
-        let first_is_ascii_alnum = first_char.is_ascii_alphanumeric();
-
-        // CJK → ASCII alphanumeric: add space
-        if last_is_cjk && first_is_ascii_alnum {
-            return true;
-        }
-        // ASCII alphanumeric → CJK: add space
-        if last_is_ascii_alnum && first_is_cjk {
-            return true;
-        }
-
         // Same-style runs = same word (artificially split by Word)
-        // This applies to ALL scripts: ASCII, CJK, Hangul, etc.
+        // This applies to ALL scripts: ASCII, CJK, Hangul, mixed scripts, etc.
         //
-        // ASCII example: "DRBD" stored as ["DRB", "D"] → "DRBD"
-        // Hangul example: "정의" stored as ["정", "의"] → "정의"
-        // Hangul example: "노드" stored as ["노", "드"] → "노드"
+        // Examples of runs that should NOT have spaces added:
+        // - "DRBD" stored as ["DRB", "D"] → "DRBD"
+        // - "정의" stored as ["정", "의"] → "정의"
+        // - "CJ대한통운" stored as ["C", "J", "대한통운"] → "CJ대한통운" (brand name)
         //
         // Key insight: Word splits runs for various reasons (formatting, editing history),
         // but same-style consecutive runs are ALWAYS part of the same word.
         // If they were different words, they would have explicit whitespace between them.
         //
         // Note: Korean DOES use spaces between words, but those spaces exist in the
-        // source document. We don't need to invent them.
+        // source document (with xml:space="preserve"). We don't invent spaces.
+        //
+        // Previously this function added spaces at ASCII↔CJK boundaries, but this was
+        // incorrect for Korean brand names like "CJ대한통운" where the intent is no space.
         false
     }
 
@@ -454,34 +443,6 @@ impl Paragraph {
         para.merge_adjacent_runs();
         para
     }
-}
-
-/// Check if a character is a CJK (Chinese, Japanese, Korean) character.
-fn is_cjk_char(c: char) -> bool {
-    matches!(c,
-        // CJK Unified Ideographs
-        '\u{4E00}'..='\u{9FFF}' |
-        // CJK Unified Ideographs Extension A
-        '\u{3400}'..='\u{4DBF}' |
-        // CJK Unified Ideographs Extension B
-        '\u{20000}'..='\u{2A6DF}' |
-        // CJK Compatibility Ideographs
-        '\u{F900}'..='\u{FAFF}' |
-        // Hangul Syllables (Korean)
-        '\u{AC00}'..='\u{D7AF}' |
-        // Hangul Jamo
-        '\u{1100}'..='\u{11FF}' |
-        // Hangul Compatibility Jamo
-        '\u{3130}'..='\u{318F}' |
-        // Hiragana
-        '\u{3040}'..='\u{309F}' |
-        // Katakana
-        '\u{30A0}'..='\u{30FF}' |
-        // Katakana Phonetic Extensions
-        '\u{31F0}'..='\u{31FF}' |
-        // CJK Symbols and Punctuation
-        '\u{3000}'..='\u{303F}'
-    )
 }
 
 #[cfg(test)]
@@ -579,27 +540,29 @@ mod tests {
     }
 
     #[test]
-    fn test_merge_adjacent_runs_cjk_ascii_spacing() {
-        // CJK followed by ASCII should add space for readability
+    fn test_merge_adjacent_runs_cjk_ascii_no_space() {
+        // Same-style runs merge WITHOUT space - even across script boundaries
+        // Example: "VIP리소스" is a valid Korean compound where VIP is a brand/term
         let mut para = Paragraph::new();
         para.runs.push(TextRun::plain("리소스"));
         para.runs.push(TextRun::plain("DRBD"));
         para.merge_adjacent_runs();
 
         assert_eq!(para.runs.len(), 1);
-        assert_eq!(para.runs[0].text, "리소스 DRBD"); // Space added between CJK and ASCII
+        assert_eq!(para.runs[0].text, "리소스DRBD"); // No space - same-style runs = same word
     }
 
     #[test]
-    fn test_merge_adjacent_runs_ascii_cjk_spacing() {
-        // ASCII followed by CJK should add space for readability
+    fn test_merge_adjacent_runs_ascii_cjk_no_space() {
+        // Same-style runs merge WITHOUT space - even across script boundaries
+        // Example: "CJ대한통운" is a brand name where CJ is part of the Korean name
         let mut para = Paragraph::new();
-        para.runs.push(TextRun::plain("DRBD"));
-        para.runs.push(TextRun::plain("리소스"));
+        para.runs.push(TextRun::plain("CJ"));
+        para.runs.push(TextRun::plain("대한통운"));
         para.merge_adjacent_runs();
 
         assert_eq!(para.runs.len(), 1);
-        assert_eq!(para.runs[0].text, "DRBD 리소스"); // Space added between ASCII and CJK
+        assert_eq!(para.runs[0].text, "CJ대한통운"); // No space - brand name
     }
 
     #[test]

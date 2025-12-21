@@ -242,7 +242,8 @@ impl DocxParser {
 
         let mut para = Paragraph::new();
         let mut reader = quick_xml::Reader::from_str(xml);
-        reader.config_mut().trim_text(true);
+        // Don't trim text - preserve whitespace from xml:space="preserve" elements
+        reader.config_mut().trim_text(false);
 
         let mut buf = Vec::new();
         let mut in_ppr = false;
@@ -514,7 +515,8 @@ impl DocxParser {
 
         let mut table = Table::new();
         let mut reader = quick_xml::Reader::from_str(xml);
-        reader.config_mut().trim_text(true);
+        // Don't trim text - preserve whitespace from xml:space="preserve" elements
+        reader.config_mut().trim_text(false);
 
         let mut buf = Vec::new();
         let mut in_row = false;
