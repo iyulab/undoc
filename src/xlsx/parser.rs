@@ -283,6 +283,7 @@ impl XlsxParser {
                                     runs: vec![TextRun::plain(&value)],
                                     ..Default::default()
                                 }],
+                                nested_tables: Vec::new(),
                                 col_span: 1,
                                 row_span: 1,
                                 alignment: CellAlignment::Left,

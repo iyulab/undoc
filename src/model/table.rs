@@ -30,6 +30,10 @@ pub struct Cell {
     #[serde(default)]
     pub content: Vec<Paragraph>,
 
+    /// Nested tables within this cell
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub nested_tables: Vec<Table>,
+
     /// Horizontal span (colspan)
     #[serde(default = "default_span", skip_serializing_if = "is_default_span")]
     pub col_span: u32,

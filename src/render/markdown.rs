@@ -168,6 +168,16 @@ fn render_paragraph(para: &Paragraph, options: &RenderOptions) -> String {
         output.push_str(&run_text);
     }
 
+    // Render inline images
+    for image in &para.images {
+        if !output.is_empty() {
+            output.push('\n');
+        }
+        let alt = image.alt_text.as_deref().unwrap_or("image");
+        let path = format!("{}{}", options.image_path_prefix, image.resource_id);
+        output.push_str(&format!("![{}]({})", alt, path));
+    }
+
     output
 }
 
@@ -298,8 +308,9 @@ fn render_cell_content(cell: &crate::model::Cell, options: &RenderOptions) -> St
                 let first_char = run_text.chars().next();
 
                 if let (Some(last), Some(first)) = (last_char, first_char) {
-                    let needs_space =
-                        !last.is_whitespace() && !first.is_whitespace() && !is_no_space_before(first);
+                    let needs_space = !last.is_whitespace()
+                        && !first.is_whitespace()
+                        && !is_no_space_before(first);
                     if needs_space {
                         para_text.push(' ');
                     }
@@ -311,6 +322,18 @@ fn render_cell_content(cell: &crate::model::Cell, options: &RenderOptions) -> St
 
         if !para_text.is_empty() {
             parts.push(para_text);
+        }
+    }
+
+    // Render nested tables inline (flatten their content)
+    for nested_table in &cell.nested_tables {
+        for row in &nested_table.rows {
+            for nested_cell in &row.cells {
+                let nested_content = render_cell_content(nested_cell, options);
+                if !nested_content.is_empty() {
+                    parts.push(nested_content);
+                }
+            }
         }
     }
 
@@ -521,6 +544,7 @@ mod tests {
 
         let cell = Cell {
             content: vec![bold_para],
+            nested_tables: Vec::new(),
             col_span: 1,
             row_span: 1,
             alignment: crate::model::CellAlignment::Left,
@@ -562,6 +586,7 @@ mod tests {
 
         let cell = Cell {
             content: vec![italic_para],
+            nested_tables: Vec::new(),
             col_span: 1,
             row_span: 1,
             alignment: crate::model::CellAlignment::Left,
@@ -601,6 +626,7 @@ mod tests {
 
         let cell = Cell {
             content: vec![para1, para2],
+            nested_tables: Vec::new(),
             col_span: 1,
             row_span: 1,
             alignment: crate::model::CellAlignment::Left,
@@ -653,6 +679,7 @@ mod tests {
 
         let cell1 = Cell {
             content: vec![para1],
+            nested_tables: Vec::new(),
             col_span: 1,
             row_span: 1,
             alignment: crate::model::CellAlignment::Left,
@@ -663,6 +690,7 @@ mod tests {
 
         let cell2 = Cell {
             content: vec![para2],
+            nested_tables: Vec::new(),
             col_span: 1,
             row_span: 1,
             alignment: crate::model::CellAlignment::Left,

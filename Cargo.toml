@@ -4,7 +4,7 @@ resolver = "2"
 
 [package]
 name = "undoc"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2021"
 authors = ["iyulab"]
 description = "High-performance Microsoft Office document extraction to Markdown"

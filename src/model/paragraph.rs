@@ -257,6 +257,10 @@ pub struct Paragraph {
     #[serde(default)]
     pub runs: Vec<TextRun>,
 
+    /// Inline images in this paragraph
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<InlineImage>,
+
     /// Heading level
     #[serde(default, skip_serializing_if = "HeadingLevel::is_none")]
     pub heading: HeadingLevel,
@@ -426,25 +430,19 @@ impl Paragraph {
             return true;
         }
 
-        // ASCII → ASCII: NO space needed when merging same-style runs.
-        // If Word stored "DRBD" as separate runs ["DRB", "D"] with same style,
-        // they should merge to "DRBD", not "DRB D".
-        // Note: Different-style runs are NOT merged, so this only affects
-        // runs that were artificially split in the source document.
-
-        // Korean (Hangul) → Korean: ADD space
-        // Unlike Chinese/Japanese, Korean uses spaces between words (like English).
-        // When Word stores Korean words in separate runs without explicit spaces,
-        // they represent different words that should be separated.
-        // Example: ["서버", "리부팅"] → "서버 리부팅" (server reboot)
-        let last_is_hangul = is_hangul_char(last_char);
-        let first_is_hangul = is_hangul_char(first_char);
-        if last_is_hangul && first_is_hangul {
-            return true;
-        }
-
-        // Other CJK → CJK: no space needed (natural in Chinese/Japanese)
-        // ASCII → ASCII: no space needed (same word split into runs)
+        // Same-style runs = same word (artificially split by Word)
+        // This applies to ALL scripts: ASCII, CJK, Hangul, etc.
+        //
+        // ASCII example: "DRBD" stored as ["DRB", "D"] → "DRBD"
+        // Hangul example: "정의" stored as ["정", "의"] → "정의"
+        // Hangul example: "노드" stored as ["노", "드"] → "노드"
+        //
+        // Key insight: Word splits runs for various reasons (formatting, editing history),
+        // but same-style consecutive runs are ALWAYS part of the same word.
+        // If they were different words, they would have explicit whitespace between them.
+        //
+        // Note: Korean DOES use spaces between words, but those spaces exist in the
+        // source document. We don't need to invent them.
         false
     }
 
@@ -483,24 +481,6 @@ fn is_cjk_char(c: char) -> bool {
         '\u{31F0}'..='\u{31FF}' |
         // CJK Symbols and Punctuation
         '\u{3000}'..='\u{303F}'
-    )
-}
-
-/// Check if a character is Korean Hangul.
-/// Korean uses spaces between words (unlike Chinese/Japanese),
-/// so we need to add spaces when merging Hangul runs from different positions.
-fn is_hangul_char(c: char) -> bool {
-    matches!(c,
-        // Hangul Syllables (most common)
-        '\u{AC00}'..='\u{D7AF}' |
-        // Hangul Jamo (consonants and vowels)
-        '\u{1100}'..='\u{11FF}' |
-        // Hangul Compatibility Jamo
-        '\u{3130}'..='\u{318F}' |
-        // Hangul Jamo Extended-A
-        '\u{A960}'..='\u{A97F}' |
-        // Hangul Jamo Extended-B
-        '\u{D7B0}'..='\u{D7FF}'
     )
 }
 
@@ -623,33 +603,47 @@ mod tests {
     }
 
     #[test]
-    fn test_merge_adjacent_runs_korean_word_spacing() {
-        // Korean (Hangul) words in separate runs should add space
-        // Unlike Chinese/Japanese, Korean uses spaces between words
+    fn test_merge_adjacent_runs_korean_no_space() {
+        // Korean: Same-style runs merge WITHOUT space (like ASCII, Chinese, Japanese)
+        // Word may split a single word into multiple runs for various reasons.
+        // Example: "정의" stored as ["정", "의"] should become "정의", not "정 의"
         let mut para = Paragraph::new();
         para.runs.push(TextRun::plain("네트워크"));
         para.runs.push(TextRun::plain("카드"));
         para.merge_adjacent_runs();
 
         assert_eq!(para.runs.len(), 1);
-        assert_eq!(para.runs[0].text, "네트워크 카드"); // Space between Korean words
+        assert_eq!(para.runs[0].text, "네트워크카드"); // No space - same word or compound
     }
 
     #[test]
-    fn test_merge_adjacent_runs_korean_word_spacing_sentence() {
-        // Test Korean sentence: "서버 리부팅" (server reboot)
+    fn test_merge_adjacent_runs_korean_syllables() {
+        // When Word splits Korean syllables, they should merge without space
+        // This was the bug: "정의" → "정 의" (wrong) instead of "정의" (correct)
         let mut para = Paragraph::new();
-        para.runs.push(TextRun::plain("서버"));
+        para.runs.push(TextRun::plain("정"));
+        para.runs.push(TextRun::plain("의"));
+        para.merge_adjacent_runs();
+
+        assert_eq!(para.runs.len(), 1);
+        assert_eq!(para.runs[0].text, "정의"); // Syllables merge without space
+    }
+
+    #[test]
+    fn test_merge_adjacent_runs_korean_with_explicit_space() {
+        // When source has explicit space, it's preserved in the run text
+        let mut para = Paragraph::new();
+        para.runs.push(TextRun::plain("서버 ")); // Note: space is in the text
         para.runs.push(TextRun::plain("리부팅"));
         para.merge_adjacent_runs();
 
         assert_eq!(para.runs.len(), 1);
-        assert_eq!(para.runs[0].text, "서버 리부팅"); // Space between Korean words
+        assert_eq!(para.runs[0].text, "서버 리부팅"); // Space preserved from source
     }
 
     #[test]
     fn test_merge_adjacent_runs_chinese_no_space() {
-        // Chinese characters should NOT add space (unlike Korean)
+        // Chinese: Same-style runs merge without space
         let mut para = Paragraph::new();
         para.runs.push(TextRun::plain("中文"));
         para.runs.push(TextRun::plain("测试"));
@@ -661,7 +655,7 @@ mod tests {
 
     #[test]
     fn test_merge_adjacent_runs_japanese_no_space() {
-        // Japanese characters should NOT add space (unlike Korean)
+        // Japanese: Same-style runs merge without space
         let mut para = Paragraph::new();
         para.runs.push(TextRun::plain("日本語"));
         para.runs.push(TextRun::plain("テスト"));

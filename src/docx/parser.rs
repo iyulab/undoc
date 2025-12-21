@@ -96,7 +96,7 @@ impl DocxParser {
         let mut paragraph_xml = String::new();
         let mut table_xml = String::new();
         let mut in_paragraph = false;
-        let mut in_table = false;
+        let mut table_depth: u32 = 0; // Track nested table depth
 
         loop {
             match reader.read_event_into(&mut buf) {
@@ -106,7 +106,7 @@ impl DocxParser {
                         b"w:body" => {
                             in_body = true;
                         }
-                        b"w:p" if in_body && !in_table => {
+                        b"w:p" if in_body && table_depth == 0 => {
                             in_paragraph = true;
                             paragraph_xml.clear();
                             paragraph_xml.push_str("<w:p");
@@ -120,8 +120,11 @@ impl DocxParser {
                             paragraph_xml.push('>');
                         }
                         b"w:tbl" if in_body => {
-                            in_table = true;
-                            table_xml.clear();
+                            if table_depth == 0 {
+                                // Start collecting table XML
+                                table_xml.clear();
+                            }
+                            table_depth += 1;
                             table_xml.push_str("<w:tbl>");
                         }
                         _ => {
@@ -136,7 +139,7 @@ impl DocxParser {
                                     ));
                                 }
                                 paragraph_xml.push('>');
-                            } else if in_table {
+                            } else if table_depth > 0 {
                                 table_xml.push('<');
                                 table_xml.push_str(&String::from_utf8_lossy(name.as_ref()));
                                 for attr in e.attributes().flatten() {
@@ -164,7 +167,7 @@ impl DocxParser {
                             ));
                         }
                         paragraph_xml.push_str("/>");
-                    } else if in_table {
+                    } else if table_depth > 0 {
                         let name = e.name();
                         table_xml.push('<');
                         table_xml.push_str(&String::from_utf8_lossy(name.as_ref()));
@@ -182,7 +185,7 @@ impl DocxParser {
                     if in_paragraph {
                         let text = e.unescape().unwrap_or_default();
                         paragraph_xml.push_str(&escape_xml(&text));
-                    } else if in_table {
+                    } else if table_depth > 0 {
                         let text = e.unescape().unwrap_or_default();
                         table_xml.push_str(&escape_xml(&text));
                     }
@@ -193,26 +196,29 @@ impl DocxParser {
                         b"w:body" => {
                             in_body = false;
                         }
-                        b"w:p" if in_paragraph && !in_table => {
+                        b"w:p" if in_paragraph && table_depth == 0 => {
                             paragraph_xml.push_str("</w:p>");
                             if let Ok(para) = self.parse_paragraph(&paragraph_xml) {
                                 section.add_block(Block::Paragraph(para));
                             }
                             in_paragraph = false;
                         }
-                        b"w:tbl" if in_table => {
+                        b"w:tbl" if table_depth > 0 => {
                             table_xml.push_str("</w:tbl>");
-                            if let Ok(table) = self.parse_table(&table_xml) {
-                                section.add_block(Block::Table(table));
+                            table_depth -= 1;
+                            if table_depth == 0 {
+                                // Finished collecting outermost table - now parse it
+                                if let Ok(table) = self.parse_table(&table_xml) {
+                                    section.add_block(Block::Table(table));
+                                }
                             }
-                            in_table = false;
                         }
                         _ => {
                             if in_paragraph {
                                 paragraph_xml.push_str("</");
                                 paragraph_xml.push_str(&String::from_utf8_lossy(name.as_ref()));
                                 paragraph_xml.push('>');
-                            } else if in_table {
+                            } else if table_depth > 0 {
                                 table_xml.push_str("</");
                                 table_xml.push_str(&String::from_utf8_lossy(name.as_ref()));
                                 table_xml.push('>');
@@ -232,6 +238,8 @@ impl DocxParser {
 
     /// Parse a single paragraph element.
     fn parse_paragraph(&mut self, xml: &str) -> Result<Paragraph> {
+        use crate::model::InlineImage;
+
         let mut para = Paragraph::new();
         let mut reader = quick_xml::Reader::from_str(xml);
         reader.config_mut().trim_text(true);
@@ -242,8 +250,10 @@ impl DocxParser {
         let mut in_run = false;
         let mut in_text = false; // Track w:t elements (regular text)
         let mut in_instr_text = false; // Track w:instrText elements (field codes to skip)
+        let mut in_drawing = false; // Track w:drawing elements for images
         let mut current_style = TextStyle::default();
         let mut current_hyperlink: Option<String> = None;
+        let mut current_image_alt: Option<String> = None;
 
         loop {
             match reader.read_event_into(&mut buf) {
@@ -256,6 +266,10 @@ impl DocxParser {
                     }
                     b"w:t" => in_text = true,
                     b"w:instrText" => in_instr_text = true,
+                    b"w:drawing" => {
+                        in_drawing = true;
+                        current_image_alt = None;
+                    }
                     b"w:hyperlink" => {
                         for attr in e.attributes().flatten() {
                             if attr.key.as_ref() == b"r:id" {
@@ -358,6 +372,31 @@ impl DocxParser {
                             }
                         }
                     }
+                    // Image handling: wp:docPr contains alt text
+                    b"wp:docPr" if in_drawing => {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.as_ref() == b"descr" {
+                                current_image_alt =
+                                    Some(String::from_utf8_lossy(&attr.value).to_string());
+                            }
+                        }
+                    }
+                    // Image handling: a:blip contains the image reference
+                    b"a:blip" if in_drawing => {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.as_ref() == b"r:embed" {
+                                let rel_id = String::from_utf8_lossy(&attr.value).to_string();
+                                // Create inline image with the relationship ID
+                                let image = InlineImage {
+                                    resource_id: rel_id,
+                                    alt_text: current_image_alt.clone(),
+                                    width: None,
+                                    height: None,
+                                };
+                                para.images.push(image);
+                            }
+                        }
+                    }
                     _ => {}
                 },
                 Ok(quick_xml::events::Event::Text(ref e)) => {
@@ -381,6 +420,10 @@ impl DocxParser {
                     b"w:t" => in_text = false,
                     b"w:instrText" => in_instr_text = false,
                     b"w:hyperlink" => current_hyperlink = None,
+                    b"w:drawing" => {
+                        in_drawing = false;
+                        current_image_alt = None;
+                    }
                     _ => {}
                 },
                 Ok(quick_xml::events::Event::Eof) => break,
@@ -465,6 +508,7 @@ impl DocxParser {
     }
 
     /// Parse a table element.
+    #[allow(clippy::only_used_in_recursion)] // &self needed for recursive nested table parsing
     fn parse_table(&self, xml: &str) -> Result<Table> {
         let mut table = Table::new();
         let mut reader = quick_xml::Reader::from_str(xml);
@@ -480,90 +524,151 @@ impl DocxParser {
         let mut in_instr_text = false; // Track w:instrText elements (field codes to skip)
         let mut current_row: Option<Row> = None;
         let mut cell_paragraphs: Vec<Paragraph> = Vec::new();
+        let mut cell_nested_tables: Vec<Table> = Vec::new();
         let mut current_paragraph: Option<Paragraph> = None;
         let mut current_style = TextStyle::default();
         let mut is_header_row = false;
         let mut col_span = 1u32;
         let mut row_span = 1u32;
 
+        // Track nested table depth (0 = we're at the main table level)
+        // 1+ = we're inside a nested table and should collect its XML
+        let mut nested_table_depth: u32 = 0;
+        let mut nested_table_xml = String::new();
+
         loop {
             match reader.read_event_into(&mut buf) {
-                Ok(quick_xml::events::Event::Start(ref e)) => match e.name().as_ref() {
-                    b"w:tr" => {
-                        in_row = true;
-                        current_row = Some(Row {
-                            cells: Vec::new(),
-                            is_header: false,
-                            height: None,
-                        });
-                        is_header_row = false;
-                    }
-                    b"w:tc" => {
-                        in_cell = true;
-                        cell_paragraphs.clear();
-                        col_span = 1;
-                        row_span = 1;
-                    }
-                    b"w:p" if in_cell => {
-                        in_paragraph = true;
-                        current_paragraph = Some(Paragraph::new());
-                    }
-                    b"w:r" if in_paragraph => {
-                        in_run = true;
-                        current_style = TextStyle::default();
-                    }
-                    b"w:rPr" if in_run => in_rpr = true,
-                    b"w:t" => in_text = true,
-                    b"w:instrText" => in_instr_text = true,
-                    _ => {}
-                },
-                Ok(quick_xml::events::Event::Empty(ref e)) => match e.name().as_ref() {
-                    b"w:tblHeader" if in_row => {
-                        is_header_row = true;
-                    }
-                    b"w:gridSpan" if in_cell => {
+                Ok(quick_xml::events::Event::Start(ref e)) => {
+                    let name = e.name();
+
+                    // If we're inside a nested table, just collect XML
+                    if nested_table_depth > 0 {
+                        nested_table_xml.push('<');
+                        nested_table_xml.push_str(&String::from_utf8_lossy(name.as_ref()));
                         for attr in e.attributes().flatten() {
-                            if attr.key.as_ref() == b"w:val" {
-                                let val = String::from_utf8_lossy(&attr.value);
-                                col_span = val.parse().unwrap_or(1);
+                            nested_table_xml.push_str(&format!(
+                                " {}=\"{}\"",
+                                String::from_utf8_lossy(attr.key.as_ref()),
+                                String::from_utf8_lossy(&attr.value)
+                            ));
+                        }
+                        nested_table_xml.push('>');
+                        if name.as_ref() == b"w:tbl" {
+                            nested_table_depth += 1;
+                        }
+                        continue;
+                    }
+
+                    match name.as_ref() {
+                        b"w:tbl" if in_cell => {
+                            // Start collecting nested table
+                            nested_table_depth = 1;
+                            nested_table_xml.clear();
+                            nested_table_xml.push_str("<w:tbl>");
+                        }
+                        b"w:tr" => {
+                            in_row = true;
+                            current_row = Some(Row {
+                                cells: Vec::new(),
+                                is_header: false,
+                                height: None,
+                            });
+                            is_header_row = false;
+                        }
+                        b"w:tc" => {
+                            in_cell = true;
+                            cell_paragraphs.clear();
+                            cell_nested_tables.clear();
+                            col_span = 1;
+                            row_span = 1;
+                        }
+                        b"w:p" if in_cell => {
+                            in_paragraph = true;
+                            current_paragraph = Some(Paragraph::new());
+                        }
+                        b"w:r" if in_paragraph => {
+                            in_run = true;
+                            current_style = TextStyle::default();
+                        }
+                        b"w:rPr" if in_run => in_rpr = true,
+                        b"w:t" => in_text = true,
+                        b"w:instrText" => in_instr_text = true,
+                        _ => {}
+                    }
+                }
+                Ok(quick_xml::events::Event::Empty(ref e)) => {
+                    let name = e.name();
+
+                    // If we're inside a nested table, just collect XML
+                    if nested_table_depth > 0 {
+                        nested_table_xml.push('<');
+                        nested_table_xml.push_str(&String::from_utf8_lossy(name.as_ref()));
+                        for attr in e.attributes().flatten() {
+                            nested_table_xml.push_str(&format!(
+                                " {}=\"{}\"",
+                                String::from_utf8_lossy(attr.key.as_ref()),
+                                String::from_utf8_lossy(&attr.value)
+                            ));
+                        }
+                        nested_table_xml.push_str("/>");
+                        continue;
+                    }
+
+                    match name.as_ref() {
+                        b"w:tblHeader" if in_row => {
+                            is_header_row = true;
+                        }
+                        b"w:gridSpan" if in_cell => {
+                            for attr in e.attributes().flatten() {
+                                if attr.key.as_ref() == b"w:val" {
+                                    let val = String::from_utf8_lossy(&attr.value);
+                                    col_span = val.parse().unwrap_or(1);
+                                }
                             }
                         }
-                    }
-                    b"w:vMerge" if in_cell => {
-                        let mut has_val = false;
-                        for attr in e.attributes().flatten() {
-                            if attr.key.as_ref() == b"w:val" {
-                                has_val = true;
+                        b"w:vMerge" if in_cell => {
+                            let mut has_val = false;
+                            for attr in e.attributes().flatten() {
+                                if attr.key.as_ref() == b"w:val" {
+                                    has_val = true;
+                                }
+                            }
+                            if !has_val {
+                                row_span = 0;
                             }
                         }
-                        if !has_val {
-                            row_span = 0;
+                        // Handle formatting in run properties
+                        b"w:b" if in_rpr => {
+                            let val = get_bool_attr(e, b"w:val");
+                            current_style.bold = val.unwrap_or(true);
                         }
-                    }
-                    // Handle formatting in run properties
-                    b"w:b" if in_rpr => {
-                        let val = get_bool_attr(e, b"w:val");
-                        current_style.bold = val.unwrap_or(true);
-                    }
-                    b"w:i" if in_rpr => {
-                        let val = get_bool_attr(e, b"w:val");
-                        current_style.italic = val.unwrap_or(true);
-                    }
-                    b"w:u" if in_rpr => {
-                        for attr in e.attributes().flatten() {
-                            if attr.key.as_ref() == b"w:val" {
-                                let val = String::from_utf8_lossy(&attr.value);
-                                current_style.underline = val != "none";
+                        b"w:i" if in_rpr => {
+                            let val = get_bool_attr(e, b"w:val");
+                            current_style.italic = val.unwrap_or(true);
+                        }
+                        b"w:u" if in_rpr => {
+                            for attr in e.attributes().flatten() {
+                                if attr.key.as_ref() == b"w:val" {
+                                    let val = String::from_utf8_lossy(&attr.value);
+                                    current_style.underline = val != "none";
+                                }
                             }
                         }
+                        b"w:strike" if in_rpr => {
+                            let val = get_bool_attr(e, b"w:val");
+                            current_style.strikethrough = val.unwrap_or(true);
+                        }
+                        _ => {}
                     }
-                    b"w:strike" if in_rpr => {
-                        let val = get_bool_attr(e, b"w:val");
-                        current_style.strikethrough = val.unwrap_or(true);
-                    }
-                    _ => {}
-                },
+                }
                 Ok(quick_xml::events::Event::Text(ref e)) => {
+                    // If we're inside a nested table, just collect XML
+                    if nested_table_depth > 0 {
+                        let text = e.unescape().unwrap_or_default();
+                        nested_table_xml.push_str(&escape_xml(&text));
+                        continue;
+                    }
+
                     // Only extract text from w:t elements, skip w:instrText (field codes)
                     if in_run && in_text && !in_instr_text {
                         let text = e.unescape().unwrap_or_default().to_string();
@@ -579,55 +684,79 @@ impl DocxParser {
                         }
                     }
                 }
-                Ok(quick_xml::events::Event::End(ref e)) => match e.name().as_ref() {
-                    b"w:tr" => {
-                        if let Some(mut row) = current_row.take() {
-                            row.is_header = is_header_row;
-                            table.add_row(row);
-                        }
-                        in_row = false;
-                    }
-                    b"w:tc" => {
-                        if row_span > 0 {
-                            // Use collected paragraphs, or empty paragraph if none
-                            let content = if cell_paragraphs.is_empty() {
-                                vec![Paragraph::new()]
-                            } else {
-                                std::mem::take(&mut cell_paragraphs)
-                            };
-                            let cell = Cell {
-                                content,
-                                col_span,
-                                row_span,
-                                alignment: CellAlignment::Left,
-                                vertical_alignment: VerticalAlignment::default(),
-                                is_header: is_header_row,
-                                background: None,
-                            };
-                            if let Some(ref mut row) = current_row {
-                                row.cells.push(cell);
+                Ok(quick_xml::events::Event::End(ref e)) => {
+                    let name = e.name();
+
+                    // If we're inside a nested table, collect XML and check for end
+                    if nested_table_depth > 0 {
+                        if name.as_ref() == b"w:tbl" {
+                            nested_table_xml.push_str("</w:tbl>");
+                            nested_table_depth -= 1;
+                            if nested_table_depth == 0 {
+                                // Finished collecting nested table - parse recursively
+                                if let Ok(nested_table) = self.parse_table(&nested_table_xml) {
+                                    cell_nested_tables.push(nested_table);
+                                }
                             }
+                        } else {
+                            nested_table_xml.push_str("</");
+                            nested_table_xml.push_str(&String::from_utf8_lossy(name.as_ref()));
+                            nested_table_xml.push('>');
                         }
-                        in_cell = false;
+                        continue;
                     }
-                    b"w:p" if in_cell => {
-                        // Save the completed paragraph
-                        if let Some(para) = current_paragraph.take() {
-                            // Only add non-empty paragraphs
-                            if !para.is_empty() {
-                                cell_paragraphs.push(para);
+
+                    match name.as_ref() {
+                        b"w:tr" => {
+                            if let Some(mut row) = current_row.take() {
+                                row.is_header = is_header_row;
+                                table.add_row(row);
                             }
+                            in_row = false;
                         }
-                        in_paragraph = false;
+                        b"w:tc" => {
+                            if row_span > 0 {
+                                // Use collected paragraphs, or empty paragraph if none
+                                let content = if cell_paragraphs.is_empty() {
+                                    vec![Paragraph::new()]
+                                } else {
+                                    std::mem::take(&mut cell_paragraphs)
+                                };
+                                let cell = Cell {
+                                    content,
+                                    nested_tables: std::mem::take(&mut cell_nested_tables),
+                                    col_span,
+                                    row_span,
+                                    alignment: CellAlignment::Left,
+                                    vertical_alignment: VerticalAlignment::default(),
+                                    is_header: is_header_row,
+                                    background: None,
+                                };
+                                if let Some(ref mut row) = current_row {
+                                    row.cells.push(cell);
+                                }
+                            }
+                            in_cell = false;
+                        }
+                        b"w:p" if in_cell => {
+                            // Save the completed paragraph
+                            if let Some(para) = current_paragraph.take() {
+                                // Only add non-empty paragraphs
+                                if !para.is_empty() {
+                                    cell_paragraphs.push(para);
+                                }
+                            }
+                            in_paragraph = false;
+                        }
+                        b"w:r" => {
+                            in_run = false;
+                        }
+                        b"w:rPr" => in_rpr = false,
+                        b"w:t" => in_text = false,
+                        b"w:instrText" => in_instr_text = false,
+                        _ => {}
                     }
-                    b"w:r" => {
-                        in_run = false;
-                    }
-                    b"w:rPr" => in_rpr = false,
-                    b"w:t" => in_text = false,
-                    b"w:instrText" => in_instr_text = false,
-                    _ => {}
-                },
+                }
                 Ok(quick_xml::events::Event::Eof) => break,
                 Err(e) => return Err(Error::XmlParse(e.to_string())),
                 _ => {}
