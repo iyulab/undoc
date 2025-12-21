@@ -95,6 +95,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Removed ~90 lines of duplicate code across DOCX/PPTX/XLSX parsers
   - Improved code maintainability and single source of truth
 
+## [0.1.2] - 2025-12-21
+
+### Fixed
+
+- **FFI Release Build**
+  - Fixed GitHub Actions workflow where CLI build would overwrite the FFI-enabled library
+  - FFI library artifacts are now preserved before CLI build to prevent filename collision
+  - Added FFI export verification step to ensure `undoc_version` and other functions are properly exported
+  - Release DLL now correctly contains all C-ABI functions (~1.5MB instead of 0.5MB)
+
+### Changed
+
+- **CI/CD Improvements**
+  - Separated FFI library preservation step in release workflow
+  - Added automated verification of FFI exports for all platforms
+  - Improved error messages for missing exports
+
 ## [Unreleased]
 
 ### Planned

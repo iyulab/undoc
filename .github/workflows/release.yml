@@ -66,29 +66,68 @@ jobs:
           toolchain: stable
           targets: ${{ matrix.target }}
 
-      - name: Build library
+      - name: Build library with FFI
         run: cargo build --release --target ${{ matrix.target }} -p undoc --features ffi
 
-      - name: Build CLI
-        run: cargo build --release --target ${{ matrix.target }} -p undoc-cli
-
-      - name: Prepare artifacts (Windows)
+      # IMPORTANT: Copy FFI library BEFORE CLI build to prevent overwrite
+      # CLI build recompiles undoc without ffi feature, which would overwrite the DLL
+      - name: Preserve FFI library (Windows)
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path artifacts-lib
-          New-Item -ItemType Directory -Force -Path artifacts-cli
           Copy-Item "target/${{ matrix.target }}/release/${{ matrix.lib_name }}" -Destination "artifacts-lib/"
-          Copy-Item "target/${{ matrix.target }}/release/${{ matrix.cli_name }}" -Destination "artifacts-cli/"
           Copy-Item "include/undoc.h" -Destination "artifacts-lib/"
 
-      - name: Prepare artifacts (Unix)
+      - name: Preserve FFI library (Unix)
         if: matrix.os != 'windows-latest'
         run: |
-          mkdir -p artifacts-lib artifacts-cli
+          mkdir -p artifacts-lib
           cp "target/${{ matrix.target }}/release/${{ matrix.lib_name }}" artifacts-lib/ || true
-          cp "target/${{ matrix.target }}/release/${{ matrix.cli_name }}" artifacts-cli/
           cp include/undoc.h artifacts-lib/
+
+      - name: Build CLI
+        run: cargo build --release --target ${{ matrix.target }} -p undoc-cli
+
+      - name: Verify FFI exports (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $dll = "artifacts-lib/${{ matrix.lib_name }}"
+          $content = [System.IO.File]::ReadAllBytes($dll)
+          $text = [System.Text.Encoding]::ASCII.GetString($content)
+          if ($text -notmatch "undoc_version") {
+            Write-Error "ERROR: DLL is missing FFI exports! The undoc_version function was not found."
+            Write-Error "This usually means the library was built without --features ffi"
+            exit 1
+          }
+          $size = (Get-Item $dll).Length
+          Write-Host "FFI library verified: $dll ($size bytes)"
+          Write-Host "Found undoc_version export - FFI bindings are present"
+
+      - name: Verify FFI exports (Unix)
+        if: matrix.os != 'windows-latest'
+        run: |
+          lib="artifacts-lib/${{ matrix.lib_name }}"
+          if ! grep -q "undoc_version" "$lib" 2>/dev/null; then
+            echo "ERROR: Library is missing FFI exports!"
+            exit 1
+          fi
+          size=$(stat -f%z "$lib" 2>/dev/null || stat -c%s "$lib" 2>/dev/null)
+          echo "FFI library verified: $lib ($size bytes)"
+
+      - name: Prepare CLI artifacts (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts-cli
+          Copy-Item "target/${{ matrix.target }}/release/${{ matrix.cli_name }}" -Destination "artifacts-cli/"
+
+      - name: Prepare CLI artifacts (Unix)
+        if: matrix.os != 'windows-latest'
+        run: |
+          mkdir -p artifacts-cli
+          cp "target/${{ matrix.target }}/release/${{ matrix.cli_name }}" artifacts-cli/
 
       - name: Upload lib artifacts
         uses: actions/upload-artifact@v4
