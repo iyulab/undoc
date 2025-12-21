@@ -752,10 +752,13 @@ impl DocxParser {
                         b"w:tc" => {
                             if row_span > 0 {
                                 // Use collected paragraphs, or empty paragraph if none
+                                // Deduplicate repeated paragraph blocks within cell
+                                // Word may store the same paragraph block twice but only displays once
                                 let content = if cell_paragraphs.is_empty() {
                                     vec![Paragraph::new()]
                                 } else {
-                                    std::mem::take(&mut cell_paragraphs)
+                                    let paragraphs = std::mem::take(&mut cell_paragraphs);
+                                    deduplicate_paragraph_block(paragraphs)
                                 };
                                 let cell = Cell {
                                     content,
@@ -778,7 +781,16 @@ impl DocxParser {
                             if let Some(para) = current_paragraph.take() {
                                 // Only add non-empty paragraphs
                                 if !para.is_empty() {
-                                    cell_paragraphs.push(para);
+                                    // Skip duplicate paragraphs (same text content as previous)
+                                    // Word may store duplicate paragraphs in same cell but only displays one
+                                    let is_duplicate = cell_paragraphs
+                                        .last()
+                                        .map(|last| last.plain_text() == para.plain_text())
+                                        .unwrap_or(false);
+
+                                    if !is_duplicate {
+                                        cell_paragraphs.push(para);
+                                    }
                                 }
                             }
                             in_paragraph = false;
@@ -888,6 +900,35 @@ fn guess_mime_type(path: &str) -> Option<String> {
         }
         .to_string(),
     )
+}
+
+/// Deduplicate repeated paragraph blocks within a table cell.
+/// Word may store the same paragraph block twice but only displays one.
+/// This function checks if the first half and second half are identical
+/// and returns only the first half if so.
+fn deduplicate_paragraph_block(paragraphs: Vec<Paragraph>) -> Vec<Paragraph> {
+    let len = paragraphs.len();
+    if len < 2 {
+        return paragraphs;
+    }
+
+    // Check if paragraphs form a duplicated block (first half == second half)
+    if len % 2 == 0 {
+        let half = len / 2;
+        let first_half = &paragraphs[..half];
+        let second_half = &paragraphs[half..];
+
+        let is_duplicate = first_half
+            .iter()
+            .zip(second_half.iter())
+            .all(|(a, b)| a.plain_text() == b.plain_text());
+
+        if is_duplicate {
+            return paragraphs.into_iter().take(half).collect();
+        }
+    }
+
+    paragraphs
 }
 
 #[cfg(test)]

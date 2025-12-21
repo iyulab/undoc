@@ -291,6 +291,11 @@ fn escape_markdown(s: &str) -> String {
 
 /// Render a table cell's content with formatting preserved.
 /// Multiple paragraphs are joined with `<br>` for inline display.
+///
+/// Note: Nested tables are NOT rendered here to avoid content duplication.
+/// The nested_tables field contains tables that are already structurally
+/// separate from cell.content. Rendering both would cause duplication
+/// in documents where Word places the same content in both locations.
 fn render_cell_content(cell: &crate::model::Cell, options: &RenderOptions) -> String {
     let mut parts = Vec::new();
 
@@ -332,17 +337,10 @@ fn render_cell_content(cell: &crate::model::Cell, options: &RenderOptions) -> St
         }
     }
 
-    // Render nested tables inline (flatten their content)
-    for nested_table in &cell.nested_tables {
-        for row in &nested_table.rows {
-            for nested_cell in &row.cells {
-                let nested_content = render_cell_content(nested_cell, options);
-                if !nested_content.is_empty() {
-                    parts.push(nested_content);
-                }
-            }
-        }
-    }
+    // NOTE: nested_tables are intentionally NOT rendered here.
+    // They are extracted as separate Table blocks during parsing and should
+    // be rendered independently to preserve structure and avoid duplication.
+    // See: render_nested_tables_as_blocks() for proper nested table rendering.
 
     // Join paragraphs with <br> for markdown table cells
     let text = parts.join("<br>");
@@ -363,6 +361,7 @@ fn render_table(table: &Table, options: &RenderOptions) -> String {
     }
 
     let mut output = String::new();
+    let mut nested_tables: Vec<&Table> = Vec::new();
 
     // Determine column count
     let col_count = table.column_count();
@@ -387,6 +386,11 @@ fn render_table(table: &Table, options: &RenderOptions) -> String {
         for cell in &row.cells {
             let text = render_cell_content(cell, options);
             output.push_str(&format!(" {} |", text));
+
+            // Collect nested tables for rendering after the main table
+            for nested in &cell.nested_tables {
+                nested_tables.push(nested);
+            }
         }
 
         // Pad data rows if they have fewer cells
@@ -406,6 +410,13 @@ fn render_table(table: &Table, options: &RenderOptions) -> String {
             }
             output.push('\n');
         }
+    }
+
+    // Render nested tables after the main table
+    // This preserves their structure instead of flattening into cell content
+    for nested in nested_tables {
+        output.push('\n');
+        output.push_str(&render_table(nested, options));
     }
 
     output
