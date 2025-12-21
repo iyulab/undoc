@@ -432,7 +432,18 @@ impl Paragraph {
         // Note: Different-style runs are NOT merged, so this only affects
         // runs that were artificially split in the source document.
 
-        // CJK → CJK: no space needed (natural in CJK languages)
+        // Korean (Hangul) → Korean: ADD space
+        // Unlike Chinese/Japanese, Korean uses spaces between words (like English).
+        // When Word stores Korean words in separate runs without explicit spaces,
+        // they represent different words that should be separated.
+        // Example: ["서버", "리부팅"] → "서버 리부팅" (server reboot)
+        let last_is_hangul = is_hangul_char(last_char);
+        let first_is_hangul = is_hangul_char(first_char);
+        if last_is_hangul && first_is_hangul {
+            return true;
+        }
+
+        // Other CJK → CJK: no space needed (natural in Chinese/Japanese)
         // ASCII → ASCII: no space needed (same word split into runs)
         false
     }
@@ -472,6 +483,24 @@ fn is_cjk_char(c: char) -> bool {
         '\u{31F0}'..='\u{31FF}' |
         // CJK Symbols and Punctuation
         '\u{3000}'..='\u{303F}'
+    )
+}
+
+/// Check if a character is Korean Hangul.
+/// Korean uses spaces between words (unlike Chinese/Japanese),
+/// so we need to add spaces when merging Hangul runs from different positions.
+fn is_hangul_char(c: char) -> bool {
+    matches!(c,
+        // Hangul Syllables (most common)
+        '\u{AC00}'..='\u{D7AF}' |
+        // Hangul Jamo (consonants and vowels)
+        '\u{1100}'..='\u{11FF}' |
+        // Hangul Compatibility Jamo
+        '\u{3130}'..='\u{318F}' |
+        // Hangul Jamo Extended-A
+        '\u{A960}'..='\u{A97F}' |
+        // Hangul Jamo Extended-B
+        '\u{D7B0}'..='\u{D7FF}'
     )
 }
 
@@ -594,15 +623,52 @@ mod tests {
     }
 
     #[test]
-    fn test_merge_adjacent_runs_cjk_no_space() {
-        // CJK followed by CJK should NOT add space
+    fn test_merge_adjacent_runs_korean_word_spacing() {
+        // Korean (Hangul) words in separate runs should add space
+        // Unlike Chinese/Japanese, Korean uses spaces between words
         let mut para = Paragraph::new();
         para.runs.push(TextRun::plain("네트워크"));
         para.runs.push(TextRun::plain("카드"));
         para.merge_adjacent_runs();
 
         assert_eq!(para.runs.len(), 1);
-        assert_eq!(para.runs[0].text, "네트워크카드"); // No space between CJK
+        assert_eq!(para.runs[0].text, "네트워크 카드"); // Space between Korean words
+    }
+
+    #[test]
+    fn test_merge_adjacent_runs_korean_word_spacing_sentence() {
+        // Test Korean sentence: "서버 리부팅" (server reboot)
+        let mut para = Paragraph::new();
+        para.runs.push(TextRun::plain("서버"));
+        para.runs.push(TextRun::plain("리부팅"));
+        para.merge_adjacent_runs();
+
+        assert_eq!(para.runs.len(), 1);
+        assert_eq!(para.runs[0].text, "서버 리부팅"); // Space between Korean words
+    }
+
+    #[test]
+    fn test_merge_adjacent_runs_chinese_no_space() {
+        // Chinese characters should NOT add space (unlike Korean)
+        let mut para = Paragraph::new();
+        para.runs.push(TextRun::plain("中文"));
+        para.runs.push(TextRun::plain("测试"));
+        para.merge_adjacent_runs();
+
+        assert_eq!(para.runs.len(), 1);
+        assert_eq!(para.runs[0].text, "中文测试"); // No space between Chinese
+    }
+
+    #[test]
+    fn test_merge_adjacent_runs_japanese_no_space() {
+        // Japanese characters should NOT add space (unlike Korean)
+        let mut para = Paragraph::new();
+        para.runs.push(TextRun::plain("日本語"));
+        para.runs.push(TextRun::plain("テスト"));
+        para.merge_adjacent_runs();
+
+        assert_eq!(para.runs.len(), 1);
+        assert_eq!(para.runs[0].text, "日本語テスト"); // No space between Japanese
     }
 
     #[test]

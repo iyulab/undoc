@@ -285,10 +285,30 @@ fn render_cell_content(cell: &crate::model::Cell, options: &RenderOptions) -> St
     let mut parts = Vec::new();
 
     for para in &cell.content {
+        // Merge adjacent runs with same style (like render_paragraph does)
+        let merged_para = para.with_merged_runs();
         let mut para_text = String::new();
-        for run in &para.runs {
-            para_text.push_str(&render_run(run, options));
+
+        for (i, run) in merged_para.runs.iter().enumerate() {
+            let run_text = render_run(run, options);
+
+            // Add smart spacing between runs (like render_paragraph does)
+            if i > 0 && !run_text.is_empty() && !para_text.is_empty() {
+                let last_char = para_text.chars().last();
+                let first_char = run_text.chars().next();
+
+                if let (Some(last), Some(first)) = (last_char, first_char) {
+                    let needs_space =
+                        !last.is_whitespace() && !first.is_whitespace() && !is_no_space_before(first);
+                    if needs_space {
+                        para_text.push(' ');
+                    }
+                }
+            }
+
+            para_text.push_str(&run_text);
         }
+
         if !para_text.is_empty() {
             parts.push(para_text);
         }
@@ -297,9 +317,8 @@ fn render_cell_content(cell: &crate::model::Cell, options: &RenderOptions) -> St
     // Join paragraphs with <br> for markdown table cells
     let text = parts.join("<br>");
 
-    // Escape pipe characters for table delimiter (already handled in escape_markdown for runs)
-    // but we need to handle the joined result
-    text.replace('\n', " ").replace('|', "\\|")
+    // Only replace newlines - pipes are already escaped by escape_markdown in render_run
+    text.replace('\n', " ")
 }
 
 /// Render a table to Markdown.
@@ -348,8 +367,9 @@ fn render_table(table: &Table, options: &RenderOptions) -> String {
         }
         output.push('\n');
 
-        // Add separator after header row
-        if i == 0 && (row.is_header || table.header_rows().len() == 1) {
+        // Add separator after first row (markdown tables always need header separator)
+        // In markdown, the first row is always treated as header regardless of source formatting
+        if i == 0 {
             output.push('|');
             for _ in 0..col_count {
                 output.push_str(" --- |");
