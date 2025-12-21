@@ -112,6 +112,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Added automated verification of FFI exports for all platforms
   - Improved error messages for missing exports
 
+## [0.1.3] - 2025-12-21
+
+### Fixed
+
+- **Korean Text Quality**
+  - Fixed word-level spacing in Korean DOCX conversion
+  - Improved table cell text formatting
+
+## [0.1.4] - 2025-12-21
+
+### Added
+
+- **Korean Word Spacing**
+  - Smart word boundary detection for Korean text
+  - Automatic spacing between CJK characters and ASCII
+
+### Fixed
+
+- **Table Rendering**
+  - Fixed table cell content alignment issues
+  - Improved nested table detection
+
+## [0.1.5] - 2025-12-21
+
+### Added
+
+- **Image Extraction (Document Body)**
+  - Extract images from `w:drawing` elements in document body
+  - Support for alt text extraction from `wp:docPr`
+
+### Fixed
+
+- **Korean Word Spacing**
+  - Source fidelity maintained (not a bug - follows original document)
+
+## [0.1.6] - 2025-12-21
+
+### Fixed
+
+- **Image Parsing in Table Cells**
+  - Added `w:drawing` element handling to `parse_table()` function
+  - Images in table cells now correctly parsed to `para.images` vector
+  - Support for `wp:docPr` alt text and `a:blip` resource references
+
+## [0.1.7] - 2025-12-21
+
+### Fixed
+
+- **Image Rendering in Table Cells**
+  - Fixed `render_cell_content()` to iterate over `para.images` vector
+  - Images now correctly rendered as `![alt](path)` in markdown output
+  - Root cause: Two-stage pipeline (parse → render) was incomplete
+
+## [0.1.8] - 2025-12-21
+
+### Added
+
+- **FFI Resource Access API**
+  - `undoc_get_resource_ids()`: Get all resource IDs as JSON array
+  - `undoc_get_resource_info()`: Get resource metadata as JSON
+  - `undoc_get_resource_data()`: Get binary data with length
+  - `undoc_free_bytes()`: Free binary data allocated by `undoc_get_resource_data`
+  - ID-based access pattern (vs index-based) for natural OOXML alignment
+  - Enables C# object-oriented wrapper: `result.Images`, `result.Markdown`
+
 ## [Unreleased]
 
 ### Planned
@@ -122,3 +187,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Image optimization options
 - Batch processing mode
 - Plugin system for custom processors
+- `undoc_get_paragraph_count()` FFI function
