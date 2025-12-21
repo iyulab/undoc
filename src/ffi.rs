@@ -69,7 +69,7 @@ use crate::render::{JsonFormat, RenderOptions};
 
 // Thread-local storage for the last error message.
 thread_local! {
-    static LAST_ERROR: RefCell<Option<CString>> = RefCell::new(None);
+    static LAST_ERROR: RefCell<Option<CString>> = const { RefCell::new(None) };
 }
 
 /// Set the last error message.
@@ -457,8 +457,7 @@ pub unsafe extern "C" fn undoc_get_title(doc: *const UndocDocument) -> *mut c_ch
             .metadata
             .title
             .as_ref()
-            .map(|t| CString::new(t.as_str()).ok())
-            .flatten()
+            .and_then(|t| CString::new(t.as_str()).ok())
     });
 
     match result {
@@ -493,8 +492,7 @@ pub unsafe extern "C" fn undoc_get_author(doc: *const UndocDocument) -> *mut c_c
             .metadata
             .author
             .as_ref()
-            .map(|a| CString::new(a.as_str()).ok())
-            .flatten()
+            .and_then(|a| CString::new(a.as_str()).ok())
     });
 
     match result {
@@ -517,6 +515,208 @@ pub unsafe extern "C" fn undoc_get_author(doc: *const UndocDocument) -> *mut c_c
 pub unsafe extern "C" fn undoc_free_string(s: *mut c_char) {
     if !s.is_null() {
         let _ = CString::from_raw(s);
+    }
+}
+
+/// Get all resource IDs as a JSON array.
+///
+/// # Safety
+///
+/// - `doc` must be a valid document handle.
+/// - Returns null on error. Use `undoc_last_error` to get the error message.
+/// - The returned string must be freed with `undoc_free_string`.
+///
+/// # Returns
+///
+/// A JSON array of resource IDs, e.g., `["rId1", "rId2", "rId3"]`
+#[no_mangle]
+pub unsafe extern "C" fn undoc_get_resource_ids(doc: *const UndocDocument) -> *mut c_char {
+    clear_last_error();
+
+    if doc.is_null() {
+        set_last_error("document is null");
+        return ptr::null_mut();
+    }
+
+    let result = catch_unwind(|| {
+        let document = &(*doc).inner;
+        let ids: Vec<&String> = document.resources.keys().collect();
+        serde_json::to_string(&ids).map_err(|e| e.to_string())
+    });
+
+    match result {
+        Ok(Ok(json)) => match CString::new(json) {
+            Ok(s) => s.into_raw(),
+            Err(_) => {
+                set_last_error("output contains null byte");
+                ptr::null_mut()
+            }
+        },
+        Ok(Err(e)) => {
+            set_last_error(&e);
+            ptr::null_mut()
+        }
+        Err(_) => {
+            set_last_error("panic occurred");
+            ptr::null_mut()
+        }
+    }
+}
+
+/// Get resource metadata as JSON (without binary data).
+///
+/// # Safety
+///
+/// - `doc` must be a valid document handle.
+/// - `resource_id` must be a valid null-terminated UTF-8 string.
+/// - Returns null if resource not found or on error.
+/// - The returned string must be freed with `undoc_free_string`.
+///
+/// # Returns
+///
+/// JSON object with resource metadata:
+/// `{"id":"rId1","type":"image","filename":"image1.png","mime_type":"image/png","size":1024,"width":800,"height":600,"alt_text":"Description"}`
+#[no_mangle]
+pub unsafe extern "C" fn undoc_get_resource_info(
+    doc: *const UndocDocument,
+    resource_id: *const c_char,
+) -> *mut c_char {
+    clear_last_error();
+
+    if doc.is_null() {
+        set_last_error("document is null");
+        return ptr::null_mut();
+    }
+
+    if resource_id.is_null() {
+        set_last_error("resource_id is null");
+        return ptr::null_mut();
+    }
+
+    let result = catch_unwind(|| {
+        let id_str = CStr::from_ptr(resource_id)
+            .to_str()
+            .map_err(|e| e.to_string())?;
+
+        let document = &(*doc).inner;
+
+        match document.resources.get(id_str) {
+            Some(resource) => {
+                let info = serde_json::json!({
+                    "id": id_str,
+                    "type": resource.resource_type,
+                    "filename": resource.filename,
+                    "mime_type": resource.mime_type,
+                    "size": resource.size,
+                    "width": resource.width,
+                    "height": resource.height,
+                    "alt_text": resource.alt_text
+                });
+                serde_json::to_string(&info).map_err(|e| e.to_string())
+            }
+            None => Err(format!("resource not found: {}", id_str)),
+        }
+    });
+
+    match result {
+        Ok(Ok(json)) => match CString::new(json) {
+            Ok(s) => s.into_raw(),
+            Err(_) => {
+                set_last_error("output contains null byte");
+                ptr::null_mut()
+            }
+        },
+        Ok(Err(e)) => {
+            set_last_error(&e);
+            ptr::null_mut()
+        }
+        Err(_) => {
+            set_last_error("panic occurred");
+            ptr::null_mut()
+        }
+    }
+}
+
+/// Get resource binary data.
+///
+/// # Safety
+///
+/// - `doc` must be a valid document handle.
+/// - `resource_id` must be a valid null-terminated UTF-8 string.
+/// - `out_len` must be a valid pointer to receive the data length.
+/// - Returns null if resource not found or on error.
+/// - The returned pointer must be freed with `undoc_free_bytes`.
+#[no_mangle]
+pub unsafe extern "C" fn undoc_get_resource_data(
+    doc: *const UndocDocument,
+    resource_id: *const c_char,
+    out_len: *mut usize,
+) -> *mut u8 {
+    clear_last_error();
+
+    if doc.is_null() {
+        set_last_error("document is null");
+        return ptr::null_mut();
+    }
+
+    if resource_id.is_null() {
+        set_last_error("resource_id is null");
+        return ptr::null_mut();
+    }
+
+    if out_len.is_null() {
+        set_last_error("out_len is null");
+        return ptr::null_mut();
+    }
+
+    let result = catch_unwind(|| {
+        let id_str = CStr::from_ptr(resource_id)
+            .to_str()
+            .map_err(|e| e.to_string())?;
+
+        let document = &(*doc).inner;
+
+        match document.resources.get(id_str) {
+            Some(resource) => {
+                let data = resource.data.clone();
+                let len = data.len();
+                let boxed = data.into_boxed_slice();
+                let ptr = Box::into_raw(boxed) as *mut u8;
+                Ok((ptr, len))
+            }
+            None => Err(format!("resource not found: {}", id_str)),
+        }
+    });
+
+    match result {
+        Ok(Ok((ptr, len))) => {
+            *out_len = len;
+            ptr
+        }
+        Ok(Err(e)) => {
+            set_last_error(&e);
+            *out_len = 0;
+            ptr::null_mut()
+        }
+        Err(_) => {
+            set_last_error("panic occurred");
+            *out_len = 0;
+            ptr::null_mut()
+        }
+    }
+}
+
+/// Free binary data allocated by `undoc_get_resource_data`.
+///
+/// # Safety
+///
+/// - `data` must be a pointer returned by `undoc_get_resource_data`, or null.
+/// - `len` must be the length returned by `undoc_get_resource_data`.
+/// - After calling this function, the pointer is invalid and must not be used.
+#[no_mangle]
+pub unsafe extern "C" fn undoc_free_bytes(data: *mut u8, len: usize) {
+    if !data.is_null() && len > 0 {
+        let _ = Box::from_raw(std::ptr::slice_from_raw_parts_mut(data, len));
     }
 }
 
