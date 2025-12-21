@@ -474,10 +474,14 @@ impl DocxParser {
         let mut in_row = false;
         let mut in_cell = false;
         let mut in_paragraph = false;
+        let mut in_run = false;
+        let mut in_rpr = false; // Track w:rPr (run properties for formatting)
         let mut in_text = false; // Track w:t elements (regular text)
         let mut in_instr_text = false; // Track w:instrText elements (field codes to skip)
         let mut current_row: Option<Row> = None;
-        let mut cell_text = String::new();
+        let mut cell_paragraphs: Vec<Paragraph> = Vec::new();
+        let mut current_paragraph: Option<Paragraph> = None;
+        let mut current_style = TextStyle::default();
         let mut is_header_row = false;
         let mut col_span = 1u32;
         let mut row_span = 1u32;
@@ -496,13 +500,19 @@ impl DocxParser {
                     }
                     b"w:tc" => {
                         in_cell = true;
-                        cell_text.clear();
+                        cell_paragraphs.clear();
                         col_span = 1;
                         row_span = 1;
                     }
                     b"w:p" if in_cell => {
                         in_paragraph = true;
+                        current_paragraph = Some(Paragraph::new());
                     }
+                    b"w:r" if in_paragraph => {
+                        in_run = true;
+                        current_style = TextStyle::default();
+                    }
+                    b"w:rPr" if in_run => in_rpr = true,
                     b"w:t" => in_text = true,
                     b"w:instrText" => in_instr_text = true,
                     _ => {}
@@ -530,13 +540,43 @@ impl DocxParser {
                             row_span = 0;
                         }
                     }
+                    // Handle formatting in run properties
+                    b"w:b" if in_rpr => {
+                        let val = get_bool_attr(e, b"w:val");
+                        current_style.bold = val.unwrap_or(true);
+                    }
+                    b"w:i" if in_rpr => {
+                        let val = get_bool_attr(e, b"w:val");
+                        current_style.italic = val.unwrap_or(true);
+                    }
+                    b"w:u" if in_rpr => {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.as_ref() == b"w:val" {
+                                let val = String::from_utf8_lossy(&attr.value);
+                                current_style.underline = val != "none";
+                            }
+                        }
+                    }
+                    b"w:strike" if in_rpr => {
+                        let val = get_bool_attr(e, b"w:val");
+                        current_style.strikethrough = val.unwrap_or(true);
+                    }
                     _ => {}
                 },
                 Ok(quick_xml::events::Event::Text(ref e)) => {
                     // Only extract text from w:t elements, skip w:instrText (field codes)
-                    if in_paragraph && in_cell && in_text && !in_instr_text {
-                        let text = e.unescape().unwrap_or_default();
-                        cell_text.push_str(&text);
+                    if in_run && in_text && !in_instr_text {
+                        let text = e.unescape().unwrap_or_default().to_string();
+                        if !text.is_empty() {
+                            if let Some(ref mut para) = current_paragraph {
+                                let run = TextRun {
+                                    text,
+                                    style: current_style.clone(),
+                                    hyperlink: None,
+                                };
+                                para.runs.push(run);
+                            }
+                        }
                     }
                 }
                 Ok(quick_xml::events::Event::End(ref e)) => match e.name().as_ref() {
@@ -549,8 +589,14 @@ impl DocxParser {
                     }
                     b"w:tc" => {
                         if row_span > 0 {
+                            // Use collected paragraphs, or empty paragraph if none
+                            let content = if cell_paragraphs.is_empty() {
+                                vec![Paragraph::new()]
+                            } else {
+                                std::mem::take(&mut cell_paragraphs)
+                            };
                             let cell = Cell {
-                                content: vec![Paragraph::with_text(&cell_text)],
+                                content,
                                 col_span,
                                 row_span,
                                 alignment: CellAlignment::Left,
@@ -564,9 +610,20 @@ impl DocxParser {
                         }
                         in_cell = false;
                     }
-                    b"w:p" => {
+                    b"w:p" if in_cell => {
+                        // Save the completed paragraph
+                        if let Some(para) = current_paragraph.take() {
+                            // Only add non-empty paragraphs
+                            if !para.is_empty() {
+                                cell_paragraphs.push(para);
+                            }
+                        }
                         in_paragraph = false;
                     }
+                    b"w:r" => {
+                        in_run = false;
+                    }
+                    b"w:rPr" => in_rpr = false,
                     b"w:t" => in_text = false,
                     b"w:instrText" => in_instr_text = false,
                     _ => {}

@@ -426,12 +426,14 @@ impl Paragraph {
             return true;
         }
 
-        // ASCII → ASCII: add space between words
-        if last_is_ascii_alnum && first_is_ascii_alnum {
-            return true;
-        }
+        // ASCII → ASCII: NO space needed when merging same-style runs.
+        // If Word stored "DRBD" as separate runs ["DRB", "D"] with same style,
+        // they should merge to "DRBD", not "DRB D".
+        // Note: Different-style runs are NOT merged, so this only affects
+        // runs that were artificially split in the source document.
 
         // CJK → CJK: no space needed (natural in CJK languages)
+        // ASCII → ASCII: no space needed (same word split into runs)
         false
     }
 
@@ -529,5 +531,102 @@ mod tests {
         // Default values should not be serialized
         assert!(!json.contains("heading"));
         assert!(!json.contains("alignment"));
+    }
+
+    #[test]
+    fn test_merge_adjacent_runs_ascii_no_split() {
+        // Test fix for word splitting bug: "DRBD" stored as ["DRB", "D"] should merge to "DRBD"
+        let mut para = Paragraph::new();
+        para.runs.push(TextRun::plain("DRB"));
+        para.runs.push(TextRun::plain("D"));
+        para.merge_adjacent_runs();
+
+        assert_eq!(para.runs.len(), 1);
+        assert_eq!(para.runs[0].text, "DRBD"); // NOT "DRB D"
+    }
+
+    #[test]
+    fn test_merge_adjacent_runs_ping() {
+        // Test fix: "PING" stored as ["P", "ING"] should merge to "PING"
+        let mut para = Paragraph::new();
+        para.runs.push(TextRun::plain("P"));
+        para.runs.push(TextRun::plain("ING"));
+        para.merge_adjacent_runs();
+
+        assert_eq!(para.runs.len(), 1);
+        assert_eq!(para.runs[0].text, "PING"); // NOT "P ING"
+    }
+
+    #[test]
+    fn test_merge_adjacent_runs_tcp() {
+        // Test fix: "TCP" stored as ["T", "CP"] should merge to "TCP"
+        let mut para = Paragraph::new();
+        para.runs.push(TextRun::plain("T"));
+        para.runs.push(TextRun::plain("CP"));
+        para.merge_adjacent_runs();
+
+        assert_eq!(para.runs.len(), 1);
+        assert_eq!(para.runs[0].text, "TCP"); // NOT "T CP"
+    }
+
+    #[test]
+    fn test_merge_adjacent_runs_cjk_ascii_spacing() {
+        // CJK followed by ASCII should add space for readability
+        let mut para = Paragraph::new();
+        para.runs.push(TextRun::plain("리소스"));
+        para.runs.push(TextRun::plain("DRBD"));
+        para.merge_adjacent_runs();
+
+        assert_eq!(para.runs.len(), 1);
+        assert_eq!(para.runs[0].text, "리소스 DRBD"); // Space added between CJK and ASCII
+    }
+
+    #[test]
+    fn test_merge_adjacent_runs_ascii_cjk_spacing() {
+        // ASCII followed by CJK should add space for readability
+        let mut para = Paragraph::new();
+        para.runs.push(TextRun::plain("DRBD"));
+        para.runs.push(TextRun::plain("리소스"));
+        para.merge_adjacent_runs();
+
+        assert_eq!(para.runs.len(), 1);
+        assert_eq!(para.runs[0].text, "DRBD 리소스"); // Space added between ASCII and CJK
+    }
+
+    #[test]
+    fn test_merge_adjacent_runs_cjk_no_space() {
+        // CJK followed by CJK should NOT add space
+        let mut para = Paragraph::new();
+        para.runs.push(TextRun::plain("네트워크"));
+        para.runs.push(TextRun::plain("카드"));
+        para.merge_adjacent_runs();
+
+        assert_eq!(para.runs.len(), 1);
+        assert_eq!(para.runs[0].text, "네트워크카드"); // No space between CJK
+    }
+
+    #[test]
+    fn test_merge_adjacent_runs_different_styles_not_merged() {
+        // Runs with different styles should NOT be merged
+        let mut para = Paragraph::new();
+        para.runs.push(TextRun::plain("normal"));
+        para.runs.push(TextRun::styled("bold", TextStyle::bold()));
+        para.merge_adjacent_runs();
+
+        assert_eq!(para.runs.len(), 2); // Still 2 runs
+        assert_eq!(para.runs[0].text, "normal");
+        assert_eq!(para.runs[1].text, "bold");
+    }
+
+    #[test]
+    fn test_merge_preserves_existing_spaces() {
+        // Existing spaces should be preserved
+        let mut para = Paragraph::new();
+        para.runs.push(TextRun::plain("Hello "));
+        para.runs.push(TextRun::plain("World"));
+        para.merge_adjacent_runs();
+
+        assert_eq!(para.runs.len(), 1);
+        assert_eq!(para.runs[0].text, "Hello World"); // Original space preserved
     }
 }

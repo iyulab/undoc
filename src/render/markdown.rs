@@ -279,6 +279,29 @@ fn escape_markdown(s: &str) -> String {
     result
 }
 
+/// Render a table cell's content with formatting preserved.
+/// Multiple paragraphs are joined with `<br>` for inline display.
+fn render_cell_content(cell: &crate::model::Cell, options: &RenderOptions) -> String {
+    let mut parts = Vec::new();
+
+    for para in &cell.content {
+        let mut para_text = String::new();
+        for run in &para.runs {
+            para_text.push_str(&render_run(run, options));
+        }
+        if !para_text.is_empty() {
+            parts.push(para_text);
+        }
+    }
+
+    // Join paragraphs with <br> for markdown table cells
+    let text = parts.join("<br>");
+
+    // Escape pipe characters for table delimiter (already handled in escape_markdown for runs)
+    // but we need to handle the joined result
+    text.replace('\n', " ").replace('|', "\\|")
+}
+
 /// Render a table to Markdown.
 fn render_table(table: &Table, options: &RenderOptions) -> String {
     if table.is_empty() {
@@ -313,7 +336,7 @@ fn render_table(table: &Table, options: &RenderOptions) -> String {
         }
 
         for cell in &row.cells {
-            let text = cell.plain_text().replace('\n', " ").replace('|', "\\|");
+            let text = render_cell_content(cell, options);
             output.push_str(&format!(" {} |", text));
         }
 
@@ -460,5 +483,185 @@ mod tests {
         assert!(md.starts_with("---\n"));
         assert!(md.contains("title: \"Test Title\""));
         assert!(md.contains("author: \"Test Author\""));
+    }
+
+    #[test]
+    fn test_table_cell_with_bold_text() {
+        let mut table = Table::new();
+
+        // Create header row
+        let header = Row::header(vec![Cell::header("Header")]);
+        table.add_row(header);
+
+        // Create data row with bold text in cell
+        let mut bold_para = Paragraph::new();
+        bold_para
+            .runs
+            .push(TextRun::styled("ClusterPlex v5.0", TextStyle::bold()));
+
+        let cell = Cell {
+            content: vec![bold_para],
+            col_span: 1,
+            row_span: 1,
+            alignment: crate::model::CellAlignment::Left,
+            vertical_alignment: crate::model::VerticalAlignment::Top,
+            is_header: false,
+            background: None,
+        };
+
+        table.add_row(Row {
+            cells: vec![cell],
+            is_header: false,
+            height: None,
+        });
+
+        let options = RenderOptions::default();
+        let md = render_table(&table, &options);
+
+        // Should contain bold formatting
+        assert!(
+            md.contains("**ClusterPlex v5.0**"),
+            "Expected bold formatting, got: {}",
+            md
+        );
+    }
+
+    #[test]
+    fn test_table_cell_with_italic_text() {
+        let mut table = Table::new();
+
+        // Create header row
+        let header = Row::header(vec![Cell::header("Header")]);
+        table.add_row(header);
+
+        // Create data row with italic text in cell
+        let mut italic_para = Paragraph::new();
+        italic_para
+            .runs
+            .push(TextRun::styled("emphasis", TextStyle::italic()));
+
+        let cell = Cell {
+            content: vec![italic_para],
+            col_span: 1,
+            row_span: 1,
+            alignment: crate::model::CellAlignment::Left,
+            vertical_alignment: crate::model::VerticalAlignment::Top,
+            is_header: false,
+            background: None,
+        };
+
+        table.add_row(Row {
+            cells: vec![cell],
+            is_header: false,
+            height: None,
+        });
+
+        let options = RenderOptions::default();
+        let md = render_table(&table, &options);
+
+        // Should contain italic formatting
+        assert!(
+            md.contains("*emphasis*"),
+            "Expected italic formatting, got: {}",
+            md
+        );
+    }
+
+    #[test]
+    fn test_table_cell_with_multiple_paragraphs() {
+        let mut table = Table::new();
+
+        // Create header row
+        let header = Row::header(vec![Cell::header("Steps")]);
+        table.add_row(header);
+
+        // Create data row with multiple paragraphs in cell
+        let para1 = Paragraph::with_text("1. Active 서버 어댑터 Disable");
+        let para2 = Paragraph::with_text("2. Standby 서버 어댑터 Enable");
+
+        let cell = Cell {
+            content: vec![para1, para2],
+            col_span: 1,
+            row_span: 1,
+            alignment: crate::model::CellAlignment::Left,
+            vertical_alignment: crate::model::VerticalAlignment::Top,
+            is_header: false,
+            background: None,
+        };
+
+        table.add_row(Row {
+            cells: vec![cell],
+            is_header: false,
+            height: None,
+        });
+
+        let options = RenderOptions::default();
+        let md = render_table(&table, &options);
+
+        // Should contain <br> between paragraphs
+        assert!(
+            md.contains("<br>"),
+            "Expected <br> separator between paragraphs, got: {}",
+            md
+        );
+        assert!(
+            md.contains("1. Active"),
+            "Expected first paragraph content, got: {}",
+            md
+        );
+        assert!(
+            md.contains("2. Standby"),
+            "Expected second paragraph content, got: {}",
+            md
+        );
+    }
+
+    #[test]
+    fn test_table_cell_with_mixed_formatting() {
+        let mut table = Table::new();
+
+        // Create header row
+        let header = Row::header(vec![Cell::header("OS"), Cell::header("리소스 타입")]);
+        table.add_row(header);
+
+        // Create data row with bold header label and normal value
+        let mut para1 = Paragraph::new();
+        para1.runs.push(TextRun::styled("OS", TextStyle::bold()));
+
+        let mut para2 = Paragraph::new();
+        para2.runs.push(TextRun::plain("Linux"));
+
+        let cell1 = Cell {
+            content: vec![para1],
+            col_span: 1,
+            row_span: 1,
+            alignment: crate::model::CellAlignment::Left,
+            vertical_alignment: crate::model::VerticalAlignment::Top,
+            is_header: false,
+            background: None,
+        };
+
+        let cell2 = Cell {
+            content: vec![para2],
+            col_span: 1,
+            row_span: 1,
+            alignment: crate::model::CellAlignment::Left,
+            vertical_alignment: crate::model::VerticalAlignment::Top,
+            is_header: false,
+            background: None,
+        };
+
+        table.add_row(Row {
+            cells: vec![cell1, cell2],
+            is_header: false,
+            height: None,
+        });
+
+        let options = RenderOptions::default();
+        let md = render_table(&table, &options);
+
+        // Should contain both bold and plain text
+        assert!(md.contains("**OS**"), "Expected bold OS, got: {}", md);
+        assert!(md.contains("Linux"), "Expected Linux text, got: {}", md);
     }
 }
