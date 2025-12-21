@@ -913,7 +913,7 @@ fn deduplicate_paragraph_block(paragraphs: Vec<Paragraph>) -> Vec<Paragraph> {
     }
 
     // Check if paragraphs form a duplicated block (first half == second half)
-    if len % 2 == 0 {
+    if len.is_multiple_of(2) {
         let half = len / 2;
         let first_half = &paragraphs[..half];
         let second_half = &paragraphs[half..];
