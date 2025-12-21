@@ -323,6 +323,13 @@ fn render_cell_content(cell: &crate::model::Cell, options: &RenderOptions) -> St
         if !para_text.is_empty() {
             parts.push(para_text);
         }
+
+        // Render inline images from paragraph (like render_paragraph does)
+        for image in &para.images {
+            let alt = image.alt_text.as_deref().unwrap_or("image");
+            let path = format!("{}{}", options.image_path_prefix, image.resource_id);
+            parts.push(format!("![{}]({})", alt, path));
+        }
     }
 
     // Render nested tables inline (flatten their content)
