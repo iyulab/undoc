@@ -1,12 +1,42 @@
 //! Markdown renderer implementation.
 
 use crate::error::Result;
-use crate::model::{Block, Document, Paragraph, Table, TextRun};
+use crate::model::{Block, Document, HeadingLevel, Paragraph, Table, TextRun};
 
+use super::heading_analyzer::{HeadingAnalyzer, HeadingDecision};
 use super::options::RenderOptions;
+
+/// Maximum character length for a heading.
+/// Text longer than this is unlikely to be a semantic heading.
+const MAX_HEADING_TEXT_LENGTH: usize = 80;
+
+/// Common list/bullet markers including Korean characters.
+/// Used to detect paragraphs that should not be rendered as headings.
+const LIST_MARKERS: &[char] = &[
+    // ASCII markers
+    '-', '*', '>', // Korean/Asian markers
+    '※', '○', '•', '●', '◦', '◎', '□', '■', '▪', '▫', '◇', '◆', '☐', '☑', '☒', '✓', '✗',
+    'ㅇ', // Korean jamo (circle)
+    'ㆍ', // Korean middle dot (U+318D)
+    '·',  // Middle dot (U+00B7)
+    '∙',  // Bullet operator (U+2219)
+    // Arrows (commonly used as list markers in Korean documents)
+    '→', '←', '↔', '⇒', '⇐', '⇔', '►', '▶', '▷', '◀', '◁', '▻',
+];
 
 /// Convert a Document to Markdown.
 pub fn to_markdown(doc: &Document, options: &RenderOptions) -> Result<String> {
+    // If heading analysis is enabled, use the analyzer
+    if let Some(ref config) = options.heading_config {
+        return to_markdown_with_analyzer(doc, options, config);
+    }
+
+    // Standard rendering without sophisticated heading analysis
+    to_markdown_standard(doc, options)
+}
+
+/// Standard markdown conversion (without heading analyzer).
+fn to_markdown_standard(doc: &Document, options: &RenderOptions) -> Result<String> {
     let mut output = String::new();
 
     // Add frontmatter if requested
@@ -28,7 +58,7 @@ pub fn to_markdown(doc: &Document, options: &RenderOptions) -> Result<String> {
         for block in &section.content {
             match block {
                 Block::Paragraph(para) => {
-                    let md = render_paragraph(para, options);
+                    let md = render_paragraph(para, options, None);
                     if !md.is_empty() || options.include_empty_paragraphs {
                         output.push_str(&md);
                         if options.paragraph_spacing {
@@ -65,7 +95,107 @@ pub fn to_markdown(doc: &Document, options: &RenderOptions) -> Result<String> {
             if !notes.is_empty() {
                 output.push_str("\n> **Notes:**\n");
                 for note in notes {
-                    let text = render_paragraph(note, options);
+                    let text = render_paragraph(note, options, None);
+                    if !text.is_empty() {
+                        output.push_str(&format!("> {}\n", text));
+                    }
+                }
+                output.push('\n');
+            }
+        }
+    }
+
+    // Apply cleanup if configured
+    let result = if let Some(ref cleanup) = options.cleanup {
+        super::cleanup::clean_text(&output, cleanup)
+    } else {
+        output.trim().to_string()
+    };
+
+    Ok(result)
+}
+
+/// Convert a Document to Markdown with sophisticated heading analysis.
+fn to_markdown_with_analyzer(
+    doc: &Document,
+    options: &RenderOptions,
+    config: &super::heading_analyzer::HeadingConfig,
+) -> Result<String> {
+    // Run two-pass heading analysis
+    let mut analyzer = HeadingAnalyzer::new(config.clone());
+    let decisions = analyzer.analyze(doc);
+
+    let mut output = String::new();
+
+    // Add frontmatter if requested
+    if options.include_frontmatter {
+        output.push_str(&render_frontmatter(doc));
+    }
+
+    // Render each section with pre-computed heading decisions
+    for (section_idx, section) in doc.sections.iter().enumerate() {
+        // Add section name as heading if present
+        if let Some(ref name) = section.name {
+            if section_idx > 0 {
+                output.push_str("\n---\n\n");
+            }
+            output.push_str(&format!("## {}\n\n", name));
+        }
+
+        // Get decisions for this section
+        let section_decisions = decisions.get(section_idx);
+
+        // Track paragraph index within section (only count Paragraph blocks)
+        let mut para_idx = 0;
+
+        // Render content blocks
+        for block in &section.content {
+            match block {
+                Block::Paragraph(para) => {
+                    // Get the pre-computed decision for this paragraph
+                    let decision = section_decisions.and_then(|d| d.get(para_idx)).copied();
+                    let md = render_paragraph(para, options, decision);
+
+                    if !md.is_empty() || options.include_empty_paragraphs {
+                        output.push_str(&md);
+                        if options.paragraph_spacing {
+                            output.push_str("\n\n");
+                        } else {
+                            output.push('\n');
+                        }
+                    }
+
+                    para_idx += 1;
+                }
+                Block::Table(table) => {
+                    output.push_str(&render_table(table, options));
+                    output.push_str("\n\n");
+                }
+                Block::PageBreak => {
+                    output.push_str("\n---\n\n");
+                }
+                Block::SectionBreak => {
+                    output.push_str("\n---\n\n");
+                }
+                Block::Image {
+                    resource_id,
+                    alt_text,
+                    ..
+                } => {
+                    let alt = alt_text.as_deref().unwrap_or("image");
+                    let path = format!("{}{}", options.image_path_prefix, resource_id);
+                    output.push_str(&format!("![{}]({})\n\n", alt, path));
+                }
+            }
+        }
+
+        // Render notes if present (for PPTX)
+        if let Some(ref notes) = section.notes {
+            if !notes.is_empty() {
+                output.push_str("\n> **Notes:**\n");
+                for note in notes {
+                    // Notes don't use heading analysis
+                    let text = render_paragraph(note, options, None);
                     if !text.is_empty() {
                         output.push_str(&format!("> {}\n", text));
                     }
@@ -113,18 +243,61 @@ fn escape_yaml(s: &str) -> String {
 }
 
 /// Render a paragraph to Markdown.
-fn render_paragraph(para: &Paragraph, options: &RenderOptions) -> String {
+///
+/// If `heading_decision` is provided (from HeadingAnalyzer), it takes precedence
+/// over the simple heading detection logic.
+fn render_paragraph(
+    para: &Paragraph,
+    options: &RenderOptions,
+    heading_decision: Option<HeadingDecision>,
+) -> String {
     let mut output = String::new();
 
     // Merge adjacent runs with the same style to avoid issues like:
     // **시** **험** **합** -> **시험합**
     let merged_para = para.with_merged_runs();
 
-    // Handle heading
-    if merged_para.heading.is_heading() {
-        let level = merged_para.heading.level().min(options.max_heading_level);
-        output.push_str(&"#".repeat(level as usize));
-        output.push(' ');
+    // Handle heading based on decision or fallback to simple logic
+    let effective_heading: Option<HeadingLevel> = if let Some(decision) = heading_decision {
+        // Use analyzer's decision
+        match decision {
+            HeadingDecision::Explicit(level) | HeadingDecision::Inferred(level) => Some(level),
+            HeadingDecision::Demoted | HeadingDecision::None => None,
+        }
+    } else {
+        // Fallback: simple heading detection (legacy behavior)
+        if merged_para.heading.is_heading() {
+            let plain_text = merged_para.plain_text();
+            let trimmed_text = plain_text.trim();
+
+            // Check if paragraph looks like a list item (starts with list-like markers)
+            let looks_like_list_item = trimmed_text
+                .chars()
+                .next()
+                .is_some_and(|c| LIST_MARKERS.contains(&c));
+
+            // Check if text is too long to be a meaningful heading
+            let text_too_long = trimmed_text.chars().count() > MAX_HEADING_TEXT_LENGTH;
+
+            // Apply heading only if it's truly semantic
+            if !looks_like_list_item && !text_too_long {
+                let level = merged_para.heading.level().min(options.max_heading_level);
+                Some(HeadingLevel::from_number(level))
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    };
+
+    // Apply heading formatting if determined
+    if let Some(level) = effective_heading {
+        let capped_level = level.level().min(options.max_heading_level);
+        if capped_level > 0 {
+            output.push_str(&"#".repeat(capped_level as usize));
+            output.push(' ');
+        }
     }
 
     // Handle list items
@@ -460,7 +633,7 @@ mod tests {
     fn test_basic_paragraph() {
         let para = Paragraph::with_text("Hello, World!");
         let options = RenderOptions::default();
-        let md = render_paragraph(&para, &options);
+        let md = render_paragraph(&para, &options, None);
         // Most punctuation is NOT escaped - only special in specific contexts
         // Only `\`, `` ` ``, `*`, `_`, `|` are always escaped
         assert_eq!(md, "Hello, World!");
@@ -470,7 +643,7 @@ mod tests {
     fn test_heading() {
         let para = Paragraph::heading(HeadingLevel::H2, "Title");
         let options = RenderOptions::default();
-        let md = render_paragraph(&para, &options);
+        let md = render_paragraph(&para, &options, None);
         assert_eq!(md, "## Title");
     }
 
@@ -483,7 +656,7 @@ mod tests {
             .push(TextRun::styled("italic", TextStyle::italic()));
 
         let options = RenderOptions::default();
-        let md = render_paragraph(&para, &options);
+        let md = render_paragraph(&para, &options, None);
         assert!(md.contains("**bold**"));
         assert!(md.contains("*italic*"));
     }
@@ -495,7 +668,7 @@ mod tests {
             .push(TextRun::link("click here", "https://example.com"));
 
         let options = RenderOptions::default();
-        let md = render_paragraph(&para, &options);
+        let md = render_paragraph(&para, &options, None);
         assert!(md.contains("[click here](https://example.com)"));
     }
 
@@ -544,6 +717,84 @@ mod tests {
         assert!(md.starts_with("---\n"));
         assert!(md.contains("title: \"Test Title\""));
         assert!(md.contains("author: \"Test Author\""));
+    }
+
+    #[test]
+    fn test_korean_bullet_marker_not_heading() {
+        // Paragraphs starting with Korean bullet markers should not be headings
+        let para = Paragraph::heading(HeadingLevel::H2, "ㅇ항목 내용입니다");
+        let options = RenderOptions::default();
+        let md = render_paragraph(&para, &options, None);
+
+        assert!(
+            !md.contains("##"),
+            "Korean bullet marker should not be heading: {}",
+            md
+        );
+        assert!(
+            md.contains("ㅇ항목"),
+            "Content should still be present: {}",
+            md
+        );
+    }
+
+    #[test]
+    fn test_long_text_not_heading() {
+        // Very long text (>80 chars) should not be treated as a heading
+        let long_text = "이것은 매우 긴 문장입니다. 제목으로 사용하기에는 너무 길어서 본문으로 처리되어야 합니다. 일반적인 제목은 짧고 간결해야 하며, 본문과 구분되어야 합니다.";
+        assert!(
+            long_text.chars().count() > 80,
+            "Test text should be longer than 80 chars"
+        );
+
+        let para = Paragraph::heading(HeadingLevel::H3, long_text);
+        let options = RenderOptions::default();
+        let md = render_paragraph(&para, &options, None);
+
+        assert!(
+            !md.contains("###"),
+            "Long text should not have heading markers: {}",
+            md
+        );
+        assert!(
+            md.contains("이것은 매우"),
+            "Content should still be present: {}",
+            md
+        );
+    }
+
+    #[test]
+    fn test_max_heading_level_capped() {
+        // Heading levels beyond max (4) should be capped
+        let para = Paragraph::heading(HeadingLevel::H6, "Deep Heading");
+        let options = RenderOptions::default();
+        let md = render_paragraph(&para, &options, None);
+
+        // Default max_heading_level is now 4
+        assert!(
+            md.contains("#### Deep Heading"),
+            "Heading level 6 should be capped to 4: {}",
+            md
+        );
+        assert!(
+            !md.contains("######"),
+            "Should not have 6 hash marks: {}",
+            md
+        );
+    }
+
+    #[test]
+    fn test_arrow_marker_not_heading() {
+        // Paragraphs starting with arrow markers should not be headings
+        let para = Paragraph::heading(HeadingLevel::H2, "→ 다음 단계로 이동");
+        let options = RenderOptions::default();
+        let md = render_paragraph(&para, &options, None);
+
+        assert!(
+            !md.contains("##"),
+            "Arrow marker should not be heading: {}",
+            md
+        );
     }
 
     #[test]

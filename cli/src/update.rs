@@ -4,10 +4,86 @@ use colored::Colorize;
 use indicatif::{ProgressBar, ProgressStyle};
 use self_update::backends::github::{ReleaseList, Update};
 use self_update::cargo_crate_version;
+use semver::Version;
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
 
 const REPO_OWNER: &str = "iyulab";
 const REPO_NAME: &str = "undoc";
 const BIN_NAME: &str = "undoc";
+
+/// Result of background update check
+pub struct UpdateCheckResult {
+    pub has_update: bool,
+    pub latest_version: String,
+    pub current_version: String,
+}
+
+/// Spawns a background thread to check for updates.
+/// Returns a receiver that will contain the result when ready.
+pub fn check_update_async() -> mpsc::Receiver<Option<UpdateCheckResult>> {
+    let (tx, rx) = mpsc::channel();
+
+    thread::spawn(move || {
+        let result = check_latest_version();
+        let _ = tx.send(result);
+    });
+
+    rx
+}
+
+/// Check for latest version without blocking (internal)
+fn check_latest_version() -> Option<UpdateCheckResult> {
+    let current_version = cargo_crate_version!();
+
+    // Fetch releases from GitHub with timeout
+    let releases = ReleaseList::configure()
+        .repo_owner(REPO_OWNER)
+        .repo_name(REPO_NAME)
+        .build()
+        .ok()?
+        .fetch()
+        .ok()?;
+
+    if releases.is_empty() {
+        return None;
+    }
+
+    let latest = &releases[0];
+    let latest_version = latest.version.trim_start_matches('v');
+
+    let current = Version::parse(current_version).ok()?;
+    let latest_ver = Version::parse(latest_version).ok()?;
+
+    Some(UpdateCheckResult {
+        has_update: latest_ver > current,
+        latest_version: latest_version.to_string(),
+        current_version: current_version.to_string(),
+    })
+}
+
+/// Try to receive update check result (non-blocking with short timeout)
+pub fn try_get_update_result(
+    rx: &mpsc::Receiver<Option<UpdateCheckResult>>,
+) -> Option<UpdateCheckResult> {
+    // Wait up to 500ms for the result
+    rx.recv_timeout(Duration::from_millis(500)).ok().flatten()
+}
+
+/// Print update notification if new version available
+pub fn print_update_notification(result: &UpdateCheckResult) {
+    if result.has_update {
+        println!();
+        println!(
+            "{} {} → {} available! Run '{}' to update.",
+            "Update:".yellow().bold(),
+            result.current_version,
+            result.latest_version.green(),
+            "undoc update".cyan()
+        );
+    }
+}
 
 /// Run the update process
 pub fn run_update(check_only: bool, force: bool) -> Result<(), Box<dyn std::error::Error>> {

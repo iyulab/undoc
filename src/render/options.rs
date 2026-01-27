@@ -2,6 +2,8 @@
 
 use std::path::PathBuf;
 
+use super::heading_analyzer::HeadingConfig;
+
 /// How to render complex tables.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum TableFallback {
@@ -107,7 +109,8 @@ pub struct RenderOptions {
     /// How to handle complex tables
     pub table_fallback: TableFallback,
 
-    /// Maximum heading level (1-6)
+    /// Maximum heading level (1-6).
+    /// Default: 4 (Office documents often misuse deep heading levels for visual styling)
     pub max_heading_level: u8,
 
     /// Include YAML frontmatter with metadata
@@ -133,6 +136,10 @@ pub struct RenderOptions {
 
     /// Cleanup options (None = no cleanup)
     pub cleanup: Option<CleanupOptions>,
+
+    /// Heading analysis configuration.
+    /// When set, enables sophisticated heading detection with multi-priority analysis.
+    pub heading_config: Option<HeadingConfig>,
 }
 
 impl Default for RenderOptions {
@@ -141,7 +148,7 @@ impl Default for RenderOptions {
             image_dir: None,
             image_path_prefix: String::new(),
             table_fallback: TableFallback::Markdown,
-            max_heading_level: 6,
+            max_heading_level: 4,
             include_frontmatter: false,
             preserve_line_breaks: false,
             include_empty_paragraphs: false,
@@ -150,6 +157,7 @@ impl Default for RenderOptions {
             paragraph_spacing: true,
             escape_special_chars: true,
             cleanup: None,
+            heading_config: None,
         }
     }
 }
@@ -213,6 +221,18 @@ impl RenderOptions {
         self.preserve_line_breaks = preserve;
         self
     }
+
+    /// Enable sophisticated heading analysis with default config.
+    pub fn with_heading_analysis(mut self) -> Self {
+        self.heading_config = Some(HeadingConfig::default());
+        self
+    }
+
+    /// Enable sophisticated heading analysis with custom config.
+    pub fn with_heading_config(mut self, config: HeadingConfig) -> Self {
+        self.heading_config = Some(config);
+        self
+    }
 }
 
 #[cfg(test)]
@@ -225,6 +245,9 @@ mod tests {
         assert!(opts.image_dir.is_none());
         assert!(opts.include_frontmatter == false);
         assert_eq!(opts.table_fallback, TableFallback::Markdown);
+        // Default max_heading_level is 4 (not 6) because Office documents
+        // often misuse deep heading levels for visual styling
+        assert_eq!(opts.max_heading_level, 4);
     }
 
     #[test]

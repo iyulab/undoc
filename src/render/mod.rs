@@ -22,12 +22,14 @@
 //! ```
 
 mod cleanup;
+pub mod heading_analyzer;
 mod json;
 mod markdown;
 mod options;
 mod text;
 
 pub use cleanup::{clean_text, detect_mojibake};
+pub use heading_analyzer::{DocumentStats, HeadingAnalyzer, HeadingConfig, HeadingDecision};
 pub use json::{to_json, to_json_default, to_json_with_options, JsonFormat};
 pub use markdown::to_markdown;
 pub use options::{CleanupOptions, CleanupPreset, RenderOptions, TableFallback};

@@ -81,8 +81,8 @@ enum Commands {
         #[arg(long)]
         cleanup: Option<CleanupMode>,
 
-        /// Maximum heading level (1-6)
-        #[arg(long, default_value = "6")]
+        /// Maximum heading level (1-6, default: 4)
+        #[arg(long, default_value = "4")]
         max_heading: u8,
     },
 
@@ -187,10 +187,37 @@ impl From<CleanupMode> for CleanupPreset {
     }
 }
 
+/// Check if we should perform background update check.
+/// Skip for update/version commands to avoid redundant checks.
+fn should_check_update(cli: &Cli) -> bool {
+    !matches!(
+        &cli.command,
+        Some(Commands::Update { .. }) | Some(Commands::Version)
+    )
+}
+
 fn main() {
     let cli = Cli::parse();
 
-    if let Err(e) = run(cli) {
+    // Start background update check (except for update/version commands)
+    let update_rx = if should_check_update(&cli) {
+        Some(update::check_update_async())
+    } else {
+        None
+    };
+
+    // Run the main command
+    let result = run(cli);
+
+    // Check for update result and show notification if available
+    if let Some(rx) = update_rx {
+        if let Some(update_result) = update::try_get_update_result(&rx) {
+            update::print_update_notification(&update_result);
+        }
+    }
+
+    // Handle errors
+    if let Err(e) = result {
         eprintln!("{}: {}", "Error".red().bold(), e);
         std::process::exit(1);
     }
@@ -406,6 +433,9 @@ fn run_convert(
     output: Option<&PathBuf>,
     cleanup: Option<CleanupMode>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Start async update check in background
+    let update_rx = update::check_update_async();
+
     let pb = create_spinner("Parsing document...");
 
     // Determine output directory
@@ -487,6 +517,11 @@ fn run_convert(
     println!("{}: {}", "Sections".bold(), doc.sections.len());
     println!("{}: {}", "Words".bold(), word_count);
     println!("{}: {}", "Resources".bold(), resource_count);
+
+    // Check for update result and notify if available
+    if let Some(result) = update::try_get_update_result(&update_rx) {
+        update::print_update_notification(&result);
+    }
 
     Ok(())
 }
