@@ -36,4 +36,9 @@ fn main() {
     if let Ok(content) = container.read_xml("ppt/_rels/presentation.xml.rels") {
         println!("{}", content);
     }
+
+    println!("\n=== ppt/slides/_rels/slide1.xml.rels ===");
+    if let Ok(content) = container.read_xml("ppt/slides/_rels/slide1.xml.rels") {
+        println!("{}", content);
+    }
 }

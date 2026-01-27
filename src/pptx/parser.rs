@@ -3,9 +3,10 @@
 use crate::container::OoxmlContainer;
 use crate::error::{Error, Result};
 use crate::model::{
-    Block, Cell, Document, Metadata, Paragraph, Resource, ResourceType, Row, Section, Table,
-    TextRun, TextStyle,
+    Block, Cell, Document, HeadingLevel, Metadata, Paragraph, Resource, ResourceType, Row,
+    Section, Table, TextRun, TextStyle,
 };
+use crate::charts;
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -158,6 +159,14 @@ impl PptxParser {
         // Parse metadata
         doc.metadata = self.parse_metadata()?;
 
+        // Extract resources (images, media) and add to document
+        let resources = self.extract_resources()?;
+        for resource in resources {
+            if let Some(ref filename) = resource.filename {
+                doc.add_resource(filename.clone(), resource);
+            }
+        }
+
         // Parse each slide as a section
         for (idx, slide) in self.slides.clone().iter().enumerate() {
             let mut section = Section::new(idx);
@@ -171,8 +180,11 @@ impl PptxParser {
                     format!("ppt/{}", target)
                 };
 
+                // Parse slide-specific relationships for hyperlinks and images
+                let slide_rels = self.parse_slide_relationships(&slide_path)?;
+
                 if let Ok(xml) = self.container.read_xml(&slide_path) {
-                    let blocks = self.parse_slide_content(&xml)?;
+                    let blocks = self.parse_slide_content_with_rels(&xml, &slide_rels, &slide_path)?;
                     for block in blocks {
                         section.add_block(block);
                     }
@@ -183,7 +195,9 @@ impl PptxParser {
                     .replace("slides/slide", "notesSlides/notesSlide")
                     .replace("slides\\slide", "notesSlides\\notesSlide");
                 if let Ok(xml) = self.container.read_xml(&notes_path) {
-                    let notes = self.parse_notes(&xml)?;
+                    // Parse notes relationships too
+                    let notes_rels = self.parse_slide_relationships(&notes_path)?;
+                    let notes = self.parse_notes_with_rels(&xml, &notes_rels)?;
                     if !notes.is_empty() {
                         // Add a separator and notes
                         section.add_block(Block::Paragraph(Paragraph::with_text("--- Notes ---")));
@@ -198,6 +212,72 @@ impl PptxParser {
         }
 
         Ok(doc)
+    }
+
+    /// Parse relationships for a specific slide/notes file.
+    fn parse_slide_relationships(&self, slide_path: &str) -> Result<HashMap<String, String>> {
+        let mut rels = HashMap::new();
+
+        // Convert slide path to its rels path
+        // ppt/slides/slide1.xml -> ppt/slides/_rels/slide1.xml.rels
+        let rels_path = if let Some(last_slash) = slide_path.rfind('/') {
+            let dir = &slide_path[..last_slash];
+            let file = &slide_path[last_slash + 1..];
+            format!("{}/_rels/{}.rels", dir, file)
+        } else {
+            format!("_rels/{}.rels", slide_path)
+        };
+
+        if let Ok(xml) = self.container.read_xml(&rels_path) {
+            let mut reader = quick_xml::Reader::from_str(&xml);
+            reader.config_mut().trim_text(true);
+
+            let mut buf = Vec::new();
+
+            loop {
+                match reader.read_event_into(&mut buf) {
+                    Ok(quick_xml::events::Event::Empty(e))
+                    | Ok(quick_xml::events::Event::Start(e)) => {
+                        if e.name().as_ref() == b"Relationship" {
+                            let mut id = String::new();
+                            let mut target = String::new();
+                            let mut rel_type = String::new();
+
+                            for attr in e.attributes().flatten() {
+                                match attr.key.as_ref() {
+                                    b"Id" => {
+                                        id = String::from_utf8_lossy(&attr.value).to_string();
+                                    }
+                                    b"Target" => {
+                                        target = String::from_utf8_lossy(&attr.value).to_string();
+                                    }
+                                    b"Type" => {
+                                        rel_type = String::from_utf8_lossy(&attr.value).to_string();
+                                    }
+                                    _ => {}
+                                }
+                            }
+
+                            // Store hyperlinks, image, and chart relationships
+                            if !id.is_empty()
+                                && !target.is_empty()
+                                && (rel_type.contains("hyperlink")
+                                    || rel_type.contains("image")
+                                    || rel_type.contains("chart"))
+                            {
+                                rels.insert(id, target);
+                            }
+                        }
+                    }
+                    Ok(quick_xml::events::Event::Eof) => break,
+                    Err(_) => break,
+                    _ => {}
+                }
+                buf.clear();
+            }
+        }
+
+        Ok(rels)
     }
 
     /// Parse metadata from docProps/core.xml.
@@ -216,31 +296,327 @@ impl PptxParser {
     }
 
     /// Parse slide XML into content blocks (paragraphs and tables).
+    #[allow(dead_code)]
     fn parse_slide_content(&self, xml: &str) -> Result<Vec<Block>> {
+        self.parse_slide_content_with_rels(xml, &HashMap::new(), "")
+    }
+
+    /// Parse slide XML into content blocks with relationship map for hyperlinks, images, and charts.
+    fn parse_slide_content_with_rels(
+        &self,
+        xml: &str,
+        rels: &HashMap<String, String>,
+        slide_path: &str,
+    ) -> Result<Vec<Block>> {
         let mut blocks = Vec::new();
 
         // Parse text content first (title, headings usually come before tables)
-        let paragraphs = self.parse_text_content_excluding_tables(xml)?;
+        let paragraphs = self.parse_text_content_excluding_tables_with_rels(xml, rels)?;
         for para in paragraphs {
             blocks.push(Block::Paragraph(para));
         }
 
         // Parse tables after text content
-        let tables = self.parse_tables(xml)?;
+        let tables = self.parse_tables_with_rels(xml, rels)?;
         for table in tables {
             blocks.push(Block::Table(table));
+        }
+
+        // Parse charts and convert to tables for RAG-ready output
+        let chart_tables = self.parse_charts(rels, slide_path)?;
+        for table in chart_tables {
+            blocks.push(Block::Table(table));
+        }
+
+        // Parse images (p:pic elements)
+        let images = self.parse_images(xml, rels)?;
+        for image in images {
+            blocks.push(image);
         }
 
         Ok(blocks)
     }
 
+    /// Parse images from slide XML.
+    /// Images are in <p:pic> elements with <a:blip r:embed="rIdN"> referencing relationships.
+    fn parse_images(
+        &self,
+        xml: &str,
+        rels: &HashMap<String, String>,
+    ) -> Result<Vec<Block>> {
+        let mut images = Vec::new();
+        let mut reader = quick_xml::Reader::from_str(xml);
+        reader.config_mut().trim_text(true);
+
+        let mut buf = Vec::new();
+        let mut in_pic = false;
+        let mut in_nvpicpr = false;
+        let mut in_blipfill = false;
+        let mut in_sppr = false;
+        let mut current_name: Option<String> = None;
+        let mut current_rel_id: Option<String> = None;
+        let mut current_width: Option<u32> = None;
+        let mut current_height: Option<u32> = None;
+
+        loop {
+            match reader.read_event_into(&mut buf) {
+                Ok(quick_xml::events::Event::Start(ref e)) => {
+                    let local_name = e.name().local_name();
+                    match local_name.as_ref() {
+                        // p:pic - picture element
+                        b"pic" => {
+                            in_pic = true;
+                            current_name = None;
+                            current_rel_id = None;
+                            current_width = None;
+                            current_height = None;
+                        }
+                        // p:nvPicPr - non-visual picture properties (contains name)
+                        b"nvPicPr" if in_pic => {
+                            in_nvpicpr = true;
+                        }
+                        // p:cNvPr - common non-visual properties (has name attribute)
+                        b"cNvPr" if in_nvpicpr => {
+                            for attr in e.attributes().flatten() {
+                                if attr.key.local_name().as_ref() == b"name" {
+                                    current_name =
+                                        Some(String::from_utf8_lossy(&attr.value).to_string());
+                                }
+                            }
+                        }
+                        // p:blipFill - blip fill (contains the image reference)
+                        b"blipFill" if in_pic => {
+                            in_blipfill = true;
+                        }
+                        // a:blip - the actual image reference
+                        b"blip" if in_blipfill => {
+                            for attr in e.attributes().flatten() {
+                                // r:embed attribute contains the relationship ID
+                                if attr.key.local_name().as_ref() == b"embed" {
+                                    current_rel_id =
+                                        Some(String::from_utf8_lossy(&attr.value).to_string());
+                                }
+                            }
+                        }
+                        // p:spPr - shape properties (contains size)
+                        b"spPr" if in_pic => {
+                            in_sppr = true;
+                        }
+                        // a:ext - extent (size)
+                        b"ext" if in_sppr => {
+                            for attr in e.attributes().flatten() {
+                                match attr.key.local_name().as_ref() {
+                                    b"cx" => {
+                                        if let Ok(cx) =
+                                            String::from_utf8_lossy(&attr.value).parse::<u32>()
+                                        {
+                                            current_width = Some(cx);
+                                        }
+                                    }
+                                    b"cy" => {
+                                        if let Ok(cy) =
+                                            String::from_utf8_lossy(&attr.value).parse::<u32>()
+                                        {
+                                            current_height = Some(cy);
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(quick_xml::events::Event::Empty(ref e)) => {
+                    let local_name = e.name().local_name();
+                    match local_name.as_ref() {
+                        // Handle self-closing cNvPr
+                        b"cNvPr" if in_nvpicpr => {
+                            for attr in e.attributes().flatten() {
+                                if attr.key.local_name().as_ref() == b"name" {
+                                    current_name =
+                                        Some(String::from_utf8_lossy(&attr.value).to_string());
+                                }
+                            }
+                        }
+                        // Handle self-closing blip
+                        b"blip" if in_blipfill => {
+                            for attr in e.attributes().flatten() {
+                                if attr.key.local_name().as_ref() == b"embed" {
+                                    current_rel_id =
+                                        Some(String::from_utf8_lossy(&attr.value).to_string());
+                                }
+                            }
+                        }
+                        // Handle self-closing ext
+                        b"ext" if in_sppr => {
+                            for attr in e.attributes().flatten() {
+                                match attr.key.local_name().as_ref() {
+                                    b"cx" => {
+                                        if let Ok(cx) =
+                                            String::from_utf8_lossy(&attr.value).parse::<u32>()
+                                        {
+                                            current_width = Some(cx);
+                                        }
+                                    }
+                                    b"cy" => {
+                                        if let Ok(cy) =
+                                            String::from_utf8_lossy(&attr.value).parse::<u32>()
+                                        {
+                                            current_height = Some(cy);
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(quick_xml::events::Event::End(ref e)) => {
+                    let local_name = e.name().local_name();
+                    match local_name.as_ref() {
+                        b"pic" => {
+                            // Create image block if we have a valid relationship
+                            if let Some(rel_id) = current_rel_id.take() {
+                                if let Some(target) = rels.get(&rel_id) {
+                                    // Extract filename from target path (e.g., "../media/image1.png" -> "image1.png")
+                                    let filename = target
+                                        .rsplit('/')
+                                        .next()
+                                        .unwrap_or(target)
+                                        .to_string();
+
+                                    images.push(Block::Image {
+                                        resource_id: filename,
+                                        alt_text: current_name.take(),
+                                        width: current_width.take(),
+                                        height: current_height.take(),
+                                    });
+                                }
+                            }
+                            in_pic = false;
+                        }
+                        b"nvPicPr" => {
+                            in_nvpicpr = false;
+                        }
+                        b"blipFill" => {
+                            in_blipfill = false;
+                        }
+                        b"spPr" => {
+                            in_sppr = false;
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(quick_xml::events::Event::Eof) => break,
+                Err(e) => return Err(Error::XmlParse(e.to_string())),
+                _ => {}
+            }
+            buf.clear();
+        }
+
+        Ok(images)
+    }
+
+    /// Parse charts referenced in slide relationships and convert to tables for RAG-ready output.
+    /// Chart data is extracted from ppt/charts/chartN.xml files.
+    fn parse_charts(
+        &self,
+        rels: &HashMap<String, String>,
+        slide_path: &str,
+    ) -> Result<Vec<Table>> {
+        let mut tables = Vec::new();
+
+        // Find chart relationships (target contains "chart")
+        for (_rel_id, target) in rels.iter() {
+            if !target.contains("chart") {
+                continue;
+            }
+
+            // Resolve chart path relative to slide
+            // Relationship target is like "../charts/chart1.xml"
+            let chart_path = if target.starts_with("../") {
+                // Relative path from slide directory
+                if let Some(last_slash) = slide_path.rfind('/') {
+                    let slide_dir = &slide_path[..last_slash];
+                    if let Some(parent_slash) = slide_dir.rfind('/') {
+                        let parent_dir = &slide_dir[..parent_slash];
+                        format!("{}/{}", parent_dir, &target[3..])
+                    } else {
+                        target[3..].to_string()
+                    }
+                } else {
+                    target[3..].to_string()
+                }
+            } else if target.starts_with('/') {
+                target[1..].to_string()
+            } else {
+                format!("ppt/{}", target)
+            };
+
+            // Read and parse chart XML
+            if let Ok(chart_xml) = self.container.read_xml(&chart_path) {
+                match charts::parse_chart_xml(&chart_xml) {
+                    Ok(chart_data) => {
+                        if !chart_data.is_empty() {
+                            let mut table = chart_data.to_table();
+                            // Add chart title as caption if available
+                            if let Some(ref title) = chart_data.title {
+                                if !title.is_empty() {
+                                    // Update first header cell to include chart title
+                                    if let Some(first_row) = table.rows.first_mut() {
+                                        if let Some(first_cell) = first_row.cells.first_mut() {
+                                            let original = first_cell.plain_text();
+                                            first_cell.content.clear();
+                                            first_cell.content.push(Paragraph::with_text(
+                                                format!("{} ({})", original, title),
+                                            ));
+                                        }
+                                    }
+                                }
+                            }
+                            tables.push(table);
+                        }
+                    }
+                    Err(_) => {
+                        // Chart parsing failed, skip this chart
+                        // In Phase 2, we would add a warning here
+                    }
+                }
+            }
+        }
+
+        Ok(tables)
+    }
+
     /// Parse notes slide XML into paragraphs.
+    #[allow(dead_code)]
     fn parse_notes(&self, xml: &str) -> Result<Vec<Paragraph>> {
-        self.parse_text_content(xml)
+        self.parse_notes_with_rels(xml, &HashMap::new())
+    }
+
+    /// Parse notes slide XML into paragraphs with relationship map.
+    fn parse_notes_with_rels(
+        &self,
+        xml: &str,
+        rels: &HashMap<String, String>,
+    ) -> Result<Vec<Paragraph>> {
+        self.parse_text_content_with_rels(xml, rels)
     }
 
     /// Parse all tables from slide XML.
+    #[allow(dead_code)]
     fn parse_tables(&self, xml: &str) -> Result<Vec<Table>> {
+        self.parse_tables_with_rels(xml, &HashMap::new())
+    }
+
+    /// Parse all tables from slide XML with relationship map for hyperlinks.
+    fn parse_tables_with_rels(
+        &self,
+        xml: &str,
+        rels: &HashMap<String, String>,
+    ) -> Result<Vec<Table>> {
         let mut tables = Vec::new();
         let mut reader = quick_xml::Reader::from_str(xml);
         // Don't trim text - preserve whitespace from xml:space="preserve" elements
@@ -254,6 +630,7 @@ impl PptxParser {
         let mut in_paragraph = false;
         let mut in_run = false;
         let mut in_text = false;
+        let mut in_rpr = false;
 
         let mut current_table = Table::new();
         let mut current_row = Row::new();
@@ -262,6 +639,7 @@ impl PptxParser {
         let mut current_runs: Vec<TextRun> = Vec::new();
         let mut current_text = String::new();
         let mut current_style = TextStyle::default();
+        let mut current_hyperlink: Option<String> = None;
 
         loop {
             match reader.read_event_into(&mut buf) {
@@ -298,12 +676,47 @@ impl PptxParser {
                             in_run = true;
                             current_text.clear();
                             current_style = TextStyle::default();
+                            current_hyperlink = None;
                         }
                         // a:t - text element
                         b"t" if in_run => {
                             in_text = true;
                         }
                         // a:rPr - run properties
+                        b"rPr" if in_run => {
+                            in_rpr = true;
+                            for attr in e.attributes().flatten() {
+                                match attr.key.local_name().as_ref() {
+                                    b"b" => {
+                                        let val = String::from_utf8_lossy(&attr.value);
+                                        current_style.bold = val != "0" && val != "false";
+                                    }
+                                    b"i" => {
+                                        let val = String::from_utf8_lossy(&attr.value);
+                                        current_style.italic = val != "0" && val != "false";
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        // a:hlinkClick - hyperlink (nested in a:rPr)
+                        b"hlinkClick" if in_rpr => {
+                            for attr in e.attributes().flatten() {
+                                if attr.key.local_name().as_ref() == b"id" {
+                                    let rel_id = String::from_utf8_lossy(&attr.value);
+                                    if let Some(url) = rels.get(rel_id.as_ref()) {
+                                        current_hyperlink = Some(url.clone());
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(quick_xml::events::Event::Empty(ref e)) => {
+                    let local_name = e.name().local_name();
+                    match local_name.as_ref() {
+                        // Handle self-closing run properties
                         b"rPr" if in_run => {
                             for attr in e.attributes().flatten() {
                                 match attr.key.local_name().as_ref() {
@@ -319,26 +732,18 @@ impl PptxParser {
                                 }
                             }
                         }
-                        _ => {}
-                    }
-                }
-                Ok(quick_xml::events::Event::Empty(ref e)) => {
-                    let local_name = e.name().local_name();
-                    // Handle self-closing run properties
-                    if local_name.as_ref() == b"rPr" && in_run {
-                        for attr in e.attributes().flatten() {
-                            match attr.key.local_name().as_ref() {
-                                b"b" => {
-                                    let val = String::from_utf8_lossy(&attr.value);
-                                    current_style.bold = val != "0" && val != "false";
+                        // a:hlinkClick - hyperlink (self-closing)
+                        b"hlinkClick" if in_run => {
+                            for attr in e.attributes().flatten() {
+                                if attr.key.local_name().as_ref() == b"id" {
+                                    let rel_id = String::from_utf8_lossy(&attr.value);
+                                    if let Some(url) = rels.get(rel_id.as_ref()) {
+                                        current_hyperlink = Some(url.clone());
+                                    }
                                 }
-                                b"i" => {
-                                    let val = String::from_utf8_lossy(&attr.value);
-                                    current_style.italic = val != "0" && val != "false";
-                                }
-                                _ => {}
                             }
                         }
+                        _ => {}
                     }
                 }
                 Ok(quick_xml::events::Event::Text(ref e)) => {
@@ -353,15 +758,19 @@ impl PptxParser {
                         b"t" => {
                             in_text = false;
                         }
+                        b"rPr" => {
+                            in_rpr = false;
+                        }
                         b"r" => {
                             if !current_text.is_empty() {
                                 current_runs.push(TextRun {
                                     text: current_text.clone(),
                                     style: current_style.clone(),
-                                    hyperlink: None,
+                                    hyperlink: current_hyperlink.clone(),
                                 });
                             }
                             in_run = false;
+                            current_hyperlink = None;
                         }
                         b"p" if in_txbody => {
                             if !current_runs.is_empty() {
@@ -410,7 +819,17 @@ impl PptxParser {
     }
 
     /// Parse text content excluding tables (paragraphs from shapes, not table cells).
+    #[allow(dead_code)]
     fn parse_text_content_excluding_tables(&self, xml: &str) -> Result<Vec<Paragraph>> {
+        self.parse_text_content_excluding_tables_with_rels(xml, &HashMap::new())
+    }
+
+    /// Parse text content excluding tables with relationship map for hyperlinks.
+    fn parse_text_content_excluding_tables_with_rels(
+        &self,
+        xml: &str,
+        rels: &HashMap<String, String>,
+    ) -> Result<Vec<Paragraph>> {
         let mut paragraphs = Vec::new();
         let mut reader = quick_xml::Reader::from_str(xml);
         // Don't trim text - preserve whitespace from xml:space="preserve" elements
@@ -419,12 +838,17 @@ impl PptxParser {
         let mut buf = Vec::new();
         let mut in_table = false;
         let mut table_depth = 0;
+        let mut in_shape = false;
+        let mut in_txbody = false;
         let mut in_paragraph = false;
         let mut in_run = false;
         let mut in_text = false;
+        let mut in_rpr = false;
         let mut current_runs: Vec<TextRun> = Vec::new();
         let mut current_text = String::new();
         let mut current_style = TextStyle::default();
+        let mut current_hyperlink: Option<String> = None;
+        let mut current_heading: HeadingLevel = HeadingLevel::None;
 
         loop {
             match reader.read_event_into(&mut buf) {
@@ -436,8 +860,17 @@ impl PptxParser {
                             in_table = true;
                             table_depth += 1;
                         }
-                        // a:p - paragraph (only if not in table)
-                        b"p" if !in_table => {
+                        // p:sp - shape
+                        b"sp" if !in_table => {
+                            in_shape = true;
+                            current_heading = HeadingLevel::None;
+                        }
+                        // p:txBody - text body in shape
+                        b"txBody" if in_shape && !in_table => {
+                            in_txbody = true;
+                        }
+                        // a:p - paragraph (only if not in table, but in shape's txBody)
+                        b"p" if !in_table && in_txbody => {
                             in_paragraph = true;
                             current_runs.clear();
                         }
@@ -446,12 +879,83 @@ impl PptxParser {
                             in_run = true;
                             current_text.clear();
                             current_style = TextStyle::default();
+                            current_hyperlink = None;
                         }
                         // a:t - text element
                         b"t" if in_run && !in_table => {
                             in_text = true;
                         }
                         // a:rPr - run properties
+                        b"rPr" if in_run && !in_table => {
+                            in_rpr = true;
+                            for attr in e.attributes().flatten() {
+                                match attr.key.local_name().as_ref() {
+                                    b"b" => {
+                                        let val = String::from_utf8_lossy(&attr.value);
+                                        current_style.bold = val != "0" && val != "false";
+                                    }
+                                    b"i" => {
+                                        let val = String::from_utf8_lossy(&attr.value);
+                                        current_style.italic = val != "0" && val != "false";
+                                    }
+                                    b"u" => {
+                                        let val = String::from_utf8_lossy(&attr.value);
+                                        current_style.underline = val != "none";
+                                    }
+                                    b"strike" => {
+                                        let val = String::from_utf8_lossy(&attr.value);
+                                        current_style.strikethrough =
+                                            val != "noStrike" && val != "0" && val != "false";
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        // a:hlinkClick - hyperlink (nested in a:rPr)
+                        b"hlinkClick" if in_rpr && !in_table => {
+                            for attr in e.attributes().flatten() {
+                                if attr.key.local_name().as_ref() == b"id" {
+                                    let rel_id = String::from_utf8_lossy(&attr.value);
+                                    if let Some(url) = rels.get(rel_id.as_ref()) {
+                                        current_hyperlink = Some(url.clone());
+                                    }
+                                }
+                            }
+                        }
+                        // p:ph - placeholder type (for heading detection)
+                        b"ph" if in_shape && !in_table => {
+                            for attr in e.attributes().flatten() {
+                                if attr.key.local_name().as_ref() == b"type" {
+                                    let ph_type = String::from_utf8_lossy(&attr.value);
+                                    current_heading = match ph_type.as_ref() {
+                                        "title" | "ctrTitle" => HeadingLevel::H1,
+                                        "subTitle" => HeadingLevel::H2,
+                                        "body" => HeadingLevel::None,
+                                        _ => HeadingLevel::None,
+                                    };
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(quick_xml::events::Event::Empty(ref e)) => {
+                    let local_name = e.name().local_name();
+                    match local_name.as_ref() {
+                        // p:ph - placeholder type (self-closing)
+                        b"ph" if in_shape && !in_table => {
+                            for attr in e.attributes().flatten() {
+                                if attr.key.local_name().as_ref() == b"type" {
+                                    let ph_type = String::from_utf8_lossy(&attr.value);
+                                    current_heading = match ph_type.as_ref() {
+                                        "title" | "ctrTitle" => HeadingLevel::H1,
+                                        "subTitle" => HeadingLevel::H2,
+                                        "body" => HeadingLevel::None,
+                                        _ => HeadingLevel::None,
+                                    };
+                                }
+                            }
+                        }
                         b"rPr" if in_run && !in_table => {
                             for attr in e.attributes().flatten() {
                                 match attr.key.local_name().as_ref() {
@@ -476,34 +980,18 @@ impl PptxParser {
                                 }
                             }
                         }
-                        _ => {}
-                    }
-                }
-                Ok(quick_xml::events::Event::Empty(ref e)) => {
-                    let local_name = e.name().local_name();
-                    if local_name.as_ref() == b"rPr" && in_run && !in_table {
-                        for attr in e.attributes().flatten() {
-                            match attr.key.local_name().as_ref() {
-                                b"b" => {
-                                    let val = String::from_utf8_lossy(&attr.value);
-                                    current_style.bold = val != "0" && val != "false";
+                        // a:hlinkClick - hyperlink (self-closing)
+                        b"hlinkClick" if in_run && !in_table => {
+                            for attr in e.attributes().flatten() {
+                                if attr.key.local_name().as_ref() == b"id" {
+                                    let rel_id = String::from_utf8_lossy(&attr.value);
+                                    if let Some(url) = rels.get(rel_id.as_ref()) {
+                                        current_hyperlink = Some(url.clone());
+                                    }
                                 }
-                                b"i" => {
-                                    let val = String::from_utf8_lossy(&attr.value);
-                                    current_style.italic = val != "0" && val != "false";
-                                }
-                                b"u" => {
-                                    let val = String::from_utf8_lossy(&attr.value);
-                                    current_style.underline = val != "none";
-                                }
-                                b"strike" => {
-                                    let val = String::from_utf8_lossy(&attr.value);
-                                    current_style.strikethrough =
-                                        val != "noStrike" && val != "0" && val != "false";
-                                }
-                                _ => {}
                             }
                         }
+                        _ => {}
                     }
                 }
                 Ok(quick_xml::events::Event::Text(ref e)) => {
@@ -524,24 +1012,36 @@ impl PptxParser {
                         b"t" if !in_table => {
                             in_text = false;
                         }
+                        b"rPr" if !in_table => {
+                            in_rpr = false;
+                        }
                         b"r" if !in_table => {
                             if !current_text.is_empty() {
                                 current_runs.push(TextRun {
                                     text: current_text.clone(),
                                     style: current_style.clone(),
-                                    hyperlink: None,
+                                    hyperlink: current_hyperlink.clone(),
                                 });
                             }
                             in_run = false;
+                            current_hyperlink = None;
                         }
                         b"p" if !in_table => {
                             if !current_runs.is_empty() {
                                 paragraphs.push(Paragraph {
                                     runs: current_runs.clone(),
+                                    heading: current_heading,
                                     ..Default::default()
                                 });
                             }
                             in_paragraph = false;
+                        }
+                        b"txBody" if !in_table => {
+                            in_txbody = false;
+                        }
+                        b"sp" if !in_table => {
+                            in_shape = false;
+                            current_heading = HeadingLevel::None;
                         }
                         _ => {}
                     }
@@ -558,7 +1058,17 @@ impl PptxParser {
 
     /// Parse text content from slide or notes XML.
     /// Text is found in: p:sp/p:txBody/a:p/a:r/a:t
+    #[allow(dead_code)]
     fn parse_text_content(&self, xml: &str) -> Result<Vec<Paragraph>> {
+        self.parse_text_content_with_rels(xml, &HashMap::new())
+    }
+
+    /// Parse text content from slide or notes XML with relationship map for hyperlinks.
+    fn parse_text_content_with_rels(
+        &self,
+        xml: &str,
+        rels: &HashMap<String, String>,
+    ) -> Result<Vec<Paragraph>> {
         let mut paragraphs = Vec::new();
         let mut reader = quick_xml::Reader::from_str(xml);
         // Don't trim text - preserve whitespace from xml:space="preserve" elements
@@ -568,9 +1078,11 @@ impl PptxParser {
         let mut in_paragraph = false;
         let mut in_run = false;
         let mut in_text = false;
+        let mut in_rpr = false;
         let mut current_runs: Vec<TextRun> = Vec::new();
         let mut current_text = String::new();
         let mut current_style = TextStyle::default();
+        let mut current_hyperlink: Option<String> = None;
 
         loop {
             match reader.read_event_into(&mut buf) {
@@ -587,6 +1099,7 @@ impl PptxParser {
                             in_run = true;
                             current_text.clear();
                             current_style = TextStyle::default();
+                            current_hyperlink = None;
                         }
                         // a:t - text element
                         b"t" if in_run => {
@@ -594,6 +1107,7 @@ impl PptxParser {
                         }
                         // a:rPr - run properties
                         b"rPr" if in_run => {
+                            in_rpr = true;
                             // Parse run properties for styling
                             for attr in e.attributes().flatten() {
                                 match attr.key.local_name().as_ref() {
@@ -618,35 +1132,60 @@ impl PptxParser {
                                 }
                             }
                         }
+                        // a:hlinkClick - hyperlink (nested in a:rPr)
+                        b"hlinkClick" if in_rpr => {
+                            for attr in e.attributes().flatten() {
+                                if attr.key.local_name().as_ref() == b"id" {
+                                    let rel_id = String::from_utf8_lossy(&attr.value);
+                                    if let Some(url) = rels.get(rel_id.as_ref()) {
+                                        current_hyperlink = Some(url.clone());
+                                    }
+                                }
+                            }
+                        }
                         _ => {}
                     }
                 }
                 Ok(quick_xml::events::Event::Empty(ref e)) => {
                     let local_name = e.name().local_name();
-                    // Handle self-closing elements
-                    if local_name.as_ref() == b"rPr" && in_run {
-                        for attr in e.attributes().flatten() {
-                            match attr.key.local_name().as_ref() {
-                                b"b" => {
-                                    let val = String::from_utf8_lossy(&attr.value);
-                                    current_style.bold = val != "0" && val != "false";
+                    match local_name.as_ref() {
+                        // Handle self-closing run properties
+                        b"rPr" if in_run => {
+                            for attr in e.attributes().flatten() {
+                                match attr.key.local_name().as_ref() {
+                                    b"b" => {
+                                        let val = String::from_utf8_lossy(&attr.value);
+                                        current_style.bold = val != "0" && val != "false";
+                                    }
+                                    b"i" => {
+                                        let val = String::from_utf8_lossy(&attr.value);
+                                        current_style.italic = val != "0" && val != "false";
+                                    }
+                                    b"u" => {
+                                        let val = String::from_utf8_lossy(&attr.value);
+                                        current_style.underline = val != "none";
+                                    }
+                                    b"strike" => {
+                                        let val = String::from_utf8_lossy(&attr.value);
+                                        current_style.strikethrough =
+                                            val != "noStrike" && val != "0" && val != "false";
+                                    }
+                                    _ => {}
                                 }
-                                b"i" => {
-                                    let val = String::from_utf8_lossy(&attr.value);
-                                    current_style.italic = val != "0" && val != "false";
-                                }
-                                b"u" => {
-                                    let val = String::from_utf8_lossy(&attr.value);
-                                    current_style.underline = val != "none";
-                                }
-                                b"strike" => {
-                                    let val = String::from_utf8_lossy(&attr.value);
-                                    current_style.strikethrough =
-                                        val != "noStrike" && val != "0" && val != "false";
-                                }
-                                _ => {}
                             }
                         }
+                        // a:hlinkClick - hyperlink (self-closing)
+                        b"hlinkClick" if in_run => {
+                            for attr in e.attributes().flatten() {
+                                if attr.key.local_name().as_ref() == b"id" {
+                                    let rel_id = String::from_utf8_lossy(&attr.value);
+                                    if let Some(url) = rels.get(rel_id.as_ref()) {
+                                        current_hyperlink = Some(url.clone());
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
                     }
                 }
                 Ok(quick_xml::events::Event::Text(ref e)) => {
@@ -661,15 +1200,19 @@ impl PptxParser {
                         b"t" => {
                             in_text = false;
                         }
+                        b"rPr" => {
+                            in_rpr = false;
+                        }
                         b"r" => {
                             if !current_text.is_empty() {
                                 current_runs.push(TextRun {
                                     text: current_text.clone(),
                                     style: current_style.clone(),
-                                    hyperlink: None,
+                                    hyperlink: current_hyperlink.clone(),
                                 });
                             }
                             in_run = false;
+                            current_hyperlink = None;
                         }
                         b"p" => {
                             // Only add non-empty paragraphs
@@ -912,6 +1455,77 @@ mod tests {
             println!("Total tables found: {}", table_count);
             // The test file should have at least one table (Slide 3)
             assert!(table_count > 0, "Expected at least one table in the PPTX");
+        }
+    }
+
+    #[test]
+    fn test_parse_hyperlinks() {
+        let path = "test-files/officedissector/test/govdocs/036279.pptx";
+        if std::path::Path::new(path).exists() {
+            let mut parser = PptxParser::open(path).unwrap();
+            let doc = parser.parse().unwrap();
+
+            // Find hyperlinks in the document
+            let mut hyperlink_count = 0;
+            let mut found_email = false;
+            for section in &doc.sections {
+                for block in &section.content {
+                    if let Block::Paragraph(para) = block {
+                        for run in &para.runs {
+                            if let Some(ref link) = run.hyperlink {
+                                hyperlink_count += 1;
+                                println!("Found hyperlink: {} -> {}", run.text, link);
+                                if link.contains("ncicb@pop.nci.nih.gov") {
+                                    found_email = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            println!("Total hyperlinks found: {}", hyperlink_count);
+            assert!(hyperlink_count > 0, "Expected at least one hyperlink");
+            assert!(found_email, "Expected to find email link ncicb@pop.nci.nih.gov");
+        }
+    }
+
+    #[test]
+    fn test_parse_headings() {
+        use crate::model::HeadingLevel;
+
+        let path = "test-files/file_example_PPT_1MB.pptx";
+        if std::path::Path::new(path).exists() {
+            let mut parser = PptxParser::open(path).unwrap();
+            let doc = parser.parse().unwrap();
+
+            // Find headings in the document
+            let mut h1_count = 0;
+            let mut h2_count = 0;
+            let mut found_lorem = false;
+            for section in &doc.sections {
+                for block in &section.content {
+                    if let Block::Paragraph(para) = block {
+                        let text = para.plain_text();
+                        match para.heading {
+                            HeadingLevel::H1 => {
+                                h1_count += 1;
+                                println!("Found H1: {}", text);
+                                if text.contains("Lorem ipsum") {
+                                    found_lorem = true;
+                                }
+                            }
+                            HeadingLevel::H2 => {
+                                h2_count += 1;
+                                println!("Found H2: {}", text);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            println!("Total H1: {}, H2: {}", h1_count, h2_count);
+            assert!(h1_count > 0, "Expected at least one H1 heading (title)");
+            assert!(found_lorem, "Expected to find 'Lorem ipsum' as H1 title");
         }
     }
 }

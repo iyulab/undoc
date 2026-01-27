@@ -220,17 +220,52 @@ fn render_frontmatter(doc: &Document) -> String {
     let mut fm = String::from("---\n");
     let meta = &doc.metadata;
 
+    // Core metadata
     if let Some(ref title) = meta.title {
         fm.push_str(&format!("title: \"{}\"\n", escape_yaml(title)));
     }
     if let Some(ref author) = meta.author {
         fm.push_str(&format!("author: \"{}\"\n", escape_yaml(author)));
     }
+    if let Some(ref subject) = meta.subject {
+        fm.push_str(&format!("subject: \"{}\"\n", escape_yaml(subject)));
+    }
+
+    // Dates
     if let Some(ref created) = meta.created {
         fm.push_str(&format!("created: \"{}\"\n", created));
     }
     if let Some(ref modified) = meta.modified {
         fm.push_str(&format!("modified: \"{}\"\n", modified));
+    }
+
+    // Document statistics
+    if let Some(page_count) = meta.page_count {
+        // Use appropriate label based on document type (inferred from section names)
+        let label = if doc.sections.first().and_then(|s| s.name.as_ref()).is_some_and(|n| n.starts_with("Slide")) {
+            "slides"
+        } else if doc.sections.first().and_then(|s| s.name.as_ref()).is_some_and(|n| n.starts_with("Sheet")) {
+            "sheets"
+        } else {
+            "pages"
+        };
+        fm.push_str(&format!("{}: {}\n", label, page_count));
+    }
+    if let Some(word_count) = meta.word_count {
+        fm.push_str(&format!("words: {}\n", word_count));
+    }
+
+    // Keywords as YAML list
+    if !meta.keywords.is_empty() {
+        fm.push_str("keywords:\n");
+        for keyword in &meta.keywords {
+            fm.push_str(&format!("  - \"{}\"\n", escape_yaml(keyword)));
+        }
+    }
+
+    // Application info
+    if let Some(ref app) = meta.application {
+        fm.push_str(&format!("application: \"{}\"\n", escape_yaml(app)));
     }
 
     fm.push_str("---\n\n");

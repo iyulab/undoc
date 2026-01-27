@@ -2,6 +2,7 @@
 
 use crate::error::Result;
 use crate::model::{Block, Document, Paragraph, Table};
+use unicode_width::UnicodeWidthStr;
 
 use super::options::RenderOptions;
 
@@ -127,6 +128,7 @@ fn is_no_space_before(c: char) -> bool {
 }
 
 /// Render a table to plain text (ASCII table).
+/// Uses unicode-width to correctly align CJK characters (which take 2 columns in terminals).
 fn render_table_text(table: &Table) -> String {
     if table.is_empty() {
         return String::new();
@@ -152,13 +154,15 @@ fn render_table_text(table: &Table) -> String {
     let mut widths: Vec<usize> = vec![0; col_count];
 
     // Calculate widths accounting for header placeholders
+    // Use display width (unicode-width) instead of character count
     for (row_idx, row) in table.rows.iter().enumerate() {
         let offset = if row_idx == 0 { header_missing } else { 0 };
         for (i, cell) in row.cells.iter().enumerate() {
             let col_idx = i + offset;
             if col_idx < col_count {
                 let text = cell.plain_text().replace('\n', " ");
-                widths[col_idx] = widths[col_idx].max(text.len());
+                // Use display width for correct CJK alignment
+                widths[col_idx] = widths[col_idx].max(text.width());
             }
         }
     }
@@ -191,7 +195,7 @@ fn render_table_text(table: &Table) -> String {
         if row_idx == 0 && header_missing > 0 {
             for (j, width) in widths.iter().take(header_missing).enumerate() {
                 let placeholder = if j == 0 { "#" } else { "" };
-                output.push_str(&format!(" {:width$} |", placeholder, width = *width));
+                output.push_str(&format!(" {} |", pad_to_width(placeholder, *width)));
             }
         }
 
@@ -199,14 +203,14 @@ fn render_table_text(table: &Table) -> String {
             let col_idx = if row_idx == 0 { i + header_missing } else { i };
             if col_idx < col_count {
                 let text = cell.plain_text().replace('\n', " ");
-                output.push_str(&format!(" {:width$} |", text, width = widths[col_idx]));
+                output.push_str(&format!(" {} |", pad_to_width(&text, widths[col_idx])));
             }
         }
 
         // Pad data rows if they have fewer cells
         if row_idx > 0 {
             for width in widths.iter().take(col_count).skip(row.cells.len()) {
-                output.push_str(&format!(" {:width$} |", "", width = *width));
+                output.push_str(&format!(" {} |", pad_to_width("", *width)));
             }
         }
         output.push('\n');
@@ -230,6 +234,18 @@ fn render_table_text(table: &Table) -> String {
     }
 
     output
+}
+
+/// Pad a string to reach a target display width.
+/// Accounts for CJK characters which take 2 columns in terminals.
+fn pad_to_width(s: &str, target_width: usize) -> String {
+    let current_width = s.width();
+    if current_width >= target_width {
+        s.to_string()
+    } else {
+        let padding = target_width - current_width;
+        format!("{}{}", s, " ".repeat(padding))
+    }
 }
 
 #[cfg(test)]
@@ -288,5 +304,67 @@ mod tests {
 
         let text = render_paragraph_text(&para);
         assert!(text.contains("• Item"));
+    }
+
+    #[test]
+    fn test_cjk_table_alignment() {
+        use unicode_width::UnicodeWidthStr;
+
+        // Test that CJK characters (which take 2 display columns) are properly aligned
+        let mut table = Table::new();
+        let mut header = Row::header(vec![Cell::header("이름"), Cell::header("값")]);
+        header.is_header = true;
+        table.add_row(header);
+        table.add_row(Row {
+            cells: vec![Cell::with_text("홍길동"), Cell::with_text("100")],
+            is_header: false,
+            height: None,
+        });
+        table.add_row(Row {
+            cells: vec![Cell::with_text("Kim"), Cell::with_text("200")],
+            is_header: false,
+            height: None,
+        });
+
+        let text = render_table_text(&table);
+        let lines: Vec<&str> = text.lines().collect();
+
+        // Get border display width from first line (uses ASCII only, so bytes == display width)
+        let border_width = lines[0].width();
+
+        // All lines should have the same DISPLAY width for proper alignment
+        // (byte length will differ due to UTF-8 encoding)
+        for (i, line) in lines.iter().enumerate() {
+            assert_eq!(
+                line.width(),
+                border_width,
+                "Line {} has different display width: '{}' (expected {})",
+                i,
+                line,
+                border_width
+            );
+        }
+
+        // Verify the table looks correct
+        assert!(text.contains("| 이름"));
+        assert!(text.contains("| 홍길동"));
+        assert!(text.contains("| Kim"));
+    }
+
+    #[test]
+    fn test_pad_to_width() {
+        // ASCII characters: 1 char = 1 width
+        assert_eq!(pad_to_width("abc", 5), "abc  ");
+
+        // CJK characters: 1 char = 2 width
+        // "한글" has 2 chars but 4 display width
+        assert_eq!(pad_to_width("한글", 6), "한글  ");
+
+        // Mixed: "A한" = 1 + 2 = 3 width
+        assert_eq!(pad_to_width("A한", 5), "A한  ");
+
+        // Already at or exceeds target
+        assert_eq!(pad_to_width("한글", 4), "한글");
+        assert_eq!(pad_to_width("한글", 3), "한글");
     }
 }

@@ -51,6 +51,7 @@
 //! - `async`: Async I/O support with Tokio
 //! - `ffi`: C-ABI bindings for foreign language integration
 
+mod charts;
 pub mod container;
 pub mod detect;
 pub mod error;

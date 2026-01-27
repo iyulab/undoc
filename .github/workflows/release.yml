@@ -1,10 +1,16 @@
 name: Release
 
 on:
-  push:
+  workflow_run:
+    workflows: ["CI"]
     branches: [main]
-    paths:
-      - 'Cargo.toml'
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      force_release:
+        description: 'Force release even if version unchanged'
+        required: false
+        default: 'false'
 
 env:
   CARGO_TERM_COLOR: always
@@ -12,6 +18,8 @@ env:
 jobs:
   check-version:
     name: Check Version Change
+    # Only run if CI workflow succeeded (or manual trigger)
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.get_version.outputs.version }}
@@ -30,7 +38,13 @@ jobs:
       - name: Check if version changed
         id: check
         run: |
-          git diff HEAD~1 HEAD -- Cargo.toml | grep -q '^+version = ' && echo "should_release=true" >> $GITHUB_OUTPUT || echo "should_release=false" >> $GITHUB_OUTPUT
+          if [[ "${{ github.event.inputs.force_release }}" == "true" ]]; then
+            echo "should_release=true" >> $GITHUB_OUTPUT
+          elif git diff HEAD~1 HEAD -- Cargo.toml | grep -q '^+version = '; then
+            echo "should_release=true" >> $GITHUB_OUTPUT
+          else
+            echo "should_release=false" >> $GITHUB_OUTPUT
+          fi
 
   build:
     name: Build ${{ matrix.target }}

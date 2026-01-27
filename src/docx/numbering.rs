@@ -63,6 +63,11 @@ pub struct NumberingMap {
 impl NumberingMap {
     /// Parse numbering from XML content.
     pub fn parse(xml: &str) -> Result<Self> {
+        // Handle empty content
+        if xml.trim().is_empty() {
+            return Ok(Self::default());
+        }
+        
         let mut map = NumberingMap::default();
         let mut reader = quick_xml::Reader::from_str(xml);
         reader.config_mut().trim_text(true);

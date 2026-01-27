@@ -19,5 +19,6 @@
 
 mod parser;
 mod shared_strings;
+mod styles;
 
 pub use parser::XlsxParser;

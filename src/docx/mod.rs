@@ -18,6 +18,6 @@
 
 mod numbering;
 mod parser;
-mod styles;
+pub(crate) mod styles;
 
 pub use parser::DocxParser;

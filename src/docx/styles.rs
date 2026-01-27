@@ -119,6 +119,11 @@ pub struct StyleMap {
 impl StyleMap {
     /// Parse styles from XML content.
     pub fn parse(xml: &str) -> Result<Self> {
+        // Handle empty content
+        if xml.trim().is_empty() {
+            return Ok(Self::default());
+        }
+        
         let mut map = StyleMap::default();
         let mut reader = quick_xml::Reader::from_str(xml);
         reader.config_mut().trim_text(true);

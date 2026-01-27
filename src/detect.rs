@@ -1,5 +1,6 @@
 //! Format detection for Office Open XML documents.
 
+use crate::container::decode_xml_bytes;
 use crate::error::{Error, Result};
 use std::fs::File;
 use std::io::{BufReader, Read, Seek};
@@ -105,9 +106,9 @@ pub fn detect_format_from_reader<R: Read + Seek>(reader: R) -> Result<FormatType
     // Try to read [Content_Types].xml
     let content_types = match archive.by_name("[Content_Types].xml") {
         Ok(mut file) => {
-            let mut content = String::new();
-            file.read_to_string(&mut content)?;
-            content
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes)?;
+            decode_xml_bytes(&bytes)?
         }
         Err(_) => {
             return Err(Error::MissingComponent("[Content_Types].xml".to_string()));

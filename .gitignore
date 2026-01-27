@@ -26,3 +26,18 @@ claudedocs/
 test-files/
 test-results/
 .serena/
+
+# Python bindings
+bindings/python/src/undoc/lib/
+bindings/python/dist/
+bindings/python/build/
+bindings/python/*.egg-info/
+__pycache__/
+*.pyc
+
+# C# bindings
+bindings/csharp/**/bin/
+bindings/csharp/**/obj/
+bindings/csharp/**/runtimes/
+bindings/csharp/artifacts/
+*.nupkg

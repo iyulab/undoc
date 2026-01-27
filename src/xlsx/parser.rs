@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use super::shared_strings::SharedStrings;
+use super::styles::Styles;
 
 /// Sheet info from workbook.xml.
 #[derive(Debug, Clone)]
@@ -23,6 +24,7 @@ struct SheetInfo {
 pub struct XlsxParser {
     container: OoxmlContainer,
     shared_strings: SharedStrings,
+    styles: Styles,
     sheets: Vec<SheetInfo>,
     relationships: HashMap<String, String>,
 }
@@ -49,6 +51,13 @@ impl XlsxParser {
             SharedStrings::default()
         };
 
+        // Parse styles for number formats
+        let styles = if let Ok(xml) = container.read_xml("xl/styles.xml") {
+            Styles::parse(&xml)
+        } else {
+            Styles::default()
+        };
+
         // Parse workbook relationships
         let relationships = Self::parse_workbook_rels(&container)?;
 
@@ -58,6 +67,7 @@ impl XlsxParser {
         Ok(Self {
             container,
             shared_strings,
+            styles,
             sheets,
             relationships,
         })
@@ -205,8 +215,81 @@ impl XlsxParser {
         Ok(meta)
     }
 
+    /// Parse merge cells information from worksheet XML.
+    fn parse_merge_cells(xml: &str) -> HashMap<String, (u32, u32)> {
+        let mut merge_map = HashMap::new();
+        let mut reader = quick_xml::Reader::from_str(xml);
+        reader.config_mut().trim_text(true);
+
+        let mut buf = Vec::new();
+
+        loop {
+            match reader.read_event_into(&mut buf) {
+                Ok(quick_xml::events::Event::Empty(ref e))
+                | Ok(quick_xml::events::Event::Start(ref e)) => {
+                    if e.name().as_ref() == b"mergeCell" {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.as_ref() == b"ref" {
+                                let range = String::from_utf8_lossy(&attr.value);
+                                // Parse range like "A1:C3" or "G11:H11"
+                                if let Some((start, end)) = range.split_once(':') {
+                                    if let (Some((start_col, start_row)), Some((end_col, end_row))) =
+                                        (Self::parse_cell_ref(start), Self::parse_cell_ref(end))
+                                    {
+                                        let col_span = end_col - start_col + 1;
+                                        let row_span = end_row - start_row + 1;
+                                        merge_map.insert(start.to_uppercase(), (col_span, row_span));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(quick_xml::events::Event::Eof) => break,
+                Err(_) => break,
+                _ => {}
+            }
+            buf.clear();
+        }
+
+        merge_map
+    }
+
+    /// Parse cell reference like "A1" into (column, row) where column is 0-indexed.
+    fn parse_cell_ref(cell_ref: &str) -> Option<(u32, u32)> {
+        let cell_ref = cell_ref.to_uppercase();
+        let mut col_str = String::new();
+        let mut row_str = String::new();
+
+        for c in cell_ref.chars() {
+            if c.is_ascii_alphabetic() {
+                col_str.push(c);
+            } else if c.is_ascii_digit() {
+                row_str.push(c);
+            }
+        }
+
+        if col_str.is_empty() || row_str.is_empty() {
+            return None;
+        }
+
+        // Convert column letters to number (A=0, B=1, ..., Z=25, AA=26, ...)
+        let mut col: u32 = 0;
+        for c in col_str.chars() {
+            col = col * 26 + (c as u32 - 'A' as u32 + 1);
+        }
+        col -= 1; // Make it 0-indexed
+
+        let row: u32 = row_str.parse().ok()?;
+
+        Some((col, row))
+    }
+
     /// Parse a worksheet XML into a table.
     fn parse_sheet(&self, xml: &str) -> Result<Table> {
+        // First pass: parse merge cells
+        let merge_map = Self::parse_merge_cells(xml);
+
         let mut table = Table::new();
         let mut reader = quick_xml::Reader::from_str(xml);
         reader.config_mut().trim_text(true);
@@ -217,6 +300,8 @@ impl XlsxParser {
         let mut in_value = false;
         let mut current_row: Option<Row> = None;
         let mut current_cell_type: Option<String> = None;
+        let mut current_cell_ref: Option<String> = None;
+        let mut current_cell_style: Option<usize> = None;
         let mut current_cell_value = String::new();
         let mut is_first_row = true;
 
@@ -235,12 +320,28 @@ impl XlsxParser {
                         b"c" if in_row => {
                             in_cell = true;
                             current_cell_type = None;
+                            current_cell_ref = None;
+                            current_cell_style = None;
                             current_cell_value.clear();
 
                             for attr in e.attributes().flatten() {
-                                if attr.key.as_ref() == b"t" {
-                                    current_cell_type =
-                                        Some(String::from_utf8_lossy(&attr.value).to_string());
+                                match attr.key.as_ref() {
+                                    b"t" => {
+                                        current_cell_type =
+                                            Some(String::from_utf8_lossy(&attr.value).to_string());
+                                    }
+                                    b"r" => {
+                                        // Cell reference like "A1", "B2", etc.
+                                        current_cell_ref =
+                                            Some(String::from_utf8_lossy(&attr.value).to_uppercase());
+                                    }
+                                    b"s" => {
+                                        // Style index for number format detection
+                                        current_cell_style = String::from_utf8_lossy(&attr.value)
+                                            .parse()
+                                            .ok();
+                                    }
+                                    _ => {}
                                 }
                             }
                         }
@@ -276,7 +377,15 @@ impl XlsxParser {
                             let value = self.resolve_cell_value(
                                 &current_cell_value,
                                 current_cell_type.as_deref(),
+                                current_cell_style,
                             );
+
+                            // Look up merge info for this cell
+                            let (col_span, row_span) = current_cell_ref
+                                .as_ref()
+                                .and_then(|r| merge_map.get(r))
+                                .copied()
+                                .unwrap_or((1, 1));
 
                             let cell = Cell {
                                 content: vec![Paragraph {
@@ -284,8 +393,8 @@ impl XlsxParser {
                                     ..Default::default()
                                 }],
                                 nested_tables: Vec::new(),
-                                col_span: 1,
-                                row_span: 1,
+                                col_span,
+                                row_span,
                                 alignment: CellAlignment::Left,
                                 vertical_alignment: Default::default(),
                                 is_header: is_first_row,
@@ -297,6 +406,7 @@ impl XlsxParser {
                             }
 
                             in_cell = false;
+                            current_cell_ref = None;
                         }
                         b"v" | b"t" => {
                             in_value = false;
@@ -314,8 +424,13 @@ impl XlsxParser {
         Ok(table)
     }
 
-    /// Resolve a cell value based on its type.
-    fn resolve_cell_value(&self, value: &str, cell_type: Option<&str>) -> String {
+    /// Resolve a cell value based on its type and style.
+    fn resolve_cell_value(
+        &self,
+        value: &str,
+        cell_type: Option<&str>,
+        style_index: Option<usize>,
+    ) -> String {
         match cell_type {
             Some("s") => {
                 // Shared string index
@@ -342,7 +457,19 @@ impl XlsxParser {
                 value.to_string()
             }
             _ => {
-                // Number or general
+                // Number or general - check for date format
+                if let Some(style_idx) = style_index {
+                    if let Some(num_fmt_id) = self.styles.get_num_fmt_id(style_idx) {
+                        if self.styles.is_date_format(num_fmt_id) {
+                            // Try to parse as date
+                            if let Ok(serial) = value.parse::<f64>() {
+                                if let Some(date_str) = Styles::serial_to_date(serial) {
+                                    return date_str;
+                                }
+                            }
+                        }
+                    }
+                }
                 value.to_string()
             }
         }
@@ -418,5 +545,76 @@ mod tests {
             assert!(text.contains("First Name"));
             assert!(text.contains("Last Name"));
         }
+    }
+
+    #[test]
+    fn test_merged_cells() {
+        let path = "test-files/Basic Invoice.xlsx";
+        if std::path::Path::new(path).exists() {
+            let mut parser = XlsxParser::open(path).unwrap();
+            let doc = parser.parse().unwrap();
+
+            // Find merged cells
+            let mut found_merged = false;
+            for section in &doc.sections {
+                for block in &section.content {
+                    if let Block::Table(table) = block {
+                        for row in &table.rows {
+                            for cell in &row.cells {
+                                if cell.col_span > 1 || cell.row_span > 1 {
+                                    found_merged = true;
+                                    println!(
+                                        "Found merged cell: col_span={}, row_span={}, text='{}'",
+                                        cell.col_span,
+                                        cell.row_span,
+                                        cell.plain_text()
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            assert!(found_merged, "Expected to find merged cells in Basic Invoice.xlsx");
+        }
+    }
+
+    #[test]
+    fn test_parse_cell_ref() {
+        // Test cell reference parsing
+        assert_eq!(XlsxParser::parse_cell_ref("A1"), Some((0, 1)));
+        assert_eq!(XlsxParser::parse_cell_ref("B2"), Some((1, 2)));
+        assert_eq!(XlsxParser::parse_cell_ref("Z1"), Some((25, 1)));
+        assert_eq!(XlsxParser::parse_cell_ref("AA1"), Some((26, 1)));
+        assert_eq!(XlsxParser::parse_cell_ref("AB1"), Some((27, 1)));
+        assert_eq!(XlsxParser::parse_cell_ref("AZ1"), Some((51, 1)));
+        assert_eq!(XlsxParser::parse_cell_ref("BA1"), Some((52, 1)));
+    }
+
+    #[test]
+    fn test_date_formatting() {
+        // Test that styles are correctly parsed and dates are formatted
+        use crate::xlsx::styles::Styles;
+
+        // Test parsing styles.xml content
+        let styles_xml = r#"<?xml version="1.0"?>
+            <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+                <numFmts count="1">
+                    <numFmt numFmtId="177" formatCode="mmmm\ d\,\ yyyy"/>
+                </numFmts>
+                <cellXfs count="2">
+                    <xf numFmtId="0"/>
+                    <xf numFmtId="177"/>
+                </cellXfs>
+            </styleSheet>"#;
+
+        let styles = Styles::parse(styles_xml);
+
+        // Style index 1 should have numFmtId 177 (date format)
+        assert_eq!(styles.get_num_fmt_id(1), Some(177));
+        assert!(styles.is_date_format(177));
+
+        // Test date conversion
+        assert_eq!(Styles::serial_to_date(44197.0), Some("2021-01-01".to_string()));
     }
 }

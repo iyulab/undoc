@@ -1,5 +1,6 @@
 //! DOCX parser implementation.
 
+use crate::charts;
 use crate::container::OoxmlContainer;
 use crate::error::{Error, Result};
 use crate::model::{
@@ -68,7 +69,14 @@ impl DocxParser {
         doc.metadata = self.parse_metadata()?;
 
         // Parse main document content
-        let main_section = self.parse_document_xml()?;
+        let mut main_section = self.parse_document_xml()?;
+
+        // Parse charts and add as tables for RAG-ready output
+        let chart_tables = self.parse_charts()?;
+        for table in chart_tables {
+            main_section.add_block(Block::Table(table));
+        }
+
         doc.add_section(main_section);
 
         // Extract resources (images)
@@ -81,6 +89,59 @@ impl DocxParser {
     fn parse_metadata(&self) -> Result<Metadata> {
         // Use shared metadata parsing from container
         self.container.parse_core_metadata()
+    }
+
+    /// Parse charts from word/charts/ and convert to tables for RAG-ready output.
+    fn parse_charts(&self) -> Result<Vec<Table>> {
+        let mut tables = Vec::new();
+
+        // Find chart relationships in document.xml.rels
+        for (rel_type, rels) in &self.relationships.by_type {
+            if !rel_type.contains("chart") {
+                continue;
+            }
+
+            for rel in rels {
+                // Resolve chart path relative to document.xml
+                // Target is like "charts/chart1.xml"
+                let chart_path = if rel.target.starts_with('/') {
+                    rel.target[1..].to_string()
+                } else {
+                    format!("word/{}", rel.target)
+                };
+
+                // Read and parse chart XML
+                if let Ok(chart_xml) = self.container.read_xml(&chart_path) {
+                    match charts::parse_chart_xml(&chart_xml) {
+                        Ok(chart_data) => {
+                            if !chart_data.is_empty() {
+                                let mut table = chart_data.to_table();
+                                // Add chart title if available
+                                if let Some(ref title) = chart_data.title {
+                                    if !title.is_empty() {
+                                        if let Some(first_row) = table.rows.first_mut() {
+                                            if let Some(first_cell) = first_row.cells.first_mut() {
+                                                let original = first_cell.plain_text();
+                                                first_cell.content.clear();
+                                                first_cell.content.push(Paragraph::with_text(
+                                                    format!("{} ({})", original, title),
+                                                ));
+                                            }
+                                        }
+                                    }
+                                }
+                                tables.push(table);
+                            }
+                        }
+                        Err(_) => {
+                            // Chart parsing failed, skip
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(tables)
     }
 
     /// Parse the main document.xml content.

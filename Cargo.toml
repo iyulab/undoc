@@ -44,6 +44,7 @@ rayon = "1.10"
 # Text processing
 regex = "1.11"
 unicode-normalization = "0.1"
+unicode-width = "0.2"
 
 # Optional: Async
 tokio = { version = "1.42", features = ["rt", "fs"], optional = true }
