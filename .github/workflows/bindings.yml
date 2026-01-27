@@ -65,8 +65,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
+        # Only need one Python version per platform since it's a pure Python wrapper
         os: [ubuntu-latest, windows-latest, macos-latest]
-        python-version: ['3.9', '3.10', '3.11', '3.12']
+        python-version: ['3.11']
 
     steps:
       - uses: actions/checkout@v4
@@ -189,6 +190,16 @@ jobs:
           path: dist/
           merge-multiple: true
 
+      - name: List downloaded wheels
+        run: |
+          echo "Downloaded wheel files:"
+          ls -la dist/
+          echo "Checking wheel integrity:"
+          for f in dist/*.whl; do
+            echo "Checking $f..."
+            python3 -m zipfile -l "$f" || echo "CORRUPTED: $f"
+          done
+
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
@@ -215,7 +226,7 @@ jobs:
           dotnet-version: '8.0.x'
 
       - name: Publish to NuGet
-        run: dotnet nuget push "*.nupkg" --api-key ${{ secrets.NUGET_API_TOKEN }} --source https://api.nuget.org/v3/index.json --skip-duplicate
+        run: dotnet nuget push "*.nupkg" --api-key ${{ secrets.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate
 
   test-python:
     name: Test Python Bindings
@@ -223,8 +234,13 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-        python-version: ['3.11']
+        include:
+          - os: ubuntu-latest
+            python-version: '3.11'
+          - os: windows-latest
+            python-version: '3.11'
+          - os: macos-latest
+            python-version: '3.11'
 
     steps:
       - uses: actions/checkout@v4
