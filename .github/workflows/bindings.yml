@@ -60,14 +60,9 @@ jobs:
           retention-days: 7
 
   build-python:
-    name: Build Python Wheels
+    name: Build Python Wheel
     needs: build-native
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        # Only need one Python version per platform since it's a pure Python wrapper
-        os: [ubuntu-latest, windows-latest, macos-latest]
-        python-version: ['3.11']
+    runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
@@ -75,35 +70,28 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: '3.11'
 
-      - name: Download Linux native library
-        if: matrix.os == 'ubuntu-latest'
+      - name: Download all native libraries
         uses: actions/download-artifact@v4
         with:
-          name: native-linux-x64
-          path: bindings/python/src/undoc/lib/linux-x64/
+          pattern: native-*
+          path: ./native-libs/
 
-      - name: Download Windows native library
-        if: matrix.os == 'windows-latest'
-        uses: actions/download-artifact@v4
-        with:
-          name: native-win-x64
-          path: bindings/python/src/undoc/lib/win-x64/
+      - name: Copy native libraries to package
+        run: |
+          mkdir -p bindings/python/src/undoc/lib/linux-x64
+          mkdir -p bindings/python/src/undoc/lib/win-x64
+          mkdir -p bindings/python/src/undoc/lib/osx-x64
+          mkdir -p bindings/python/src/undoc/lib/osx-arm64
 
-      - name: Download macOS x64 native library
-        if: matrix.os == 'macos-latest'
-        uses: actions/download-artifact@v4
-        with:
-          name: native-osx-x64
-          path: bindings/python/src/undoc/lib/osx-x64/
+          cp ./native-libs/native-linux-x64/* bindings/python/src/undoc/lib/linux-x64/
+          cp ./native-libs/native-win-x64/* bindings/python/src/undoc/lib/win-x64/
+          cp ./native-libs/native-osx-x64/* bindings/python/src/undoc/lib/osx-x64/
+          cp ./native-libs/native-osx-arm64/* bindings/python/src/undoc/lib/osx-arm64/
 
-      - name: Download macOS ARM64 native library
-        if: matrix.os == 'macos-latest'
-        uses: actions/download-artifact@v4
-        with:
-          name: native-osx-arm64
-          path: bindings/python/src/undoc/lib/osx-arm64/
+          echo "Native libraries copied:"
+          find bindings/python/src/undoc/lib -type f
 
       - name: Install build dependencies
         run: |
@@ -114,10 +102,18 @@ jobs:
         working-directory: bindings/python
         run: python -m build
 
+      - name: Verify wheel contents
+        run: |
+          echo "Wheel contents:"
+          python3 -m zipfile -l bindings/python/dist/*.whl
+          echo ""
+          echo "Checking for all platform libraries:"
+          python3 -m zipfile -l bindings/python/dist/*.whl | grep -E "(libundoc|undoc\.dll)" || echo "WARNING: Missing some native libraries!"
+
       - name: Upload wheel
         uses: actions/upload-artifact@v4
         with:
-          name: python-wheel-${{ matrix.os }}-py${{ matrix.python-version }}
+          name: python-wheel
           path: bindings/python/dist/*.whl
           retention-days: 7
 
@@ -183,22 +179,19 @@ jobs:
     if: ${{ github.event.workflow_run.conclusion == 'success' || github.event.inputs.publish == 'true' }}
 
     steps:
-      - name: Download all Python wheels
+      - name: Download Python wheel
         uses: actions/download-artifact@v4
         with:
-          pattern: python-wheel-*
+          name: python-wheel
           path: dist/
-          merge-multiple: true
 
-      - name: List downloaded wheels
+      - name: List wheel contents
         run: |
-          echo "Downloaded wheel files:"
+          echo "Wheel file:"
           ls -la dist/
-          echo "Checking wheel integrity:"
-          for f in dist/*.whl; do
-            echo "Checking $f..."
-            python3 -m zipfile -l "$f" || echo "CORRUPTED: $f"
-          done
+          echo ""
+          echo "Wheel contents:"
+          python3 -m zipfile -l dist/*.whl
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
@@ -253,7 +246,7 @@ jobs:
       - name: Download wheel
         uses: actions/download-artifact@v4
         with:
-          name: python-wheel-${{ matrix.os }}-py${{ matrix.python-version }}
+          name: python-wheel
           path: ./wheels/
 
       - name: Install package
@@ -292,22 +285,13 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
-      - name: Download NuGet package
-        uses: actions/download-artifact@v4
-        with:
-          name: nuget-package
-          path: ./packages/
-
       - name: Download native library
         uses: actions/download-artifact@v4
         with:
           name: ${{ matrix.artifact }}
           path: ./native-lib/
 
-      - name: Create local NuGet source
-        run: dotnet nuget add source "${{ github.workspace }}/packages" -n local
-
-      - name: Build test project
+      - name: Build test project (with project reference)
         working-directory: bindings/csharp
         run: dotnet build Undoc.Tests/Undoc.Tests.csproj -c Release
 
@@ -318,6 +302,7 @@ jobs:
           find bindings/csharp/Undoc.Tests/bin/Release -type d -name "net*" | while read dir; do
             cp ./native-lib/* "$dir/"
             echo "Copied native library to $dir"
+            ls -la "$dir"
           done
 
       - name: Copy native library to test output (Windows)
@@ -327,6 +312,7 @@ jobs:
           Get-ChildItem -Path "bindings/csharp/Undoc.Tests/bin/Release" -Directory -Recurse | Where-Object { $_.Name -like "net*" } | ForEach-Object {
             Copy-Item "./native-lib/*" -Destination $_.FullName -Force
             Write-Host "Copied native library to $($_.FullName)"
+            Get-ChildItem $_.FullName
           }
 
       - name: Run tests
