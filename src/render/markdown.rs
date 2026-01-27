@@ -242,9 +242,19 @@ fn render_frontmatter(doc: &Document) -> String {
     // Document statistics
     if let Some(page_count) = meta.page_count {
         // Use appropriate label based on document type (inferred from section names)
-        let label = if doc.sections.first().and_then(|s| s.name.as_ref()).is_some_and(|n| n.starts_with("Slide")) {
+        let label = if doc
+            .sections
+            .first()
+            .and_then(|s| s.name.as_ref())
+            .is_some_and(|n| n.starts_with("Slide"))
+        {
             "slides"
-        } else if doc.sections.first().and_then(|s| s.name.as_ref()).is_some_and(|n| n.starts_with("Sheet")) {
+        } else if doc
+            .sections
+            .first()
+            .and_then(|s| s.name.as_ref())
+            .is_some_and(|n| n.starts_with("Sheet"))
+        {
             "sheets"
         } else {
             "pages"

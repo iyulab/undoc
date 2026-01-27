@@ -105,7 +105,9 @@ impl DocumentStats {
 
         // Add warnings for potential issues
         if stats.section_count == 0 {
-            stats.warnings.push("Empty document (no sections)".to_string());
+            stats
+                .warnings
+                .push("Empty document (no sections)".to_string());
         }
         if stats.format == "xlsx" && stats.table_count == 0 {
             stats.warnings.push("XLSX with no tables".to_string());
@@ -161,7 +163,7 @@ fn scan_directory(dir: &Path, stats: &mut Vec<DocumentStats>) {
                 let ext = path.extension().and_then(|e| e.to_str());
                 if matches!(ext, Some("docx" | "xlsx" | "pptx")) {
                     let path_str = path.to_string_lossy().to_string();
-                    
+
                     // Known expected failures
                     let filename = path.file_name().unwrap().to_str().unwrap();
                     let expected_failure = matches!(
@@ -174,10 +176,16 @@ fn scan_directory(dir: &Path, stats: &mut Vec<DocumentStats>) {
                             let file_size = data.len();
                             match parse_bytes(&data) {
                                 Ok(doc) => {
-                                    stats.push(DocumentStats::from_document(&path_str, &doc, file_size));
+                                    stats.push(DocumentStats::from_document(
+                                        &path_str, &doc, file_size,
+                                    ));
                                 }
                                 Err(e) => {
-                                    let mut doc_stats = DocumentStats::from_error(&path_str, &e.to_string(), file_size);
+                                    let mut doc_stats = DocumentStats::from_error(
+                                        &path_str,
+                                        &e.to_string(),
+                                        file_size,
+                                    );
                                     if expected_failure {
                                         doc_stats.warnings.push("Expected failure".to_string());
                                     }
@@ -186,7 +194,11 @@ fn scan_directory(dir: &Path, stats: &mut Vec<DocumentStats>) {
                             }
                         }
                         Err(e) => {
-                            stats.push(DocumentStats::from_error(&path_str, &format!("IO error: {}", e), 0));
+                            stats.push(DocumentStats::from_error(
+                                &path_str,
+                                &format!("IO error: {}", e),
+                                0,
+                            ));
                         }
                     }
                 }
@@ -198,10 +210,7 @@ fn scan_directory(dir: &Path, stats: &mut Vec<DocumentStats>) {
 /// Generate quality report
 #[test]
 fn generate_quality_report() {
-    let test_dirs = [
-        "test-files",
-        "test-files/officedissector/test",
-    ];
+    let test_dirs = ["test-files", "test-files/officedissector/test"];
 
     let mut all_stats: Vec<DocumentStats> = Vec::new();
 
@@ -221,7 +230,7 @@ fn generate_quality_report() {
 
     // Calculate aggregate stats by format
     let mut by_format: HashMap<String, FormatStats> = HashMap::new();
-    
+
     for stat in &all_stats {
         let format_stats = by_format.entry(stat.format.clone()).or_default();
         format_stats.total += 1;
@@ -246,35 +255,53 @@ fn generate_quality_report() {
 
     // Summary by format
     println!("## Summary by Format\n");
-    println!("{:<8} {:>8} {:>8} {:>8} {:>10}", "Format", "Total", "Success", "Failed", "Rate");
+    println!(
+        "{:<8} {:>8} {:>8} {:>8} {:>10}",
+        "Format", "Total", "Success", "Failed", "Rate"
+    );
     println!("{:-<50}", "");
-    
+
     let total_files: usize = all_stats.len();
     let total_success: usize = all_stats.iter().filter(|s| s.success).count();
-    
+
     for (format, stats) in by_format.iter() {
         let rate = if stats.total > 0 {
             (stats.success as f64 / stats.total as f64) * 100.0
         } else {
             0.0
         };
-        println!("{:<8} {:>8} {:>8} {:>8} {:>9.1}%", 
-            format.to_uppercase(), stats.total, stats.success, stats.failed, rate);
+        println!(
+            "{:<8} {:>8} {:>8} {:>8} {:>9.1}%",
+            format.to_uppercase(),
+            stats.total,
+            stats.success,
+            stats.failed,
+            rate
+        );
     }
-    
+
     println!("{:-<50}", "");
     let total_rate = (total_success as f64 / total_files as f64) * 100.0;
-    println!("{:<8} {:>8} {:>8} {:>8} {:>9.1}%\n", 
-        "TOTAL", total_files, total_success, total_files - total_success, total_rate);
+    println!(
+        "{:<8} {:>8} {:>8} {:>8} {:>9.1}%\n",
+        "TOTAL",
+        total_files,
+        total_success,
+        total_files - total_success,
+        total_rate
+    );
 
     // Statistics summary
     println!("## Content Statistics\n");
-    println!("{:<10} {:>12} {:>10} {:>10} {:>12} {:>10} {:>10}", 
-        "Format", "Paragraphs", "Tables", "Cells", "MergedCells", "Links", "Images");
+    println!(
+        "{:<10} {:>12} {:>10} {:>10} {:>12} {:>10} {:>10}",
+        "Format", "Paragraphs", "Tables", "Cells", "MergedCells", "Links", "Images"
+    );
     println!("{:-<80}", "");
-    
+
     for (format, stats) in by_format.iter() {
-        println!("{:<10} {:>12} {:>10} {:>10} {:>12} {:>10} {:>10}",
+        println!(
+            "{:<10} {:>12} {:>10} {:>10} {:>12} {:>10} {:>10}",
             format.to_uppercase(),
             stats.total_paragraphs,
             stats.total_tables,
@@ -302,7 +329,8 @@ fn generate_quality_report() {
     }
 
     // Warnings
-    let with_warnings: Vec<_> = all_stats.iter()
+    let with_warnings: Vec<_> = all_stats
+        .iter()
         .filter(|s| s.success && !s.warnings.is_empty())
         .collect();
     if !with_warnings.is_empty() {
@@ -318,45 +346,65 @@ fn generate_quality_report() {
 
     // Feature coverage analysis
     println!("## Feature Coverage Analysis\n");
-    
+
     // Check merged cells
-    let xlsx_with_merged: usize = all_stats.iter()
+    let xlsx_with_merged: usize = all_stats
+        .iter()
         .filter(|s| s.format == "xlsx" && s.merged_cell_count > 0)
         .count();
-    let xlsx_total: usize = all_stats.iter()
+    let xlsx_total: usize = all_stats
+        .iter()
         .filter(|s| s.format == "xlsx" && s.success)
         .count();
-    println!("- XLSX merged cells: {}/{} files have detected merged cells", xlsx_with_merged, xlsx_total);
-    
+    println!(
+        "- XLSX merged cells: {}/{} files have detected merged cells",
+        xlsx_with_merged, xlsx_total
+    );
+
     // Check hyperlinks
-    let with_hyperlinks: usize = all_stats.iter()
+    let with_hyperlinks: usize = all_stats
+        .iter()
         .filter(|s| s.success && s.hyperlink_count > 0)
         .count();
-    println!("- Hyperlinks: {}/{} files have detected hyperlinks", with_hyperlinks, total_success);
-    
+    println!(
+        "- Hyperlinks: {}/{} files have detected hyperlinks",
+        with_hyperlinks, total_success
+    );
+
     // Check headings
-    let with_headings: usize = all_stats.iter()
+    let with_headings: usize = all_stats
+        .iter()
         .filter(|s| s.success && s.heading_count > 0)
         .count();
-    println!("- Headings: {}/{} files have detected headings", with_headings, total_success);
-    
+    println!(
+        "- Headings: {}/{} files have detected headings",
+        with_headings, total_success
+    );
+
     // PPTX headings specifically
-    let pptx_with_headings: usize = all_stats.iter()
+    let pptx_with_headings: usize = all_stats
+        .iter()
         .filter(|s| s.format == "pptx" && s.heading_count > 0)
         .count();
-    let pptx_total: usize = all_stats.iter()
+    let pptx_total: usize = all_stats
+        .iter()
         .filter(|s| s.format == "pptx" && s.success)
         .count();
-    println!("- PPTX headings: {}/{} files have detected headings", pptx_with_headings, pptx_total);
-    
+    println!(
+        "- PPTX headings: {}/{} files have detected headings",
+        pptx_with_headings, pptx_total
+    );
+
     println!();
 
     // Detailed file list (optional, can be verbose)
     println!("## Detailed Results\n");
-    println!("{:<60} {:>6} {:>8} {:>8} {:>6} {:>6}", 
-        "File", "Status", "Sections", "Tables", "Links", "Imgs");
+    println!(
+        "{:<60} {:>6} {:>8} {:>8} {:>6} {:>6}",
+        "File", "Status", "Sections", "Tables", "Links", "Imgs"
+    );
     println!("{:-<100}", "");
-    
+
     for stat in &all_stats {
         // Use char indices to avoid breaking UTF-8 boundaries
         let short_path = if stat.path.chars().count() > 58 {
@@ -366,9 +414,10 @@ fn generate_quality_report() {
         } else {
             stat.path.clone()
         };
-        
+
         let status = if stat.success { "OK" } else { "FAIL" };
-        println!("{:<60} {:>6} {:>8} {:>8} {:>6} {:>6}",
+        println!(
+            "{:<60} {:>6} {:>8} {:>8} {:>6} {:>6}",
             short_path,
             status,
             stat.section_count,
@@ -401,34 +450,32 @@ fn check_specific_file() {
         }
 
         println!("\n=== {} ===\n", path);
-        
+
         match fs::read(path) {
-            Ok(data) => {
-                match parse_bytes(&data) {
-                    Ok(doc) => {
-                        let stats = DocumentStats::from_document(path, &doc, data.len());
-                        println!("Sections: {}", stats.section_count);
-                        println!("Paragraphs: {}", stats.paragraph_count);
-                        println!("Tables: {}", stats.table_count);
-                        println!("Cells: {}", stats.cell_count);
-                        println!("Merged cells: {}", stats.merged_cell_count);
-                        println!("Hyperlinks: {}", stats.hyperlink_count);
-                        println!("Images: {}", stats.image_count);
-                        println!("Headings: {}", stats.heading_count);
-                        println!("Text length: {} chars", stats.text_length);
-                        
-                        if !stats.warnings.is_empty() {
-                            println!("\nWarnings:");
-                            for w in &stats.warnings {
-                                println!("  - {}", w);
-                            }
+            Ok(data) => match parse_bytes(&data) {
+                Ok(doc) => {
+                    let stats = DocumentStats::from_document(path, &doc, data.len());
+                    println!("Sections: {}", stats.section_count);
+                    println!("Paragraphs: {}", stats.paragraph_count);
+                    println!("Tables: {}", stats.table_count);
+                    println!("Cells: {}", stats.cell_count);
+                    println!("Merged cells: {}", stats.merged_cell_count);
+                    println!("Hyperlinks: {}", stats.hyperlink_count);
+                    println!("Images: {}", stats.image_count);
+                    println!("Headings: {}", stats.heading_count);
+                    println!("Text length: {} chars", stats.text_length);
+
+                    if !stats.warnings.is_empty() {
+                        println!("\nWarnings:");
+                        for w in &stats.warnings {
+                            println!("  - {}", w);
                         }
                     }
-                    Err(e) => {
-                        println!("Parse error: {}", e);
-                    }
                 }
-            }
+                Err(e) => {
+                    println!("Parse error: {}", e);
+                }
+            },
             Err(e) => {
                 println!("Read error: {}", e);
             }

@@ -1,12 +1,12 @@
 //! PPTX parser implementation.
 
+use crate::charts;
 use crate::container::OoxmlContainer;
 use crate::error::{Error, Result};
 use crate::model::{
-    Block, Cell, Document, HeadingLevel, Metadata, Paragraph, Resource, ResourceType, Row,
-    Section, Table, TextRun, TextStyle,
+    Block, Cell, Document, HeadingLevel, Metadata, Paragraph, Resource, ResourceType, Row, Section,
+    Table, TextRun, TextStyle,
 };
-use crate::charts;
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -184,7 +184,8 @@ impl PptxParser {
                 let slide_rels = self.parse_slide_relationships(&slide_path)?;
 
                 if let Ok(xml) = self.container.read_xml(&slide_path) {
-                    let blocks = self.parse_slide_content_with_rels(&xml, &slide_rels, &slide_path)?;
+                    let blocks =
+                        self.parse_slide_content_with_rels(&xml, &slide_rels, &slide_path)?;
                     for block in blocks {
                         section.add_block(block);
                     }
@@ -339,11 +340,7 @@ impl PptxParser {
 
     /// Parse images from slide XML.
     /// Images are in <p:pic> elements with <a:blip r:embed="rIdN"> referencing relationships.
-    fn parse_images(
-        &self,
-        xml: &str,
-        rels: &HashMap<String, String>,
-    ) -> Result<Vec<Block>> {
+    fn parse_images(&self, xml: &str, rels: &HashMap<String, String>) -> Result<Vec<Block>> {
         let mut images = Vec::new();
         let mut reader = quick_xml::Reader::from_str(xml);
         reader.config_mut().trim_text(true);
@@ -481,11 +478,8 @@ impl PptxParser {
                             if let Some(rel_id) = current_rel_id.take() {
                                 if let Some(target) = rels.get(&rel_id) {
                                     // Extract filename from target path (e.g., "../media/image1.png" -> "image1.png")
-                                    let filename = target
-                                        .rsplit('/')
-                                        .next()
-                                        .unwrap_or(target)
-                                        .to_string();
+                                    let filename =
+                                        target.rsplit('/').next().unwrap_or(target).to_string();
 
                                     images.push(Block::Image {
                                         resource_id: filename,
@@ -521,11 +515,7 @@ impl PptxParser {
 
     /// Parse charts referenced in slide relationships and convert to tables for RAG-ready output.
     /// Chart data is extracted from ppt/charts/chartN.xml files.
-    fn parse_charts(
-        &self,
-        rels: &HashMap<String, String>,
-        slide_path: &str,
-    ) -> Result<Vec<Table>> {
+    fn parse_charts(&self, rels: &HashMap<String, String>, slide_path: &str) -> Result<Vec<Table>> {
         let mut tables = Vec::new();
 
         // Find chart relationships (target contains "chart")
@@ -569,9 +559,10 @@ impl PptxParser {
                                         if let Some(first_cell) = first_row.cells.first_mut() {
                                             let original = first_cell.plain_text();
                                             first_cell.content.clear();
-                                            first_cell.content.push(Paragraph::with_text(
-                                                format!("{} ({})", original, title),
-                                            ));
+                                            first_cell.content.push(Paragraph::with_text(format!(
+                                                "{} ({})",
+                                                original, title
+                                            )));
                                         }
                                     }
                                 }
@@ -1485,7 +1476,10 @@ mod tests {
             }
             println!("Total hyperlinks found: {}", hyperlink_count);
             assert!(hyperlink_count > 0, "Expected at least one hyperlink");
-            assert!(found_email, "Expected to find email link ncicb@pop.nci.nih.gov");
+            assert!(
+                found_email,
+                "Expected to find email link ncicb@pop.nci.nih.gov"
+            );
         }
     }
 

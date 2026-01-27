@@ -137,7 +137,8 @@ pub fn parse_chart_xml(xml: &str) -> Result<ChartData> {
                         // Get idx attribute
                         for attr in e.attributes().flatten() {
                             if attr.key.local_name().as_ref() == b"idx" {
-                                if let Ok(idx) = String::from_utf8_lossy(&attr.value).parse::<usize>()
+                                if let Ok(idx) =
+                                    String::from_utf8_lossy(&attr.value).parse::<usize>()
                                 {
                                     pt_idx = Some(idx);
                                 }

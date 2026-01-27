@@ -233,12 +233,15 @@ impl XlsxParser {
                                 let range = String::from_utf8_lossy(&attr.value);
                                 // Parse range like "A1:C3" or "G11:H11"
                                 if let Some((start, end)) = range.split_once(':') {
-                                    if let (Some((start_col, start_row)), Some((end_col, end_row))) =
-                                        (Self::parse_cell_ref(start), Self::parse_cell_ref(end))
+                                    if let (
+                                        Some((start_col, start_row)),
+                                        Some((end_col, end_row)),
+                                    ) = (Self::parse_cell_ref(start), Self::parse_cell_ref(end))
                                     {
                                         let col_span = end_col - start_col + 1;
                                         let row_span = end_row - start_row + 1;
-                                        merge_map.insert(start.to_uppercase(), (col_span, row_span));
+                                        merge_map
+                                            .insert(start.to_uppercase(), (col_span, row_span));
                                     }
                                 }
                             }
@@ -332,14 +335,14 @@ impl XlsxParser {
                                     }
                                     b"r" => {
                                         // Cell reference like "A1", "B2", etc.
-                                        current_cell_ref =
-                                            Some(String::from_utf8_lossy(&attr.value).to_uppercase());
+                                        current_cell_ref = Some(
+                                            String::from_utf8_lossy(&attr.value).to_uppercase(),
+                                        );
                                     }
                                     b"s" => {
                                         // Style index for number format detection
-                                        current_cell_style = String::from_utf8_lossy(&attr.value)
-                                            .parse()
-                                            .ok();
+                                        current_cell_style =
+                                            String::from_utf8_lossy(&attr.value).parse().ok();
                                     }
                                     _ => {}
                                 }
@@ -575,7 +578,10 @@ mod tests {
                     }
                 }
             }
-            assert!(found_merged, "Expected to find merged cells in Basic Invoice.xlsx");
+            assert!(
+                found_merged,
+                "Expected to find merged cells in Basic Invoice.xlsx"
+            );
         }
     }
 
@@ -615,6 +621,9 @@ mod tests {
         assert!(styles.is_date_format(177));
 
         // Test date conversion
-        assert_eq!(Styles::serial_to_date(44197.0), Some("2021-01-01".to_string()));
+        assert_eq!(
+            Styles::serial_to_date(44197.0),
+            Some("2021-01-01".to_string())
+        );
     }
 }

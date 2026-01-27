@@ -47,7 +47,8 @@ fn test_3d_charts_docx() {
 
 #[test]
 fn test_autoshapes_pptx() {
-    let path = "test-files/officedissector/test/fraunhoferlibrary/AutoShapes O12 PPT AllShapes.pptx";
+    let path =
+        "test-files/officedissector/test/fraunhoferlibrary/AutoShapes O12 PPT AllShapes.pptx";
     if test_file_exists(path) {
         extract_and_verify(path).expect("AutoShapes PPTX should parse");
     }
@@ -283,9 +284,9 @@ fn test_officedissector_full_corpus() {
 
     // Known expected failures
     let expected_failures = [
-        "badcrc.docx",      // Intentionally bad CRC
-        "testascii.docx",   // Non-standard encoding
-        "testutf16.docx",   // UTF-16 not supported yet
+        "badcrc.docx",    // Intentionally bad CRC
+        "testascii.docx", // Non-standard encoding
+        "testutf16.docx", // UTF-16 not supported yet
     ];
 
     fn scan_dir(
@@ -336,7 +337,11 @@ fn test_officedissector_full_corpus() {
 
     println!("\n=== OfficeDissector Corpus Test Results ===");
     println!("Total: {}", total);
-    println!("Success: {} ({:.1}%)", success, (success as f64 / total as f64) * 100.0);
+    println!(
+        "Success: {} ({:.1}%)",
+        success,
+        (success as f64 / total as f64) * 100.0
+    );
     println!("Failed: {}", failed);
 
     if !failures.is_empty() {

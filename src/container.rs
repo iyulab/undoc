@@ -59,9 +59,8 @@ impl Relationships {
     }
 }
 
-
 /// Fix XML encoding declaration from UTF-16 to UTF-8.
-/// 
+///
 /// When we decode UTF-16 XML to a Rust String (UTF-8), the XML declaration
 /// still says encoding="UTF-16". This causes quick-xml to fail when it tries
 /// to re-interpret the already-decoded UTF-8 string as UTF-16.
@@ -71,14 +70,14 @@ fn fix_xml_encoding_declaration(content: &str) -> String {
         if let Some(end_decl) = content.find("?>") {
             let decl = &content[..end_decl + 2];
             let rest = &content[end_decl + 2..];
-            
+
             // Replace UTF-16 with UTF-8 (case insensitive)
             let fixed_decl = decl
                 .replace("encoding=\"UTF-16\"", "encoding=\"UTF-8\"")
                 .replace("encoding='UTF-16'", "encoding='UTF-8'")
                 .replace("encoding=\"utf-16\"", "encoding=\"UTF-8\"")
                 .replace("encoding='utf-16'", "encoding='UTF-8'");
-            
+
             return format!("{}{}", fixed_decl, rest);
         }
     }
@@ -96,7 +95,6 @@ pub struct OoxmlContainer {
     package_rels: Option<Relationships>,
 }
 
-
 /// Decode XML bytes handling different encodings (UTF-8, UTF-16 LE/BE).
 ///
 /// OOXML files are typically UTF-8 encoded, but some (especially older
@@ -108,21 +106,21 @@ pub fn decode_xml_bytes(bytes: &[u8]) -> Result<String> {
         return String::from_utf8(bytes[3..].to_vec())
             .map_err(|e| Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e)));
     }
-    
+
     if bytes.len() >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE {
         // UTF-16 LE BOM: FF FE
         let content = decode_utf16_le(&bytes[2..])?;
         // Fix XML declaration encoding to UTF-8 since we've already converted
         return Ok(fix_xml_encoding_declaration(&content));
     }
-    
+
     if bytes.len() >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF {
         // UTF-16 BE BOM: FE FF
         let content = decode_utf16_be(&bytes[2..])?;
         // Fix XML declaration encoding to UTF-8 since we've already converted
         return Ok(fix_xml_encoding_declaration(&content));
     }
-    
+
     // No BOM - try UTF-8 first, then attempt UTF-16 detection
     match String::from_utf8(bytes.to_vec()) {
         Ok(s) => Ok(s),
@@ -145,11 +143,11 @@ pub fn decode_xml_bytes(bytes: &[u8]) -> Result<String> {
 fn decode_utf16_le(bytes: &[u8]) -> Result<String> {
     // Ensure even number of bytes
     let len = bytes.len() & !1;
-    
+
     let u16_iter = (0..len)
         .step_by(2)
         .map(|i| u16::from_le_bytes([bytes[i], bytes[i + 1]]));
-    
+
     char::decode_utf16(u16_iter)
         .collect::<std::result::Result<String, _>>()
         .map_err(|e| Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))
@@ -159,11 +157,11 @@ fn decode_utf16_le(bytes: &[u8]) -> Result<String> {
 fn decode_utf16_be(bytes: &[u8]) -> Result<String> {
     // Ensure even number of bytes
     let len = bytes.len() & !1;
-    
+
     let u16_iter = (0..len)
         .step_by(2)
         .map(|i| u16::from_be_bytes([bytes[i], bytes[i + 1]]));
-    
+
     char::decode_utf16(u16_iter)
         .collect::<std::result::Result<String, _>>()
         .map_err(|e| Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))
@@ -216,11 +214,11 @@ impl OoxmlContainer {
         let mut file = archive
             .by_name(path)
             .map_err(|_| Error::MissingComponent(path.to_string()))?;
-        
+
         // Read raw bytes first
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes)?;
-        
+
         // Detect encoding from BOM
         let content = decode_xml_bytes(&bytes)?;
         Ok(content)
@@ -501,51 +499,68 @@ mod tests {
         }
     }
 
-
     #[test]
     fn test_utf16_xml_reading() {
         let path = "test-files/officedissector/test/unit_test/testdocs/testutf16.docx";
         if std::path::Path::new(path).exists() {
             let container = OoxmlContainer::open(path).unwrap();
-            
+
             // Read Content_Types.xml (UTF-16 encoded)
-            let content = container.read_xml("[Content_Types].xml").expect("Should read UTF-16 XML");
-            assert!(content.contains("ContentType"), "Content should contain ContentType");
+            let content = container
+                .read_xml("[Content_Types].xml")
+                .expect("Should read UTF-16 XML");
+            assert!(
+                content.contains("ContentType"),
+                "Content should contain ContentType"
+            );
             // Verify UTF-16 was decoded to UTF-8 (no null bytes in ASCII range)
-            assert!(!content.starts_with("\0"), "Should not start with null byte");
-            assert!(content.starts_with("<?xml"), "Should start with XML declaration");
-            
+            assert!(
+                !content.starts_with("\0"),
+                "Should not start with null byte"
+            );
+            assert!(
+                content.starts_with("<?xml"),
+                "Should start with XML declaration"
+            );
+
             // Read document.xml (UTF-16 encoded)
-            let doc_xml = container.read_xml("word/document.xml").expect("Should read UTF-16 document.xml");
-            assert!(doc_xml.contains("w:document"), "Should contain w:document element");
+            let doc_xml = container
+                .read_xml("word/document.xml")
+                .expect("Should read UTF-16 document.xml");
+            assert!(
+                doc_xml.contains("w:document"),
+                "Should contain w:document element"
+            );
             // Verify content is readable
-            assert!(doc_xml.contains("Footnote in section"), "Should contain document text");
+            assert!(
+                doc_xml.contains("Footnote in section"),
+                "Should contain document text"
+            );
         }
     }
-    
+
     #[test]
     fn test_utf16_decoding_function() {
         // Test UTF-16 LE with BOM
         let utf16_le = b"\xFF\xFE<\0?\0x\0m\0l\0>\0";
         let result = decode_xml_bytes(utf16_le).expect("Should decode UTF-16 LE");
         assert_eq!(result, "<?xml>");
-        
-        // Test UTF-16 BE with BOM  
+
+        // Test UTF-16 BE with BOM
         let utf16_be = b"\xFE\xFF\0<\0?\0x\0m\0l\0>";
         let result = decode_xml_bytes(utf16_be).expect("Should decode UTF-16 BE");
         assert_eq!(result, "<?xml>");
-        
+
         // Test UTF-8 BOM
         let utf8_bom = b"\xEF\xBB\xBF<?xml>";
         let result = decode_xml_bytes(utf8_bom).expect("Should decode UTF-8 with BOM");
         assert_eq!(result, "<?xml>");
-        
+
         // Test UTF-8 without BOM
         let utf8_plain = b"<?xml>";
         let result = decode_xml_bytes(utf8_plain).expect("Should decode UTF-8 without BOM");
         assert_eq!(result, "<?xml>");
     }
-
 
     #[test]
     fn test_utf16_full_parse() {
@@ -553,12 +568,24 @@ mod tests {
         if std::path::Path::new(path).exists() {
             // First test reading individual files
             let container = OoxmlContainer::open(path).unwrap();
-            
+
             // Test reading various XML files
-            for file_path in ["word/styles.xml", "word/numbering.xml", "word/document.xml", "docProps/core.xml", "word/footnotes.xml", "word/endnotes.xml"] {
+            for file_path in [
+                "word/styles.xml",
+                "word/numbering.xml",
+                "word/document.xml",
+                "docProps/core.xml",
+                "word/footnotes.xml",
+                "word/endnotes.xml",
+            ] {
                 match container.read_xml(file_path) {
                     Ok(content) => {
-                        println!("{}: {} bytes, empty={}", file_path, content.len(), content.trim().is_empty());
+                        println!(
+                            "{}: {} bytes, empty={}",
+                            file_path,
+                            content.len(),
+                            content.trim().is_empty()
+                        );
                         // Print first 100 chars to verify encoding
                         if content.len() > 0 {
                             let preview = &content[..content.len().min(100)];
@@ -570,46 +597,55 @@ mod tests {
                     }
                 }
             }
-            
+
             // Read raw bytes first
             println!("\n=== Testing raw styles.xml ===");
             match container.read_binary("word/styles.xml") {
                 Ok(data) => {
                     println!("Raw bytes: {} bytes", data.len());
                     println!("First 10 bytes: {:02x?}", &data[..10.min(data.len())]);
-                    println!("Last 10 bytes: {:02x?}", &data[data.len().saturating_sub(10)..]);
-                    
+                    println!(
+                        "Last 10 bytes: {:02x?}",
+                        &data[data.len().saturating_sub(10)..]
+                    );
+
                     // Try decode manually
                     let decoded = decode_xml_bytes(&data).expect("decode failed");
                     println!("Decoded: {} chars", decoded.len());
-                    println!("Decoded first 100: {:?}", &decoded[..100.min(decoded.len())]);
-                    println!("Decoded last 100: {:?}", &decoded[decoded.len().saturating_sub(100)..]);
+                    println!(
+                        "Decoded first 100: {:?}",
+                        &decoded[..100.min(decoded.len())]
+                    );
+                    println!(
+                        "Decoded last 100: {:?}",
+                        &decoded[decoded.len().saturating_sub(100)..]
+                    );
                     let null_count = decoded.bytes().filter(|&b| b == 0).count();
                     println!("Null bytes after decode: {}", null_count);
                 }
                 Err(e) => println!("read_binary ERROR: {:?}", e),
             }
-            
+
             // Read styles.xml once and analyze
             println!("\n=== Testing StyleMap ===");
             match container.read_xml("word/styles.xml") {
                 Ok(xml) => {
                     println!("Read styles.xml: {} bytes", xml.len());
-                    
+
                     // Print first and last characters
                     let first_100 = &xml[..xml.len().min(100)];
                     let last_100 = if xml.len() > 100 {
-                        &xml[xml.len()-100..]
+                        &xml[xml.len() - 100..]
                     } else {
                         &xml
                     };
                     println!("First 100: {:?}", first_100);
                     println!("Last 100: {:?}", last_100);
-                    
+
                     // Check for null bytes
                     let null_count = xml.bytes().filter(|&b| b == 0).count();
                     println!("Null bytes in string: {}", null_count);
-                    
+
                     // Try parsing
                     match crate::docx::styles::StyleMap::parse(&xml) {
                         Ok(styles) => println!("Styles OK: {} styles", styles.styles.len()),
@@ -620,7 +656,7 @@ mod tests {
                     println!("read_xml ERROR: {:?}", e);
                 }
             }
-            
+
             // Test step by step: DOCX parser init
             println!("\n=== Testing DocxParser ===");
             match crate::docx::DocxParser::open(path) {
@@ -629,7 +665,10 @@ mod tests {
                     match parser.parse() {
                         Ok(doc) => {
                             println!("Parse OK: {} sections", doc.sections.len());
-                            println!("Text: {}", &doc.plain_text()[..doc.plain_text().len().min(200)]);
+                            println!(
+                                "Text: {}",
+                                &doc.plain_text()[..doc.plain_text().len().min(200)]
+                            );
                         }
                         Err(e) => {
                             println!("Parse ERROR: {:?}", e);

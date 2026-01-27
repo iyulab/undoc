@@ -67,7 +67,7 @@ impl NumberingMap {
         if xml.trim().is_empty() {
             return Ok(Self::default());
         }
-        
+
         let mut map = NumberingMap::default();
         let mut reader = quick_xml::Reader::from_str(xml);
         reader.config_mut().trim_text(true);

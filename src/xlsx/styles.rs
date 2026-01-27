@@ -51,10 +51,12 @@ impl Styles {
                             for attr in e.attributes().flatten() {
                                 match attr.key.as_ref() {
                                     b"numFmtId" => {
-                                        num_fmt_id = String::from_utf8_lossy(&attr.value).parse().ok();
+                                        num_fmt_id =
+                                            String::from_utf8_lossy(&attr.value).parse().ok();
                                     }
                                     b"formatCode" => {
-                                        format_code = String::from_utf8_lossy(&attr.value).to_string();
+                                        format_code =
+                                            String::from_utf8_lossy(&attr.value).to_string();
                                     }
                                     _ => {}
                                 }
@@ -78,13 +80,11 @@ impl Styles {
                         _ => {}
                     }
                 }
-                Ok(quick_xml::events::Event::End(ref e)) => {
-                    match e.name().as_ref() {
-                        b"numFmts" => in_num_fmts = false,
-                        b"cellXfs" => in_cell_xfs = false,
-                        _ => {}
-                    }
-                }
+                Ok(quick_xml::events::Event::End(ref e)) => match e.name().as_ref() {
+                    b"numFmts" => in_num_fmts = false,
+                    b"cellXfs" => in_cell_xfs = false,
+                    _ => {}
+                },
                 Ok(quick_xml::events::Event::Eof) => break,
                 Err(_) => break,
                 _ => {}
@@ -180,11 +180,7 @@ impl Styles {
         // Handle the "Lotus 1-2-3" bug: Excel thinks Feb 29, 1900 exists
         // Serial 60 = Feb 29, 1900 (doesn't exist)
         // Serial 61 = Mar 1, 1900
-        let adjusted_serial = if serial > 60.0 {
-            serial - 1.0
-        } else {
-            serial
-        };
+        let adjusted_serial = if serial > 60.0 { serial - 1.0 } else { serial };
 
         // Days since January 1, 1900 (day 1 = Jan 1, 1900)
         let days = adjusted_serial.floor() as i64;
@@ -205,8 +201,10 @@ impl Styles {
             let hours = total_seconds / 3600;
             let minutes = (total_seconds % 3600) / 60;
             let seconds = total_seconds % 60;
-            Some(format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}",
-                year, month, day, hours, minutes, seconds))
+            Some(format!(
+                "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}",
+                year, month, day, hours, minutes, seconds
+            ))
         } else {
             Some(format!("{:04}-{:02}-{:02}", year, month, day))
         }
@@ -275,9 +273,9 @@ mod tests {
         assert!(styles.is_date_format(22)); // m/d/yy h:mm
 
         // Not date formats
-        assert!(!styles.is_date_format(0));  // General
-        assert!(!styles.is_date_format(1));  // 0
-        assert!(!styles.is_date_format(2));  // 0.00
+        assert!(!styles.is_date_format(0)); // General
+        assert!(!styles.is_date_format(1)); // 0
+        assert!(!styles.is_date_format(2)); // 0.00
     }
 
     #[test]
@@ -303,10 +301,19 @@ mod tests {
         assert_eq!(Styles::serial_to_date(61.0), Some("1900-03-01".to_string()));
 
         // More recent dates
-        assert_eq!(Styles::serial_to_date(44197.0), Some("2021-01-01".to_string()));
-        assert_eq!(Styles::serial_to_date(45658.0), Some("2025-01-01".to_string()));
+        assert_eq!(
+            Styles::serial_to_date(44197.0),
+            Some("2021-01-01".to_string())
+        );
+        assert_eq!(
+            Styles::serial_to_date(45658.0),
+            Some("2025-01-01".to_string())
+        );
 
         // With time component
-        assert_eq!(Styles::serial_to_date(44197.5), Some("2021-01-01T12:00:00".to_string()));
+        assert_eq!(
+            Styles::serial_to_date(44197.5),
+            Some("2021-01-01T12:00:00".to_string())
+        );
     }
 }
