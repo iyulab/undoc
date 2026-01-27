@@ -1,4 +1,5 @@
 using System;
+using System.Reflection;
 using System.Runtime.InteropServices;
 
 namespace Undoc;
@@ -8,7 +9,41 @@ namespace Undoc;
 /// </summary>
 internal static class NativeMethods
 {
+    // On Windows, we use undoc_native.dll to avoid conflict with managed Undoc.dll
+    // On Unix, libundoc.so/dylib doesn't conflict with Undoc.dll
     private const string LibraryName = "undoc";
+
+    static NativeMethods()
+    {
+        NativeLibrary.SetDllImportResolver(typeof(NativeMethods).Assembly, ResolveDllImport);
+    }
+
+    private static IntPtr ResolveDllImport(string libraryName, Assembly assembly, DllImportSearchPath? searchPath)
+    {
+        if (libraryName != LibraryName)
+            return IntPtr.Zero;
+
+        // Try platform-specific names
+        string[] namesToTry;
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        {
+            // On Windows, try undoc_native.dll first (for test scenarios),
+            // then fall back to undoc.dll (for NuGet package scenarios)
+            namesToTry = new[] { "undoc_native", "undoc" };
+        }
+        else
+        {
+            namesToTry = new[] { "undoc" };
+        }
+
+        foreach (var name in namesToTry)
+        {
+            if (NativeLibrary.TryLoad(name, assembly, searchPath, out var handle))
+                return handle;
+        }
+
+        return IntPtr.Zero;
+    }
 
     // Flags for markdown rendering
     public const int UNDOC_FLAG_FRONTMATTER = 1;

@@ -309,10 +309,15 @@ jobs:
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
+          # On Windows, native undoc.dll conflicts with managed Undoc.dll (case-insensitive)
+          # Rename to undoc_native.dll to avoid overwriting the managed assembly
           Get-ChildItem -Path "bindings/csharp/Undoc.Tests/bin/Release" -Directory -Recurse | Where-Object { $_.Name -like "net*" } | ForEach-Object {
-            Copy-Item "./native-lib/*" -Destination $_.FullName -Force
-            Write-Host "Copied native library to $($_.FullName)"
-            Get-ChildItem $_.FullName
+            $srcFile = Get-ChildItem "./native-lib/*" | Select-Object -First 1
+            $destFile = Join-Path $_.FullName "undoc_native.dll"
+            Copy-Item $srcFile.FullName -Destination $destFile -Force
+            Write-Host "Copied native library to $destFile"
+            Write-Host "Test output directory (Undoc files):"
+            Get-ChildItem $_.FullName | Where-Object { $_.Name -like "Undoc*" -or $_.Name -like "undoc*" }
           }
 
       - name: Run tests
