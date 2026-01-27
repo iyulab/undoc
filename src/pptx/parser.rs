@@ -526,21 +526,21 @@ impl PptxParser {
 
             // Resolve chart path relative to slide
             // Relationship target is like "../charts/chart1.xml"
-            let chart_path = if target.starts_with("../") {
+            let chart_path = if let Some(stripped) = target.strip_prefix("../") {
                 // Relative path from slide directory
                 if let Some(last_slash) = slide_path.rfind('/') {
                     let slide_dir = &slide_path[..last_slash];
                     if let Some(parent_slash) = slide_dir.rfind('/') {
                         let parent_dir = &slide_dir[..parent_slash];
-                        format!("{}/{}", parent_dir, &target[3..])
+                        format!("{}/{}", parent_dir, stripped)
                     } else {
-                        target[3..].to_string()
+                        stripped.to_string()
                     }
                 } else {
-                    target[3..].to_string()
+                    stripped.to_string()
                 }
-            } else if target.starts_with('/') {
-                target[1..].to_string()
+            } else if let Some(stripped) = target.strip_prefix('/') {
+                stripped.to_string()
             } else {
                 format!("ppt/{}", target)
             };
