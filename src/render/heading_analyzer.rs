@@ -302,9 +302,7 @@ impl HeadingAnalyzer {
         // P0: Style mapping takes highest priority (before explicit styles)
         // This allows style name like "제목 1" to be recognized as heading
         if let Some(ref mapping) = self.config.style_mapping {
-            if let Some(level) =
-                mapping.get(para.style_id.as_deref(), para.style_name.as_deref())
-            {
+            if let Some(level) = mapping.get(para.style_id.as_deref(), para.style_name.as_deref()) {
                 let capped = self.cap_heading_level(level);
                 return HeadingDecision::Explicit(capped);
             }

@@ -166,10 +166,7 @@ mod tests {
         mapping.add_name_mapping("Custom Title", HeadingLevel::H1);
         mapping.add_id_mapping("CustomID", HeadingLevel::H3);
 
-        assert_eq!(
-            mapping.get_by_name("custom title"),
-            Some(HeadingLevel::H1)
-        );
+        assert_eq!(mapping.get_by_name("custom title"), Some(HeadingLevel::H1));
         assert_eq!(mapping.get_by_id("CustomID"), Some(HeadingLevel::H3));
     }
 }

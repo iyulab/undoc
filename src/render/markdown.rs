@@ -591,7 +591,8 @@ fn render_cell_content(
         // Render inline images from paragraph (like render_paragraph does)
         for image in &para.images {
             let alt = image.alt_text.as_deref().unwrap_or("image");
-            let path = resolve_image_path(&image.resource_id, resource_map, &options.image_path_prefix);
+            let path =
+                resolve_image_path(&image.resource_id, resource_map, &options.image_path_prefix);
             parts.push(format!("![{}]({})", alt, path));
         }
     }
@@ -1133,7 +1134,8 @@ mod tests {
 
         // With preserve_line_breaks option
         let options_with_breaks = RenderOptions::new().with_preserve_breaks(true);
-        let md_with_breaks = render_paragraph(&para, &options_with_breaks, None, &empty_resource_map());
+        let md_with_breaks =
+            render_paragraph(&para, &options_with_breaks, None, &empty_resource_map());
         assert!(
             md_with_breaks.contains("First line  \n"),
             "Should contain Markdown line break: {}",
