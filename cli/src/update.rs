@@ -12,6 +12,17 @@ use std::time::Duration;
 const REPO_OWNER: &str = "iyulab";
 const REPO_NAME: &str = "undoc";
 const BIN_NAME: &str = "undoc";
+const CLI_CRATE_NAME: &str = "undoc-cli";
+
+/// Detect if installed via cargo install (binary in .cargo/bin)
+fn is_cargo_install() -> bool {
+    if let Ok(exe_path) = std::env::current_exe() {
+        let path_str = exe_path.to_string_lossy();
+        path_str.contains(".cargo") && path_str.contains("bin")
+    } else {
+        false
+    }
+}
 
 /// Result of background update check
 pub struct UpdateCheckResult {
@@ -132,11 +143,34 @@ pub fn run_update(check_only: bool, force: bool) -> Result<(), Box<dyn std::erro
 
     if check_only {
         println!();
-        println!("Run '{}' to update.", "undoc update".cyan());
+        if is_cargo_install() {
+            println!(
+                "Run '{}' to update.",
+                format!("cargo install {}", CLI_CRATE_NAME).cyan()
+            );
+        } else {
+            println!("Run '{}' to update.", "undoc update".cyan());
+        }
         return Ok(());
     }
 
-    // Perform update
+    // Check installation method
+    if is_cargo_install() {
+        println!();
+        println!(
+            "{} Installed via cargo. Please run:",
+            "Note:".yellow().bold()
+        );
+        println!("  {}", format!("cargo install {}", CLI_CRATE_NAME).cyan().bold());
+        println!();
+        println!(
+            "{}",
+            "This ensures proper integration with your Rust toolchain.".dimmed()
+        );
+        return Ok(());
+    }
+
+    // Perform update (GitHub Releases only)
     println!();
     println!("{}", "Downloading update...".cyan());
 

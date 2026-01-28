@@ -3,180 +3,125 @@ name: Release
 on:
   workflow_run:
     workflows: ["CI"]
-    branches: [main]
     types: [completed]
+    branches: [main]
   workflow_dispatch:
     inputs:
-      force_release:
-        description: 'Force release even if version unchanged'
+      version:
+        description: 'Version to release (leave empty to use Cargo.toml version)'
         required: false
-        default: 'false'
+        type: string
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
   check-version:
-    name: Check Version Change
-    # Only run if CI workflow succeeded (or manual trigger)
-    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+    name: Check Version
     runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
     outputs:
       version: ${{ steps.get_version.outputs.version }}
-      should_release: ${{ steps.check.outputs.should_release }}
+      version_num: ${{ steps.get_version.outputs.version_num }}
+      should_release: ${{ steps.check_release.outputs.should_release }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 2
 
       - name: Get version from Cargo.toml
         id: get_version
         run: |
-          VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-
-      - name: Check if version changed
-        id: check
-        run: |
-          if [[ "${{ github.event.inputs.force_release }}" == "true" ]]; then
-            echo "should_release=true" >> $GITHUB_OUTPUT
-          elif git diff HEAD~1 HEAD -- Cargo.toml | grep -q '^+version = '; then
-            echo "should_release=true" >> $GITHUB_OUTPUT
+          if [ -n "${{ inputs.version }}" ]; then
+            VERSION_NUM="${{ inputs.version }}"
           else
+            VERSION_NUM=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+          fi
+          echo "version=v${VERSION_NUM}" >> $GITHUB_OUTPUT
+          echo "version_num=${VERSION_NUM}" >> $GITHUB_OUTPUT
+          echo "Version: v${VERSION_NUM}"
+
+      - name: Check if release exists
+        id: check_release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=${{ steps.get_version.outputs.version }}
+          if gh release view "$VERSION" > /dev/null 2>&1; then
+            echo "Release $VERSION already exists, skipping"
             echo "should_release=false" >> $GITHUB_OUTPUT
+          else
+            echo "Release $VERSION does not exist, proceeding"
+            echo "should_release=true" >> $GITHUB_OUTPUT
           fi
 
-  build:
-    name: Build ${{ matrix.target }}
+  build-release:
+    name: Build Release
     needs: check-version
     if: needs.check-version.outputs.should_release == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         include:
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
-            lib_name: undoc.dll
-            cli_name: undoc.exe
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
-            lib_name: libundoc.so
-            cli_name: undoc
-          - target: x86_64-apple-darwin
-            os: macos-latest
-            lib_name: libundoc.dylib
-            cli_name: undoc
-          - target: aarch64-apple-darwin
-            os: macos-latest
-            lib_name: libundoc.dylib
-            cli_name: undoc
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_name: undoc
+            archive_name: undoc-linux-x86_64
+            archive_ext: tar.gz
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_name: undoc.exe
+            archive_name: undoc-windows-x86_64
+            archive_ext: zip
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact_name: undoc
+            archive_name: undoc-macos-x86_64
+            archive_ext: tar.gz
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact_name: undoc
+            archive_name: undoc-macos-aarch64
+            archive_ext: tar.gz
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust
+      - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
           targets: ${{ matrix.target }}
 
-      - name: Build library with FFI
-        run: cargo build --release --target ${{ matrix.target }} -p undoc --features ffi
-
-      # IMPORTANT: Copy FFI library BEFORE CLI build to prevent overwrite
-      # CLI build recompiles undoc without ffi feature, which would overwrite the DLL
-      - name: Preserve FFI library (Windows)
-        if: matrix.os == 'windows-latest'
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path artifacts-lib
-          Copy-Item "target/${{ matrix.target }}/release/${{ matrix.lib_name }}" -Destination "artifacts-lib/"
-          Copy-Item "include/undoc.h" -Destination "artifacts-lib/"
-
-      - name: Preserve FFI library (Unix)
-        if: matrix.os != 'windows-latest'
-        run: |
-          mkdir -p artifacts-lib
-          cp "target/${{ matrix.target }}/release/${{ matrix.lib_name }}" artifacts-lib/ || true
-          cp include/undoc.h artifacts-lib/
-
-      - name: Build CLI
+      - name: Build
         run: cargo build --release --target ${{ matrix.target }} -p undoc-cli
 
-      - name: Verify FFI exports (Windows)
-        if: matrix.os == 'windows-latest'
+      - name: Create archive (Unix)
+        if: matrix.archive_ext == 'tar.gz'
+        run: |
+          cd target/${{ matrix.target }}/release
+          tar -czvf ${{ matrix.archive_name }}-${{ needs.check-version.outputs.version }}.tar.gz ${{ matrix.artifact_name }}
+
+      - name: Create archive (Windows)
+        if: matrix.archive_ext == 'zip'
         shell: pwsh
         run: |
-          $dll = "artifacts-lib/${{ matrix.lib_name }}"
-          $content = [System.IO.File]::ReadAllBytes($dll)
-          $text = [System.Text.Encoding]::ASCII.GetString($content)
-          if ($text -notmatch "undoc_version") {
-            Write-Error "ERROR: DLL is missing FFI exports! The undoc_version function was not found."
-            Write-Error "This usually means the library was built without --features ffi"
-            exit 1
-          }
-          $size = (Get-Item $dll).Length
-          Write-Host "FFI library verified: $dll ($size bytes)"
-          Write-Host "Found undoc_version export - FFI bindings are present"
+          cd target/${{ matrix.target }}/release
+          Compress-Archive -Path ${{ matrix.artifact_name }} -DestinationPath "${{ matrix.archive_name }}-${{ needs.check-version.outputs.version }}.zip"
 
-      - name: Verify FFI exports (Unix)
-        if: matrix.os != 'windows-latest'
-        run: |
-          lib="artifacts-lib/${{ matrix.lib_name }}"
-          if ! grep -q "undoc_version" "$lib" 2>/dev/null; then
-            echo "ERROR: Library is missing FFI exports!"
-            exit 1
-          fi
-          size=$(stat -f%z "$lib" 2>/dev/null || stat -c%s "$lib" 2>/dev/null)
-          echo "FFI library verified: $lib ($size bytes)"
-
-      - name: Prepare CLI artifacts (Windows)
-        if: matrix.os == 'windows-latest'
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path artifacts-cli
-          Copy-Item "target/${{ matrix.target }}/release/${{ matrix.cli_name }}" -Destination "artifacts-cli/"
-
-      - name: Prepare CLI artifacts (Unix)
-        if: matrix.os != 'windows-latest'
-        run: |
-          mkdir -p artifacts-cli
-          cp "target/${{ matrix.target }}/release/${{ matrix.cli_name }}" artifacts-cli/
-
-      - name: Upload lib artifacts
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: undoc-lib-${{ matrix.target }}
-          path: artifacts-lib/
+          name: ${{ matrix.archive_name }}
+          path: target/${{ matrix.target }}/release/${{ matrix.archive_name }}-${{ needs.check-version.outputs.version }}.${{ matrix.archive_ext }}
 
-      - name: Upload cli artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: undoc-cli-${{ matrix.target }}
-          path: artifacts-cli/
-
-  publish-crates:
-    name: Publish to crates.io
-    needs: [check-version, build]
-    if: needs.check-version.outputs.should_release == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Publish to crates.io
-        run: cargo publish --token ${{ secrets.CARGO_REGISTRY_TOKEN }} --allow-dirty
-        continue-on-error: true
-
-  release:
-    name: Create GitHub Release
-    needs: [check-version, build]
+  create-release:
+    name: Create Release
+    needs: [check-version, build-release]
     if: needs.check-version.outputs.should_release == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
+
     steps:
       - uses: actions/checkout@v4
 
@@ -185,79 +130,38 @@ jobs:
         with:
           path: artifacts
 
-      - name: Prepare release assets
-        run: |
-          cd artifacts
-          # Package lib artifacts
-          for dir in undoc-lib-*/; do
-            target="${dir%/}"
-            target="${target#undoc-lib-}"
-            cd "$dir"
-            if [[ "$target" == *"windows"* ]]; then
-              zip "../undoc-lib-$target.zip" *
-            else
-              tar -czvf "../undoc-lib-$target.tar.gz" *
-            fi
-            cd ..
-          done
-          # Package cli artifacts
-          for dir in undoc-cli-*/; do
-            target="${dir%/}"
-            target="${target#undoc-cli-}"
-            cd "$dir"
-            if [[ "$target" == *"windows"* ]]; then
-              zip "../undoc-cli-$target.zip" *
-            else
-              tar -czvf "../undoc-cli-$target.tar.gz" *
-            fi
-            cd ..
-          done
+      - name: List artifacts
+        run: find artifacts -type f
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ needs.check-version.outputs.version }}
-          name: Release v${{ needs.check-version.outputs.version }}
-          body: |
-            ## undoc v${{ needs.check-version.outputs.version }}
-
-            High-performance Microsoft Office document extraction to Markdown.
-
-            ### Downloads
-
-            #### CLI (Command-line tool)
-            | Platform | Architecture | File |
-            |----------|--------------|------|
-            | Windows | x64 | `undoc-cli-x86_64-pc-windows-msvc.zip` |
-            | Linux | x64 | `undoc-cli-x86_64-unknown-linux-gnu.tar.gz` |
-            | macOS | Intel | `undoc-cli-x86_64-apple-darwin.tar.gz` |
-            | macOS | Apple Silicon | `undoc-cli-aarch64-apple-darwin.tar.gz` |
-
-            #### Library (FFI / C-ABI)
-            | Platform | Architecture | File |
-            |----------|--------------|------|
-            | Windows | x64 | `undoc-lib-x86_64-pc-windows-msvc.zip` |
-            | Linux | x64 | `undoc-lib-x86_64-unknown-linux-gnu.tar.gz` |
-            | macOS | Intel | `undoc-lib-x86_64-apple-darwin.tar.gz` |
-            | macOS | Apple Silicon | `undoc-lib-aarch64-apple-darwin.tar.gz` |
-
-            ### Installation
-
-            #### Rust/Cargo
-            ```bash
-            cargo install undoc-cli
-            ```
-
-            #### CLI Self-Update
-            ```bash
-            undoc update        # Update to latest version
-            undoc update --check  # Check for updates only
-            ```
-
-            #### C# / .NET
-            Download `undoc-lib-*.zip` for your platform and use the provided C# bindings.
+          tag_name: ${{ needs.check-version.outputs.version }}
+          name: Release ${{ needs.check-version.outputs.version }}
           files: |
-            artifacts/*.zip
-            artifacts/*.tar.gz
+            artifacts/**/*
+          generate_release_notes: true
           draft: false
-          prerelease: false
+          prerelease: ${{ contains(needs.check-version.outputs.version, 'alpha') || contains(needs.check-version.outputs.version, 'beta') || contains(needs.check-version.outputs.version, 'rc') }}
+
+  publish-crates:
+    name: Publish to crates.io
+    needs: [check-version, create-release]
+    if: needs.check-version.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Publish library (undoc)
+        run: cargo publish --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        continue-on-error: true
+
+      - name: Wait for crates.io index update
+        run: sleep 30
+
+      - name: Publish CLI (undoc-cli)
+        run: cargo publish -p undoc-cli --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        continue-on-error: true
