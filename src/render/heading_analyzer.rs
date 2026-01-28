@@ -11,6 +11,7 @@
 
 use std::collections::HashMap;
 
+use super::style_mapping::StyleMapping;
 use crate::model::{Block, Document, HeadingLevel, Paragraph, Section};
 
 /// Configuration for heading analysis.
@@ -34,6 +35,10 @@ pub struct HeadingConfig {
 
     /// Minimum consecutive items to consider as a list.
     pub min_sequence_count: usize,
+
+    /// Style name to heading level mapping.
+    /// When set, style names are checked first before other detection methods.
+    pub style_mapping: Option<StyleMapping>,
 }
 
 impl Default for HeadingConfig {
@@ -45,6 +50,7 @@ impl Default for HeadingConfig {
             trust_explicit_styles: true,
             analyze_sequences: true,
             min_sequence_count: 2,
+            style_mapping: None,
         }
     }
 }
@@ -82,6 +88,18 @@ impl HeadingConfig {
     /// Set whether to analyze sequences.
     pub fn with_sequence_analysis(mut self, analyze: bool) -> Self {
         self.analyze_sequences = analyze;
+        self
+    }
+
+    /// Set style mapping for name-based heading detection.
+    pub fn with_style_mapping(mut self, mapping: StyleMapping) -> Self {
+        self.style_mapping = Some(mapping);
+        self
+    }
+
+    /// Enable default style mapping (English and Korean style names).
+    pub fn with_default_style_mapping(mut self) -> Self {
+        self.style_mapping = Some(StyleMapping::with_defaults());
         self
     }
 }
@@ -280,6 +298,17 @@ impl HeadingAnalyzer {
     fn decide_heading(&self, para: &Paragraph) -> HeadingDecision {
         let plain_text = para.plain_text();
         let trimmed = plain_text.trim();
+
+        // P0: Style mapping takes highest priority (before explicit styles)
+        // This allows style name like "제목 1" to be recognized as heading
+        if let Some(ref mapping) = self.config.style_mapping {
+            if let Some(level) =
+                mapping.get(para.style_id.as_deref(), para.style_name.as_deref())
+            {
+                let capped = self.cap_heading_level(level);
+                return HeadingDecision::Explicit(capped);
+            }
+        }
 
         // P1: Explicit style with full trust (skip all exclusion checks)
         if para.heading.is_heading() && self.config.trust_explicit_styles {
@@ -623,6 +652,7 @@ mod tests {
                     ..Default::default()
                 },
                 hyperlink: None,
+                line_break: false,
             }],
             heading: HeadingLevel::None,
             ..Default::default()
@@ -901,5 +931,85 @@ mod tests {
             decision,
             HeadingDecision::Explicit(HeadingLevel::H1)
         ));
+    }
+
+    #[test]
+    fn test_style_mapping_korean() {
+        // Test that Korean style names are recognized via style mapping
+        let config = HeadingConfig::default().with_default_style_mapping();
+        let analyzer = HeadingAnalyzer::new(config);
+
+        // Create paragraph with Korean style name but no explicit heading level
+        let mut para = make_paragraph("제목 내용입니다", HeadingLevel::None);
+        para.style_name = Some("제목 1".to_string());
+
+        let decision = analyzer.decide_heading(&para);
+
+        // Should be recognized as H1 via style mapping
+        assert!(
+            matches!(decision, HeadingDecision::Explicit(HeadingLevel::H1)),
+            "Korean style name should be recognized: {:?}",
+            decision
+        );
+    }
+
+    #[test]
+    fn test_style_mapping_english() {
+        // Test that English style names are recognized via style mapping
+        let config = HeadingConfig::default().with_default_style_mapping();
+        let analyzer = HeadingAnalyzer::new(config);
+
+        // Create paragraph with English style name but no explicit heading level
+        let mut para = make_paragraph("Some heading text", HeadingLevel::None);
+        para.style_name = Some("Heading 2".to_string());
+
+        let decision = analyzer.decide_heading(&para);
+
+        // Should be recognized as H2 via style mapping
+        assert!(
+            matches!(decision, HeadingDecision::Explicit(HeadingLevel::H2)),
+            "English style name should be recognized: {:?}",
+            decision
+        );
+    }
+
+    #[test]
+    fn test_style_mapping_takes_priority() {
+        // Style mapping should take priority over explicit heading level
+        let config = HeadingConfig::default().with_default_style_mapping();
+        let analyzer = HeadingAnalyzer::new(config);
+
+        // Create paragraph with style name and explicit heading level
+        let mut para = make_paragraph("Title text", HeadingLevel::H3);
+        para.style_name = Some("Title".to_string()); // Should map to H1
+
+        let decision = analyzer.decide_heading(&para);
+
+        // Style mapping (H1) should take priority over explicit (H3)
+        assert!(
+            matches!(decision, HeadingDecision::Explicit(HeadingLevel::H1)),
+            "Style mapping should take priority: {:?}",
+            decision
+        );
+    }
+
+    #[test]
+    fn test_style_id_fallback() {
+        // Test that style ID is used as fallback when style name is not set
+        let config = HeadingConfig::default().with_default_style_mapping();
+        let analyzer = HeadingAnalyzer::new(config);
+
+        let mut para = make_paragraph("Heading text", HeadingLevel::None);
+        para.style_id = Some("Heading3".to_string());
+        para.style_name = None;
+
+        let decision = analyzer.decide_heading(&para);
+
+        // Should be recognized as H3 via style ID
+        assert!(
+            matches!(decision, HeadingDecision::Explicit(HeadingLevel::H3)),
+            "Style ID should be recognized: {:?}",
+            decision
+        );
     }
 }

@@ -758,6 +758,7 @@ impl PptxParser {
                                     text: current_text.clone(),
                                     style: current_style.clone(),
                                     hyperlink: current_hyperlink.clone(),
+                                    line_break: false,
                                 });
                             }
                             in_run = false;
@@ -1012,6 +1013,7 @@ impl PptxParser {
                                     text: current_text.clone(),
                                     style: current_style.clone(),
                                     hyperlink: current_hyperlink.clone(),
+                                    line_break: false,
                                 });
                             }
                             in_run = false;
@@ -1200,6 +1202,7 @@ impl PptxParser {
                                     text: current_text.clone(),
                                     style: current_style.clone(),
                                     hyperlink: current_hyperlink.clone(),
+                                    line_break: false,
                                 });
                             }
                             in_run = false;

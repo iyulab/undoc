@@ -351,6 +351,12 @@ impl DocxParser {
                                 let style_id = String::from_utf8_lossy(&attr.value);
                                 para.style_id = Some(style_id.to_string());
                                 para.heading = self.styles.get_heading_level(&style_id);
+                                // Also get style name from StyleMap
+                                if let Some(style) = self.styles.styles.get(style_id.as_ref()) {
+                                    if !style.name.is_empty() {
+                                        para.style_name = Some(style.name.clone());
+                                    }
+                                }
                             }
                         }
                     }
@@ -459,6 +465,21 @@ impl DocxParser {
                             }
                         }
                     }
+                    // Line break handling
+                    b"w:br" if in_run => {
+                        // Mark the last run as having a line break, or create an empty run with line break
+                        if let Some(last_run) = para.runs.last_mut() {
+                            last_run.line_break = true;
+                        } else {
+                            // No previous run, create an empty run with line break
+                            para.runs.push(TextRun {
+                                text: String::new(),
+                                style: current_style.clone(),
+                                hyperlink: None,
+                                line_break: true,
+                            });
+                        }
+                    }
                     _ => {}
                 },
                 Ok(quick_xml::events::Event::Text(ref e)) => {
@@ -470,6 +491,7 @@ impl DocxParser {
                                 text,
                                 style: current_style.clone(),
                                 hyperlink: current_hyperlink.clone(),
+                                line_break: false,
                             };
                             para.runs.push(run);
                         }
@@ -597,6 +619,8 @@ impl DocxParser {
         let mut is_header_row = false;
         let mut col_span = 1u32;
         let mut row_span = 1u32;
+        let mut cell_alignment = CellAlignment::Left;
+        let mut in_tc_pr = false; // Track w:tcPr (table cell properties)
 
         // Track nested table depth (0 = we're at the main table level)
         // 1+ = we're inside a nested table and should collect its XML
@@ -648,6 +672,10 @@ impl DocxParser {
                             cell_nested_tables.clear();
                             col_span = 1;
                             row_span = 1;
+                            cell_alignment = CellAlignment::Left;
+                        }
+                        b"w:tcPr" if in_cell => {
+                            in_tc_pr = true;
                         }
                         b"w:p" if in_cell => {
                             in_paragraph = true;
@@ -706,6 +734,18 @@ impl DocxParser {
                             }
                             if !has_val {
                                 row_span = 0;
+                            }
+                        }
+                        b"w:jc" if in_tc_pr => {
+                            for attr in e.attributes().flatten() {
+                                if attr.key.as_ref() == b"w:val" {
+                                    let val = String::from_utf8_lossy(&attr.value);
+                                    cell_alignment = match val.as_ref() {
+                                        "center" => CellAlignment::Center,
+                                        "right" | "end" => CellAlignment::Right,
+                                        _ => CellAlignment::Left,
+                                    };
+                                }
                             }
                         }
                         // Handle formatting in run properties
@@ -776,6 +816,7 @@ impl DocxParser {
                                     text,
                                     style: current_style.clone(),
                                     hyperlink: None,
+                                    line_break: false,
                                 };
                                 para.runs.push(run);
                             }
@@ -812,6 +853,9 @@ impl DocxParser {
                             }
                             in_row = false;
                         }
+                        b"w:tcPr" => {
+                            in_tc_pr = false;
+                        }
                         b"w:tc" => {
                             if row_span > 0 {
                                 // Use collected paragraphs, or empty paragraph if none
@@ -828,7 +872,7 @@ impl DocxParser {
                                     nested_tables: std::mem::take(&mut cell_nested_tables),
                                     col_span,
                                     row_span,
-                                    alignment: CellAlignment::Left,
+                                    alignment: cell_alignment,
                                     vertical_alignment: VerticalAlignment::default(),
                                     is_header: is_header_row,
                                     background: None,

@@ -58,6 +58,8 @@ pub struct NumberingMap {
     pub instances: HashMap<String, NumInstance>,
     /// Current count for each numId+level combination
     counters: HashMap<(String, u8), u32>,
+    /// Last used level for each numId (for tracking level changes)
+    last_level: HashMap<String, u8>,
 }
 
 impl NumberingMap {
@@ -238,14 +240,39 @@ impl NumberingMap {
     /// Get list info for a paragraph.
     pub fn get_list_info(&mut self, num_id: &str, level: u8) -> Option<(ListType, u32)> {
         let instance = self.instances.get(num_id)?;
-        let abstract_num = self.abstract_nums.get(&instance.abstract_num_id)?;
+        let abstract_num_id = instance.abstract_num_id.clone();
+        let abstract_num = self.abstract_nums.get(&abstract_num_id)?;
         let num_level = abstract_num.levels.iter().find(|l| l.level == level)?;
 
         let list_type = num_level.list_type();
+        let start_value = num_level.start;
+
+        // Collect info about deeper levels for potential reset
+        let deeper_levels: Vec<(u8, u32)> = abstract_num
+            .levels
+            .iter()
+            .filter(|l| l.level > level)
+            .map(|l| (l.level, l.start))
+            .collect();
+
+        // Check if we're moving to a parent/sibling level (reset child levels)
+        if let Some(&last_lvl) = self.last_level.get(num_id) {
+            if level <= last_lvl {
+                // Moving to same level or higher (numerically lower level value)
+                // Reset all deeper levels for this numId
+                for (deeper_level, start) in &deeper_levels {
+                    let key = (num_id.to_string(), *deeper_level);
+                    self.counters.insert(key, *start);
+                }
+            }
+        }
+
+        // Update last level
+        self.last_level.insert(num_id.to_string(), level);
 
         // Get or initialize counter
         let key = (num_id.to_string(), level);
-        let counter = self.counters.entry(key).or_insert(num_level.start);
+        let counter = self.counters.entry(key).or_insert(start_value);
         let number = *counter;
 
         // Increment counter for next use
@@ -303,5 +330,49 @@ mod tests {
         // Second call increments
         let (_, num) = map.get_list_info("1", 0).unwrap();
         assert_eq!(num, 2);
+    }
+
+    #[test]
+    fn test_list_numbering_reset_on_parent_change() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+    <w:abstractNum w:abstractNumId="0">
+        <w:lvl w:ilvl="0">
+            <w:start w:val="1"/>
+            <w:numFmt w:val="decimal"/>
+            <w:lvlText w:val="%1."/>
+        </w:lvl>
+        <w:lvl w:ilvl="1">
+            <w:start w:val="1"/>
+            <w:numFmt w:val="decimal"/>
+            <w:lvlText w:val="%1.%2"/>
+        </w:lvl>
+    </w:abstractNum>
+    <w:num w:numId="1">
+        <w:abstractNumId w:val="0"/>
+    </w:num>
+</w:numbering>"#;
+
+        let mut map = NumberingMap::parse(xml).unwrap();
+
+        // 1. Level 0: 1
+        let (_, num) = map.get_list_info("1", 0).unwrap();
+        assert_eq!(num, 1);
+
+        // 1.1 Level 1: 1
+        let (_, num) = map.get_list_info("1", 1).unwrap();
+        assert_eq!(num, 1);
+
+        // 1.2 Level 1: 2
+        let (_, num) = map.get_list_info("1", 1).unwrap();
+        assert_eq!(num, 2);
+
+        // 2. Level 0: 2 (moving back to parent should reset child level)
+        let (_, num) = map.get_list_info("1", 0).unwrap();
+        assert_eq!(num, 2);
+
+        // 2.1 Level 1: should be reset to 1 (not 3)
+        let (_, num) = map.get_list_info("1", 1).unwrap();
+        assert_eq!(num, 1, "Child level should reset when parent changes");
     }
 }

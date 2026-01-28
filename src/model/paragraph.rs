@@ -178,6 +178,10 @@ pub struct TextRun {
     /// Hyperlink URL (if this run is a link)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hyperlink: Option<String>,
+
+    /// Whether this run ends with a line break (<w:br/>)
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub line_break: bool,
 }
 
 fn is_default_style(style: &TextStyle) -> bool {
@@ -191,6 +195,7 @@ impl TextRun {
             text: text.into(),
             style: TextStyle::default(),
             hyperlink: None,
+            line_break: false,
         }
     }
 
@@ -200,6 +205,7 @@ impl TextRun {
             text: text.into(),
             style,
             hyperlink: None,
+            line_break: false,
         }
     }
 
@@ -209,6 +215,7 @@ impl TextRun {
             text: text.into(),
             style: TextStyle::default(),
             hyperlink: Some(url.into()),
+            line_break: false,
         }
     }
 
@@ -276,6 +283,10 @@ pub struct Paragraph {
     /// Style ID reference
     #[serde(skip_serializing_if = "Option::is_none")]
     pub style_id: Option<String>,
+
+    /// Style name (human-readable, from styles.xml)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub style_name: Option<String>,
 
     /// Indentation level
     #[serde(default, skip_serializing_if = "is_zero")]
@@ -364,7 +375,8 @@ impl Paragraph {
             // Check if we can merge with the last run
             let should_merge = merged.last().is_some_and(|last: &TextRun| {
                 // Same style and same hyperlink (both None or both Some with same URL)
-                last.style == run.style && last.hyperlink == run.hyperlink
+                // Don't merge if the previous run has a line break (preserve the break)
+                last.style == run.style && last.hyperlink == run.hyperlink && !last.line_break
             });
 
             if should_merge {
@@ -376,6 +388,10 @@ impl Paragraph {
                         last.text.push(' ');
                     }
                     last.text.push_str(&run.text);
+                    // Preserve line_break from the merged run
+                    if run.line_break {
+                        last.line_break = true;
+                    }
                 }
             } else {
                 // Start a new run

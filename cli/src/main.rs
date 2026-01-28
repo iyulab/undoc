@@ -10,7 +10,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
-use undoc::render::{CleanupPreset, JsonFormat, RenderOptions, TableFallback};
+use undoc::render::{CleanupPreset, HeadingConfig, JsonFormat, RenderOptions, TableFallback};
 
 /// Microsoft Office document extraction to Markdown, text, and JSON
 #[derive(Parser)]
@@ -458,8 +458,11 @@ fn run_convert(
     // Parse document
     let doc = undoc::parse_file(input)?;
 
-    // Prepare render options
-    let mut options = RenderOptions::new().with_frontmatter(true);
+    // Prepare render options with heading analysis enabled
+    let heading_config = HeadingConfig::default().with_default_style_mapping();
+    let mut options = RenderOptions::new()
+        .with_frontmatter(true)
+        .with_heading_config(heading_config);
     if let Some(mode) = cleanup {
         options = options.with_cleanup_preset(mode.into());
     }
@@ -482,18 +485,25 @@ fn run_convert(
     let json_path = output_dir.join("content.json");
     fs::write(&json_path, &json)?;
 
-    // Extract resources
-    let mut resource_count = 0;
+    // Extract resources (images/ for images, media/ for audio/video/other)
+    let mut image_count = 0;
+    let mut media_count = 0;
     if !doc.resources.is_empty() {
         pb.set_message("Extracting resources...");
+        let images_dir = output_dir.join("images");
         let media_dir = output_dir.join("media");
-        fs::create_dir_all(&media_dir)?;
 
         for (id, resource) in &doc.resources {
             let filename = resource.suggested_filename(id);
-            let path = media_dir.join(&filename);
-            fs::write(&path, &resource.data)?;
-            resource_count += 1;
+            if resource.is_image() {
+                fs::create_dir_all(&images_dir)?;
+                fs::write(images_dir.join(&filename), &resource.data)?;
+                image_count += 1;
+            } else {
+                fs::create_dir_all(&media_dir)?;
+                fs::write(media_dir.join(&filename), &resource.data)?;
+                media_count += 1;
+            }
         }
     }
 
@@ -506,8 +516,11 @@ fn run_convert(
     println!("  {} extract.md", "✓".green());
     println!("  {} extract.txt", "✓".green());
     println!("  {} content.json", "✓".green());
-    if resource_count > 0 {
-        println!("  {} media/ ({} files)", "✓".green(), resource_count);
+    if image_count > 0 {
+        println!("  {} images/ ({} files)", "✓".green(), image_count);
+    }
+    if media_count > 0 {
+        println!("  {} media/ ({} files)", "✓".green(), media_count);
     }
 
     // Print statistics
@@ -516,7 +529,13 @@ fn run_convert(
     println!("{}", "─".repeat(40));
     println!("{}: {}", "Sections".bold(), doc.sections.len());
     println!("{}: {}", "Words".bold(), word_count);
-    println!("{}: {}", "Resources".bold(), resource_count);
+    println!(
+        "{}: {} (images: {}, media: {})",
+        "Resources".bold(),
+        image_count + media_count,
+        image_count,
+        media_count
+    );
 
     // Check for update result and notify if available
     if let Some(result) = update::try_get_update_result(&update_rx) {

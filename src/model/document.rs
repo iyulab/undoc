@@ -267,6 +267,7 @@ mod tests {
                         ..Default::default()
                     },
                     hyperlink: None,
+                    line_break: false,
                 },
                 TextRun::plain("!"),
             ],

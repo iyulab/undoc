@@ -12,9 +12,11 @@ A high-performance Rust library for extracting content from Microsoft Office doc
 - **Multi-format support**: DOCX (Word), XLSX (Excel), PPTX (PowerPoint)
 - **Multiple output formats**: Markdown, Plain Text, JSON (with full metadata)
 - **Structure preservation**: Headings, lists, tables, inline formatting
+- **Smart heading detection**: Style-based heading recognition (English/Korean)
+- **Table cell alignment**: Proper left/center/right alignment in Markdown
 - **PPTX table extraction**: Full table parsing from PowerPoint slides
 - **CJK text support**: Smart spacing for Korean, Chinese, Japanese content
-- **Asset extraction**: Images, charts, and embedded media
+- **Asset extraction**: Images, charts, and embedded media with resolved paths
 - **Text cleanup**: Multiple presets for LLM training data preparation
 - **Self-update**: Built-in update mechanism via GitHub releases
 - **C-ABI FFI**: Native library for C#, Python, and other languages
@@ -407,20 +409,27 @@ cargo build --release --features ffi
 ### C# Wrapper Usage
 
 ```csharp
-using Undoc;
+using Iyulab.Undoc;
 
 // Parse and convert to Markdown
-string markdown = UndocNative.ToMarkdown("document.docx");
+using var doc = UndocDocument.FromFile("document.docx");
+string markdown = doc.ToMarkdown(MarkdownFlags.Frontmatter);
+Console.WriteLine(markdown);
 
-// Parse and convert to plain text
-string text = UndocNative.ToText("document.docx");
+// Get document metadata
+Console.WriteLine($"Title: {doc.Title}");
+Console.WriteLine($"Author: {doc.Author}");
+Console.WriteLine($"Sections: {doc.SectionCount}");
+Console.WriteLine($"Resources: {doc.ResourceCount}");
 
-// Parse and convert to JSON
-string json = UndocNative.ToJson("document.docx");
+// Convert to other formats
+string text = doc.ToText();
+string json = doc.ToJson(JsonFormat.Pretty);
 
-// From byte array
-byte[] data = File.ReadAllBytes("document.docx");
-string markdown = UndocNative.ToMarkdownFromBytes(data);
+// Work with resources
+string resourceIds = doc.GetResourceIds(); // JSON array: ["rId1", "rId2"]
+string info = doc.GetResourceInfo("rId1"); // JSON metadata
+byte[] imageData = doc.GetResourceData("rId1"); // Binary data
 ```
 
 See [bindings/csharp/Undoc.cs](bindings/csharp/Undoc.cs) for the complete wrapper implementation.

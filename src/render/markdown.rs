@@ -1,10 +1,15 @@
 //! Markdown renderer implementation.
 
+use std::collections::HashMap;
+
 use crate::error::Result;
-use crate::model::{Block, Document, HeadingLevel, Paragraph, Table, TextRun};
+use crate::model::{Block, CellAlignment, Document, HeadingLevel, Paragraph, Table, TextRun};
 
 use super::heading_analyzer::{HeadingAnalyzer, HeadingDecision};
 use super::options::RenderOptions;
+
+/// Map of resource IDs to their filenames
+type ResourceMap = HashMap<String, String>;
 
 /// Maximum character length for a heading.
 /// Text longer than this is unlikely to be a semantic heading.
@@ -35,9 +40,27 @@ pub fn to_markdown(doc: &Document, options: &RenderOptions) -> Result<String> {
     to_markdown_standard(doc, options)
 }
 
+/// Build a map from resource IDs to their suggested filenames.
+fn build_resource_map(doc: &Document) -> ResourceMap {
+    doc.resources
+        .iter()
+        .map(|(id, resource)| (id.clone(), resource.suggested_filename(id)))
+        .collect()
+}
+
+/// Get image path from resource ID, resolving to actual filename if available.
+fn resolve_image_path(resource_id: &str, resource_map: &ResourceMap, prefix: &str) -> String {
+    let filename = resource_map
+        .get(resource_id)
+        .cloned()
+        .unwrap_or_else(|| resource_id.to_string());
+    format!("{}{}", prefix, filename)
+}
+
 /// Standard markdown conversion (without heading analyzer).
 fn to_markdown_standard(doc: &Document, options: &RenderOptions) -> Result<String> {
     let mut output = String::new();
+    let resource_map = build_resource_map(doc);
 
     // Add frontmatter if requested
     if options.include_frontmatter {
@@ -58,7 +81,7 @@ fn to_markdown_standard(doc: &Document, options: &RenderOptions) -> Result<Strin
         for block in &section.content {
             match block {
                 Block::Paragraph(para) => {
-                    let md = render_paragraph(para, options, None);
+                    let md = render_paragraph(para, options, None, &resource_map);
                     if !md.is_empty() || options.include_empty_paragraphs {
                         output.push_str(&md);
                         if options.paragraph_spacing {
@@ -69,7 +92,7 @@ fn to_markdown_standard(doc: &Document, options: &RenderOptions) -> Result<Strin
                     }
                 }
                 Block::Table(table) => {
-                    output.push_str(&render_table(table, options));
+                    output.push_str(&render_table(table, options, &resource_map));
                     output.push_str("\n\n");
                 }
                 Block::PageBreak => {
@@ -84,7 +107,8 @@ fn to_markdown_standard(doc: &Document, options: &RenderOptions) -> Result<Strin
                     ..
                 } => {
                     let alt = alt_text.as_deref().unwrap_or("image");
-                    let path = format!("{}{}", options.image_path_prefix, resource_id);
+                    let path =
+                        resolve_image_path(resource_id, &resource_map, &options.image_path_prefix);
                     output.push_str(&format!("![{}]({})\n\n", alt, path));
                 }
             }
@@ -95,7 +119,7 @@ fn to_markdown_standard(doc: &Document, options: &RenderOptions) -> Result<Strin
             if !notes.is_empty() {
                 output.push_str("\n> **Notes:**\n");
                 for note in notes {
-                    let text = render_paragraph(note, options, None);
+                    let text = render_paragraph(note, options, None, &resource_map);
                     if !text.is_empty() {
                         output.push_str(&format!("> {}\n", text));
                     }
@@ -126,6 +150,7 @@ fn to_markdown_with_analyzer(
     let decisions = analyzer.analyze(doc);
 
     let mut output = String::new();
+    let resource_map = build_resource_map(doc);
 
     // Add frontmatter if requested
     if options.include_frontmatter {
@@ -154,7 +179,7 @@ fn to_markdown_with_analyzer(
                 Block::Paragraph(para) => {
                     // Get the pre-computed decision for this paragraph
                     let decision = section_decisions.and_then(|d| d.get(para_idx)).copied();
-                    let md = render_paragraph(para, options, decision);
+                    let md = render_paragraph(para, options, decision, &resource_map);
 
                     if !md.is_empty() || options.include_empty_paragraphs {
                         output.push_str(&md);
@@ -168,7 +193,7 @@ fn to_markdown_with_analyzer(
                     para_idx += 1;
                 }
                 Block::Table(table) => {
-                    output.push_str(&render_table(table, options));
+                    output.push_str(&render_table(table, options, &resource_map));
                     output.push_str("\n\n");
                 }
                 Block::PageBreak => {
@@ -183,7 +208,8 @@ fn to_markdown_with_analyzer(
                     ..
                 } => {
                     let alt = alt_text.as_deref().unwrap_or("image");
-                    let path = format!("{}{}", options.image_path_prefix, resource_id);
+                    let path =
+                        resolve_image_path(resource_id, &resource_map, &options.image_path_prefix);
                     output.push_str(&format!("![{}]({})\n\n", alt, path));
                 }
             }
@@ -195,7 +221,7 @@ fn to_markdown_with_analyzer(
                 output.push_str("\n> **Notes:**\n");
                 for note in notes {
                     // Notes don't use heading analysis
-                    let text = render_paragraph(note, options, None);
+                    let text = render_paragraph(note, options, None, &resource_map);
                     if !text.is_empty() {
                         output.push_str(&format!("> {}\n", text));
                     }
@@ -295,6 +321,7 @@ fn render_paragraph(
     para: &Paragraph,
     options: &RenderOptions,
     heading_decision: Option<HeadingDecision>,
+    resource_map: &ResourceMap,
 ) -> String {
     let mut output = String::new();
 
@@ -392,7 +419,7 @@ fn render_paragraph(
             output.push('\n');
         }
         let alt = image.alt_text.as_deref().unwrap_or("image");
-        let path = format!("{}{}", options.image_path_prefix, image.resource_id);
+        let path = resolve_image_path(&image.resource_id, resource_map, &options.image_path_prefix);
         output.push_str(&format!("![{}]({})", alt, path));
     }
 
@@ -409,8 +436,13 @@ fn is_no_space_before(c: char) -> bool {
 
 /// Render a text run to Markdown.
 fn render_run(run: &TextRun, options: &RenderOptions) -> String {
+    // Handle empty runs with line breaks
     if run.text.is_empty() {
-        return String::new();
+        return if run.line_break && options.preserve_line_breaks {
+            "  \n".to_string()
+        } else {
+            String::new()
+        };
     }
 
     let mut text = if options.escape_special_chars {
@@ -437,6 +469,11 @@ fn render_run(run: &TextRun, options: &RenderOptions) -> String {
     // Handle hyperlinks
     if let Some(ref url) = run.hyperlink {
         text = format!("[{}]({})", text, url);
+    }
+
+    // Append line break if needed (Markdown soft break: two spaces + newline)
+    if run.line_break && options.preserve_line_breaks {
+        text.push_str("  \n");
     }
 
     text
@@ -514,7 +551,11 @@ fn escape_markdown(s: &str) -> String {
 /// The nested_tables field contains tables that are already structurally
 /// separate from cell.content. Rendering both would cause duplication
 /// in documents where Word places the same content in both locations.
-fn render_cell_content(cell: &crate::model::Cell, options: &RenderOptions) -> String {
+fn render_cell_content(
+    cell: &crate::model::Cell,
+    options: &RenderOptions,
+    resource_map: &ResourceMap,
+) -> String {
     let mut parts = Vec::new();
 
     for para in &cell.content {
@@ -550,7 +591,7 @@ fn render_cell_content(cell: &crate::model::Cell, options: &RenderOptions) -> St
         // Render inline images from paragraph (like render_paragraph does)
         for image in &para.images {
             let alt = image.alt_text.as_deref().unwrap_or("image");
-            let path = format!("{}{}", options.image_path_prefix, image.resource_id);
+            let path = resolve_image_path(&image.resource_id, resource_map, &options.image_path_prefix);
             parts.push(format!("![{}]({})", alt, path));
         }
     }
@@ -567,8 +608,39 @@ fn render_cell_content(cell: &crate::model::Cell, options: &RenderOptions) -> St
     text.replace('\n', " ")
 }
 
+/// Get column alignments from the first data row (or first row if no data rows).
+/// Returns a vector of alignments for each column.
+fn get_column_alignments(table: &Table, col_count: usize) -> Vec<CellAlignment> {
+    // Try to get alignments from the first data row (non-header)
+    // If no data rows, use the first row
+    let source_row = table
+        .rows
+        .iter()
+        .find(|r| !r.is_header)
+        .or_else(|| table.rows.first());
+
+    let mut alignments = Vec::with_capacity(col_count);
+
+    if let Some(row) = source_row {
+        for cell in &row.cells {
+            // Add alignment for each column the cell spans
+            for _ in 0..cell.col_span {
+                alignments.push(cell.alignment);
+            }
+        }
+    }
+
+    // Fill remaining columns with Left alignment
+    while alignments.len() < col_count {
+        alignments.push(CellAlignment::Left);
+    }
+
+    alignments.truncate(col_count);
+    alignments
+}
+
 /// Render a table to Markdown.
-fn render_table(table: &Table, options: &RenderOptions) -> String {
+fn render_table(table: &Table, options: &RenderOptions, resource_map: &ResourceMap) -> String {
     if table.is_empty() {
         return String::new();
     }
@@ -602,7 +674,7 @@ fn render_table(table: &Table, options: &RenderOptions) -> String {
         }
 
         for cell in &row.cells {
-            let text = render_cell_content(cell, options);
+            let text = render_cell_content(cell, options, resource_map);
             output.push_str(&format!(" {} |", text));
 
             // Collect nested tables for rendering after the main table
@@ -623,8 +695,15 @@ fn render_table(table: &Table, options: &RenderOptions) -> String {
         // In markdown, the first row is always treated as header regardless of source formatting
         if i == 0 {
             output.push('|');
-            for _ in 0..col_count {
-                output.push_str(" --- |");
+            // Collect alignments from cells, filling with Left for missing columns
+            let alignments = get_column_alignments(table, col_count);
+            for alignment in &alignments {
+                let separator = match alignment {
+                    CellAlignment::Center => " :---: |",
+                    CellAlignment::Right => " ---: |",
+                    CellAlignment::Left => " --- |",
+                };
+                output.push_str(separator);
             }
             output.push('\n');
         }
@@ -634,7 +713,7 @@ fn render_table(table: &Table, options: &RenderOptions) -> String {
     // This preserves their structure instead of flattening into cell content
     for nested in nested_tables {
         output.push('\n');
-        output.push_str(&render_table(nested, options));
+        output.push_str(&render_table(nested, options, resource_map));
     }
 
     output
@@ -674,11 +753,16 @@ mod tests {
     use super::*;
     use crate::model::{Cell, HeadingLevel, Row, Section, TextStyle};
 
+    /// Helper to create an empty resource map for tests
+    fn empty_resource_map() -> ResourceMap {
+        HashMap::new()
+    }
+
     #[test]
     fn test_basic_paragraph() {
         let para = Paragraph::with_text("Hello, World!");
         let options = RenderOptions::default();
-        let md = render_paragraph(&para, &options, None);
+        let md = render_paragraph(&para, &options, None, &empty_resource_map());
         // Most punctuation is NOT escaped - only special in specific contexts
         // Only `\`, `` ` ``, `*`, `_`, `|` are always escaped
         assert_eq!(md, "Hello, World!");
@@ -688,7 +772,7 @@ mod tests {
     fn test_heading() {
         let para = Paragraph::heading(HeadingLevel::H2, "Title");
         let options = RenderOptions::default();
-        let md = render_paragraph(&para, &options, None);
+        let md = render_paragraph(&para, &options, None, &empty_resource_map());
         assert_eq!(md, "## Title");
     }
 
@@ -701,7 +785,7 @@ mod tests {
             .push(TextRun::styled("italic", TextStyle::italic()));
 
         let options = RenderOptions::default();
-        let md = render_paragraph(&para, &options, None);
+        let md = render_paragraph(&para, &options, None, &empty_resource_map());
         assert!(md.contains("**bold**"));
         assert!(md.contains("*italic*"));
     }
@@ -713,7 +797,7 @@ mod tests {
             .push(TextRun::link("click here", "https://example.com"));
 
         let options = RenderOptions::default();
-        let md = render_paragraph(&para, &options, None);
+        let md = render_paragraph(&para, &options, None, &empty_resource_map());
         assert!(md.contains("[click here](https://example.com)"));
     }
 
@@ -730,7 +814,7 @@ mod tests {
         });
 
         let options = RenderOptions::default();
-        let md = render_table(&table, &options);
+        let md = render_table(&table, &options, &empty_resource_map());
         assert!(md.contains("| A | B |"));
         assert!(md.contains("| --- | --- |"));
         assert!(md.contains("| 1 | 2 |"));
@@ -769,7 +853,7 @@ mod tests {
         // Paragraphs starting with Korean bullet markers should not be headings
         let para = Paragraph::heading(HeadingLevel::H2, "ㅇ항목 내용입니다");
         let options = RenderOptions::default();
-        let md = render_paragraph(&para, &options, None);
+        let md = render_paragraph(&para, &options, None, &empty_resource_map());
 
         assert!(
             !md.contains("##"),
@@ -794,7 +878,7 @@ mod tests {
 
         let para = Paragraph::heading(HeadingLevel::H3, long_text);
         let options = RenderOptions::default();
-        let md = render_paragraph(&para, &options, None);
+        let md = render_paragraph(&para, &options, None, &empty_resource_map());
 
         assert!(
             !md.contains("###"),
@@ -813,7 +897,7 @@ mod tests {
         // Heading levels beyond max (4) should be capped
         let para = Paragraph::heading(HeadingLevel::H6, "Deep Heading");
         let options = RenderOptions::default();
-        let md = render_paragraph(&para, &options, None);
+        let md = render_paragraph(&para, &options, None, &empty_resource_map());
 
         // Default max_heading_level is now 4
         assert!(
@@ -833,7 +917,7 @@ mod tests {
         // Paragraphs starting with arrow markers should not be headings
         let para = Paragraph::heading(HeadingLevel::H2, "→ 다음 단계로 이동");
         let options = RenderOptions::default();
-        let md = render_paragraph(&para, &options, None);
+        let md = render_paragraph(&para, &options, None, &empty_resource_map());
 
         assert!(
             !md.contains("##"),
@@ -874,7 +958,7 @@ mod tests {
         });
 
         let options = RenderOptions::default();
-        let md = render_table(&table, &options);
+        let md = render_table(&table, &options, &empty_resource_map());
 
         // Should contain bold formatting
         assert!(
@@ -916,7 +1000,7 @@ mod tests {
         });
 
         let options = RenderOptions::default();
-        let md = render_table(&table, &options);
+        let md = render_table(&table, &options, &empty_resource_map());
 
         // Should contain italic formatting
         assert!(
@@ -956,7 +1040,7 @@ mod tests {
         });
 
         let options = RenderOptions::default();
-        let md = render_table(&table, &options);
+        let md = render_table(&table, &options, &empty_resource_map());
 
         // Should contain <br> between paragraphs
         assert!(
@@ -1020,10 +1104,118 @@ mod tests {
         });
 
         let options = RenderOptions::default();
-        let md = render_table(&table, &options);
+        let md = render_table(&table, &options, &empty_resource_map());
 
         // Should contain both bold and plain text
         assert!(md.contains("**OS**"), "Expected bold OS, got: {}", md);
         assert!(md.contains("Linux"), "Expected Linux text, got: {}", md);
+    }
+
+    #[test]
+    fn test_line_break_rendering() {
+        let mut para = Paragraph::new();
+        para.runs.push(TextRun {
+            text: "First line".to_string(),
+            style: TextStyle::default(),
+            hyperlink: None,
+            line_break: true,
+        });
+        para.runs.push(TextRun::plain("Second line"));
+
+        // Without preserve_line_breaks option
+        let options = RenderOptions::default();
+        let md = render_paragraph(&para, &options, None, &empty_resource_map());
+        assert!(
+            !md.contains("  \n"),
+            "Should not contain line break when preserve_line_breaks is false: {}",
+            md
+        );
+
+        // With preserve_line_breaks option
+        let options_with_breaks = RenderOptions::new().with_preserve_breaks(true);
+        let md_with_breaks = render_paragraph(&para, &options_with_breaks, None, &empty_resource_map());
+        assert!(
+            md_with_breaks.contains("First line  \n"),
+            "Should contain Markdown line break: {}",
+            md_with_breaks
+        );
+        assert!(
+            md_with_breaks.contains("Second line"),
+            "Should contain second line: {}",
+            md_with_breaks
+        );
+    }
+
+    #[test]
+    fn test_table_cell_alignment_rendering() {
+        let mut table = Table::new();
+
+        // Create header row
+        let header = Row::header(vec![
+            Cell::header("Left"),
+            Cell::header("Center"),
+            Cell::header("Right"),
+        ]);
+        table.add_row(header);
+
+        // Create data row with different alignments
+        let left_cell = Cell {
+            content: vec![Paragraph::with_text("L")],
+            nested_tables: Vec::new(),
+            col_span: 1,
+            row_span: 1,
+            alignment: CellAlignment::Left,
+            vertical_alignment: crate::model::VerticalAlignment::Top,
+            is_header: false,
+            background: None,
+        };
+
+        let center_cell = Cell {
+            content: vec![Paragraph::with_text("C")],
+            nested_tables: Vec::new(),
+            col_span: 1,
+            row_span: 1,
+            alignment: CellAlignment::Center,
+            vertical_alignment: crate::model::VerticalAlignment::Top,
+            is_header: false,
+            background: None,
+        };
+
+        let right_cell = Cell {
+            content: vec![Paragraph::with_text("R")],
+            nested_tables: Vec::new(),
+            col_span: 1,
+            row_span: 1,
+            alignment: CellAlignment::Right,
+            vertical_alignment: crate::model::VerticalAlignment::Top,
+            is_header: false,
+            background: None,
+        };
+
+        table.add_row(Row {
+            cells: vec![left_cell, center_cell, right_cell],
+            is_header: false,
+            height: None,
+        });
+
+        let options = RenderOptions::default();
+        let md = render_table(&table, &options, &empty_resource_map());
+
+        // Should contain alignment markers in separator row
+        assert!(
+            md.contains("| --- |"),
+            "Expected left alignment marker, got: {}",
+            md
+        );
+        assert!(
+            md.contains("| :---: |"),
+            "Expected center alignment marker, got: {}",
+            md
+        );
+        assert!(
+            md.contains("| ---: |"),
+            "Expected right alignment marker, got: {}",
+            md
+        );
     }
 }

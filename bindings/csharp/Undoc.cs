@@ -94,6 +94,18 @@ namespace Iyulab.Undoc
 
         [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
         public static extern void undoc_free_string(IntPtr str);
+
+        [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+        public static extern IntPtr undoc_get_resource_ids(IntPtr doc);
+
+        [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+        public static extern IntPtr undoc_get_resource_info(IntPtr doc, [MarshalAs(UnmanagedType.LPUTF8Str)] string resourceId);
+
+        [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+        public static extern IntPtr undoc_get_resource_data(IntPtr doc, [MarshalAs(UnmanagedType.LPUTF8Str)] string resourceId, out UIntPtr outLen);
+
+        [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+        public static extern void undoc_free_bytes(IntPtr data, UIntPtr len);
     }
 
     /// <summary>
@@ -332,6 +344,76 @@ namespace Iyulab.Undoc
                 {
                     UndocNative.undoc_free_string(ptr);
                 }
+            }
+        }
+
+        /// <summary>
+        /// Get all resource IDs as a JSON array string.
+        /// </summary>
+        /// <returns>JSON array of resource IDs, e.g., ["rId1", "rId2"]</returns>
+        public string GetResourceIds()
+        {
+            ThrowIfDisposed();
+            var ptr = UndocNative.undoc_get_resource_ids(_handle);
+            if (ptr == IntPtr.Zero)
+            {
+                throw new UndocException(GetLastError());
+            }
+            try
+            {
+                return Marshal.PtrToStringUTF8(ptr) ?? "[]";
+            }
+            finally
+            {
+                UndocNative.undoc_free_string(ptr);
+            }
+        }
+
+        /// <summary>
+        /// Get resource metadata as JSON.
+        /// </summary>
+        /// <param name="resourceId">The resource ID.</param>
+        /// <returns>JSON object with resource metadata.</returns>
+        public string GetResourceInfo(string resourceId)
+        {
+            ThrowIfDisposed();
+            var ptr = UndocNative.undoc_get_resource_info(_handle, resourceId);
+            if (ptr == IntPtr.Zero)
+            {
+                throw new UndocException(GetLastError());
+            }
+            try
+            {
+                return Marshal.PtrToStringUTF8(ptr) ?? "{}";
+            }
+            finally
+            {
+                UndocNative.undoc_free_string(ptr);
+            }
+        }
+
+        /// <summary>
+        /// Get resource binary data.
+        /// </summary>
+        /// <param name="resourceId">The resource ID.</param>
+        /// <returns>Binary data of the resource.</returns>
+        public byte[] GetResourceData(string resourceId)
+        {
+            ThrowIfDisposed();
+            var ptr = UndocNative.undoc_get_resource_data(_handle, resourceId, out var len);
+            if (ptr == IntPtr.Zero)
+            {
+                throw new UndocException(GetLastError());
+            }
+            try
+            {
+                var data = new byte[(int)len];
+                Marshal.Copy(ptr, data, 0, (int)len);
+                return data;
+            }
+            finally
+            {
+                UndocNative.undoc_free_bytes(ptr, len);
             }
         }
 
