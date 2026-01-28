@@ -2,6 +2,8 @@
 
 [![Crates.io](https://img.shields.io/crates/v/undoc.svg)](https://crates.io/crates/undoc)
 [![Documentation](https://docs.rs/undoc/badge.svg)](https://docs.rs/undoc)
+[![PyPI](https://img.shields.io/pypi/v/undoc.svg)](https://pypi.org/project/undoc/)
+[![NuGet](https://img.shields.io/nuget/v/Undoc.svg)](https://www.nuget.org/packages/Undoc/)
 [![CI](https://github.com/iyulab/undoc/actions/workflows/ci.yml/badge.svg)](https://github.com/iyulab/undoc/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
