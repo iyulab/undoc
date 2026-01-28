@@ -8,7 +8,8 @@
 
     <!-- Package metadata -->
     <PackageId>Undoc</PackageId>
-    <Version>0.1.11</Version>
+    <Version>0.1.12</Version>
+    <AssemblyName>Undoc.Net</AssemblyName>
     <Authors>iyulab</Authors>
     <Company>iyulab</Company>
     <Description>High-performance Microsoft Office document extraction to Markdown. Extract DOCX, XLSX, and PPTX documents into structured content.</Description>
