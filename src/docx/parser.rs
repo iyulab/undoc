@@ -647,9 +647,7 @@ impl DocxParser {
                     _ => {}
                 },
                 Ok(quick_xml::events::Event::Eof) => break,
-                Err(e) => {
-                    return Err(Error::xml_parse_with_context(e.to_string(), "paragraph"))
-                }
+                Err(e) => return Err(Error::xml_parse_with_context(e.to_string(), "paragraph")),
                 _ => {}
             }
             buf.clear();

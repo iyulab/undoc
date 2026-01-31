@@ -161,7 +161,10 @@ pub fn run_update(check_only: bool, force: bool) -> Result<(), Box<dyn std::erro
             "{} Installed via cargo. Please run:",
             "Note:".yellow().bold()
         );
-        println!("  {}", format!("cargo install {}", CLI_CRATE_NAME).cyan().bold());
+        println!(
+            "  {}",
+            format!("cargo install {}", CLI_CRATE_NAME).cyan().bold()
+        );
         println!();
         println!(
             "{}",
