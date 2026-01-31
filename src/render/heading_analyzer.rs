@@ -367,8 +367,11 @@ impl HeadingAnalyzer {
             '—', '→', '▶', '►', '▷', '▹', '◁', '◀', '◃', '◂',
         ];
 
-        let first_char = text.chars().next().unwrap();
-        LIST_MARKERS.contains(&first_char)
+        // Safety: text.is_empty() checked above, so first char exists
+        text.chars()
+            .next()
+            .map(|c| LIST_MARKERS.contains(&c))
+            .unwrap_or(false)
     }
 
     /// Infer heading level from text style (font size + bold).
@@ -537,7 +540,7 @@ impl HeadingAnalyzer {
                         || inner.chars().count() == 1
                             && inner.chars().next().is_some_and(|c| c.is_ascii_lowercase())
                         || inner.chars().count() == 1
-                            && is_korean_sequence_char(inner.chars().next().unwrap()))
+                            && inner.chars().next().is_some_and(is_korean_sequence_char))
                 {
                     return Some(inner);
                 }
@@ -630,7 +633,7 @@ fn is_korean_sequence_char(c: char) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{TextRun, TextStyle};
+    use crate::model::{RevisionType, TextRun, TextStyle};
 
     fn make_paragraph(text: &str, heading: HeadingLevel) -> Paragraph {
         Paragraph {
@@ -651,6 +654,8 @@ mod tests {
                 },
                 hyperlink: None,
                 line_break: false,
+                page_break: false,
+                revision: RevisionType::None,
             }],
             heading: HeadingLevel::None,
             ..Default::default()

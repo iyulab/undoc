@@ -270,13 +270,11 @@ impl NumberingMap {
         // Update last level
         self.last_level.insert(num_id.to_string(), level);
 
-        // Get or initialize counter
+        // Get or initialize counter, then increment for next use
         let key = (num_id.to_string(), level);
         let counter = self.counters.entry(key).or_insert(start_value);
         let number = *counter;
-
-        // Increment counter for next use
-        *self.counters.get_mut(&(num_id.to_string(), level)).unwrap() += 1;
+        *counter += 1;
 
         Some((list_type, number))
     }

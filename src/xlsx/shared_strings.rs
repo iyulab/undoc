@@ -14,7 +14,9 @@ impl SharedStrings {
     pub fn parse(xml: &str) -> Result<Self> {
         let mut strings = Vec::new();
         let mut reader = quick_xml::Reader::from_str(xml);
-        reader.config_mut().trim_text(true);
+        // IMPORTANT: Don't trim text - preserve whitespace from xml:space="preserve" elements
+        // Excel cells may contain significant leading/trailing spaces
+        reader.config_mut().trim_text(false);
 
         let mut buf = Vec::new();
         let mut in_si = false;

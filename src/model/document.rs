@@ -233,7 +233,7 @@ impl Document {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{TextRun, TextStyle};
+    use crate::model::{RevisionType, TextRun, TextStyle};
 
     #[test]
     fn test_document_creation() {
@@ -268,6 +268,8 @@ mod tests {
                     },
                     hyperlink: None,
                     line_break: false,
+                    page_break: false,
+                    revision: RevisionType::None,
                 },
                 TextRun::plain("!"),
             ],

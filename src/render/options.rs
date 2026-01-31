@@ -140,6 +140,21 @@ pub struct RenderOptions {
     /// Heading analysis configuration.
     /// When set, enables sophisticated heading detection with multi-priority analysis.
     pub heading_config: Option<HeadingConfig>,
+
+    /// How to handle tracked changes (insertions and deletions).
+    pub revision_handling: RevisionHandling,
+}
+
+/// How to handle tracked changes in the output.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum RevisionHandling {
+    /// Accept all changes - show final text (default)
+    #[default]
+    AcceptAll,
+    /// Reject all changes - show original text
+    RejectAll,
+    /// Show both insertions and deletions with markup
+    ShowMarkup,
 }
 
 impl Default for RenderOptions {
@@ -158,6 +173,7 @@ impl Default for RenderOptions {
             escape_special_chars: true,
             cleanup: None,
             heading_config: None,
+            revision_handling: RevisionHandling::AcceptAll,
         }
     }
 }
@@ -231,6 +247,18 @@ impl RenderOptions {
     /// Enable sophisticated heading analysis with custom config.
     pub fn with_heading_config(mut self, config: HeadingConfig) -> Self {
         self.heading_config = Some(config);
+        self
+    }
+
+    /// Set how to handle tracked changes (revisions).
+    pub fn with_revision_handling(mut self, handling: RevisionHandling) -> Self {
+        self.revision_handling = handling;
+        self
+    }
+
+    /// Show tracked changes with markup (insertions and deletions visible).
+    pub fn with_show_revisions(mut self) -> Self {
+        self.revision_handling = RevisionHandling::ShowMarkup;
         self
     }
 }

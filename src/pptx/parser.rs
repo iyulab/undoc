@@ -4,8 +4,8 @@ use crate::charts;
 use crate::container::OoxmlContainer;
 use crate::error::{Error, Result};
 use crate::model::{
-    Block, Cell, Document, HeadingLevel, Metadata, Paragraph, Resource, ResourceType, Row, Section,
-    Table, TextRun, TextStyle,
+    Block, Cell, Document, HeadingLevel, Metadata, Paragraph, Resource, ResourceType, RevisionType,
+    Row, Section, Table, TextRun, TextStyle,
 };
 use std::collections::HashMap;
 use std::path::Path;
@@ -759,6 +759,8 @@ impl PptxParser {
                                     style: current_style.clone(),
                                     hyperlink: current_hyperlink.clone(),
                                     line_break: false,
+                                    page_break: false,
+                                    revision: RevisionType::None,
                                 });
                             }
                             in_run = false;
@@ -1014,6 +1016,8 @@ impl PptxParser {
                                     style: current_style.clone(),
                                     hyperlink: current_hyperlink.clone(),
                                     line_break: false,
+                                    page_break: false,
+                                    revision: RevisionType::None,
                                 });
                             }
                             in_run = false;
@@ -1203,6 +1207,8 @@ impl PptxParser {
                                     style: current_style.clone(),
                                     hyperlink: current_hyperlink.clone(),
                                     line_break: false,
+                                    page_break: false,
+                                    revision: RevisionType::None,
                                 });
                             }
                             in_run = false;

@@ -3,10 +3,12 @@
 use std::collections::HashMap;
 
 use crate::error::Result;
-use crate::model::{Block, CellAlignment, Document, HeadingLevel, Paragraph, Table, TextRun};
+use crate::model::{
+    Block, CellAlignment, Document, HeadingLevel, Paragraph, RevisionType, Table, TextRun,
+};
 
 use super::heading_analyzer::{HeadingAnalyzer, HeadingDecision};
-use super::options::RenderOptions;
+use super::options::{RenderOptions, RevisionHandling};
 
 /// Map of resource IDs to their filenames
 type ResourceMap = HashMap<String, String>;
@@ -436,13 +438,41 @@ fn is_no_space_before(c: char) -> bool {
 
 /// Render a text run to Markdown.
 fn render_run(run: &TextRun, options: &RenderOptions) -> String {
-    // Handle empty runs with line breaks
+    // Handle tracked changes based on revision_handling option
+    match (&run.revision, &options.revision_handling) {
+        // AcceptAll: show inserted text, hide deleted text
+        (RevisionType::Deleted, RevisionHandling::AcceptAll) => {
+            // Return only break markers if present
+            if run.page_break {
+                return "\n\n---\n\n".to_string();
+            } else if run.line_break && options.preserve_line_breaks {
+                return "  \n".to_string();
+            }
+            return String::new();
+        }
+        // RejectAll: show deleted text, hide inserted text
+        (RevisionType::Inserted, RevisionHandling::RejectAll) => {
+            // Return only break markers if present
+            if run.page_break {
+                return "\n\n---\n\n".to_string();
+            } else if run.line_break && options.preserve_line_breaks {
+                return "  \n".to_string();
+            }
+            return String::new();
+        }
+        // ShowMarkup or normal text: continue with rendering
+        _ => {}
+    }
+
+    // Handle empty runs with line/page breaks
     if run.text.is_empty() {
-        return if run.line_break && options.preserve_line_breaks {
-            "  \n".to_string()
+        if run.page_break {
+            return "\n\n---\n\n".to_string();
+        } else if run.line_break && options.preserve_line_breaks {
+            return "  \n".to_string();
         } else {
-            String::new()
-        };
+            return String::new();
+        }
     }
 
     let mut text = if options.escape_special_chars {
@@ -471,8 +501,23 @@ fn render_run(run: &TextRun, options: &RenderOptions) -> String {
         text = format!("[{}]({})", text, url);
     }
 
-    // Append line break if needed (Markdown soft break: two spaces + newline)
-    if run.line_break && options.preserve_line_breaks {
+    // Apply revision markup for ShowMarkup mode
+    match (&run.revision, &options.revision_handling) {
+        (RevisionType::Deleted, RevisionHandling::ShowMarkup) => {
+            // Show deleted text with strikethrough
+            text = format!("~~{}~~", text);
+        }
+        (RevisionType::Inserted, RevisionHandling::ShowMarkup) => {
+            // Show inserted text with underline markers (using HTML since Markdown lacks insert markup)
+            text = format!("<ins>{}</ins>", text);
+        }
+        _ => {}
+    }
+
+    // Append page break (horizontal rule) or line break
+    if run.page_break {
+        text.push_str("\n\n---\n\n");
+    } else if run.line_break && options.preserve_line_breaks {
         text.push_str("  \n");
     }
 
@@ -752,7 +797,7 @@ fn render_table_html(table: &Table) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Cell, HeadingLevel, Row, Section, TextStyle};
+    use crate::model::{Cell, HeadingLevel, RevisionType, Row, Section, TextStyle};
 
     /// Helper to create an empty resource map for tests
     fn empty_resource_map() -> ResourceMap {
@@ -1120,6 +1165,8 @@ mod tests {
             style: TextStyle::default(),
             hyperlink: None,
             line_break: true,
+            page_break: false,
+            revision: RevisionType::None,
         });
         para.runs.push(TextRun::plain("Second line"));
 

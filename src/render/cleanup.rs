@@ -225,9 +225,10 @@ fn filter_structure(text: &str) -> String {
 
         // Skip lines that are just whitespace with special characters
         if !is_blank && line.trim().len() == 1 {
-            let c = line.trim().chars().next().unwrap();
-            if matches!(c, '|' | '-' | '_' | '=' | '*' | '#' | '~') {
-                continue;
+            if let Some(c) = line.trim().chars().next() {
+                if matches!(c, '|' | '-' | '_' | '=' | '*' | '#' | '~') {
+                    continue;
+                }
             }
         }
 

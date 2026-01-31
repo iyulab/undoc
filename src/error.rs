@@ -26,6 +26,15 @@ pub enum Error {
     ZipArchive(String),
 
     /// Error parsing XML content.
+    #[error("XML parse error in {location}: {message}")]
+    XmlParseWithContext {
+        /// The error message
+        message: String,
+        /// Location context (file path, element name, etc.)
+        location: String,
+    },
+
+    /// Error parsing XML content (legacy, no context).
     #[error("XML parse error: {0}")]
     XmlParse(String),
 
@@ -73,6 +82,25 @@ impl From<quick_xml::Error> for Error {
 impl From<quick_xml::DeError> for Error {
     fn from(err: quick_xml::DeError) -> Self {
         Error::XmlParse(err.to_string())
+    }
+}
+
+impl Error {
+    /// Create an XML parse error with context information.
+    ///
+    /// # Arguments
+    /// * `message` - The error message
+    /// * `location` - Context such as file path or element being parsed
+    ///
+    /// # Example
+    /// ```ignore
+    /// Error::xml_parse_with_context("Invalid element", "word/document.xml")
+    /// ```
+    pub fn xml_parse_with_context(message: impl Into<String>, location: impl Into<String>) -> Self {
+        Error::XmlParseWithContext {
+            message: message.into(),
+            location: location.into(),
+        }
     }
 }
 

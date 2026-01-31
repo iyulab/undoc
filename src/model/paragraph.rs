@@ -71,6 +71,19 @@ pub enum ListType {
     Numbered,
 }
 
+/// Revision type for tracked changes support.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RevisionType {
+    /// Normal text (not a tracked change)
+    #[default]
+    None,
+    /// Inserted text (addition)
+    Inserted,
+    /// Deleted text (deletion)
+    Deleted,
+}
+
 /// List information for a paragraph.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ListInfo {
@@ -182,10 +195,22 @@ pub struct TextRun {
     /// Whether this run ends with a line break (<w:br/>)
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub line_break: bool,
+
+    /// Whether this run ends with a page break (<w:br w:type="page"/>)
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub page_break: bool,
+
+    /// Revision type for tracked changes (inserted/deleted)
+    #[serde(default, skip_serializing_if = "is_default_revision")]
+    pub revision: RevisionType,
 }
 
 fn is_default_style(style: &TextStyle) -> bool {
     *style == TextStyle::default()
+}
+
+fn is_default_revision(revision: &RevisionType) -> bool {
+    *revision == RevisionType::None
 }
 
 impl TextRun {
@@ -196,6 +221,8 @@ impl TextRun {
             style: TextStyle::default(),
             hyperlink: None,
             line_break: false,
+            page_break: false,
+            revision: RevisionType::None,
         }
     }
 
@@ -206,6 +233,8 @@ impl TextRun {
             style,
             hyperlink: None,
             line_break: false,
+            page_break: false,
+            revision: RevisionType::None,
         }
     }
 
@@ -216,6 +245,8 @@ impl TextRun {
             style: TextStyle::default(),
             hyperlink: Some(url.into()),
             line_break: false,
+            page_break: false,
+            revision: RevisionType::None,
         }
     }
 
