@@ -4,7 +4,7 @@ resolver = "2"
 
 [package]
 name = "undoc"
-version = "0.1.13"
+version = "0.1.14"
 edition = "2021"
 authors = ["iyulab"]
 description = "High-performance Microsoft Office document extraction to Markdown"
@@ -38,11 +38,7 @@ serde_json = "1.0"
 # Error handling
 thiserror = "2.0"
 
-# Parallelism
-rayon = "1.10"
-
 # Text processing
-regex = "1.11"
 unicode-normalization = "0.1"
 unicode-width = "0.2"
 
