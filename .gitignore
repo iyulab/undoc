@@ -21,6 +21,7 @@ target
 #.idea/
 
 # Local
+CLAUDE.md
 claudedocs/
 test-files/
 test-results/
