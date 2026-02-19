@@ -1,8 +1,7 @@
 //! Self-update functionality using GitHub releases
 
 use colored::Colorize;
-use indicatif::{ProgressBar, ProgressStyle};
-use self_update::backends::github::{ReleaseList, Update};
+use self_update::backends::github::ReleaseList;
 use self_update::cargo_crate_version;
 use semver::Version;
 use std::sync::mpsc;
@@ -177,74 +176,53 @@ pub fn run_update(check_only: bool, force: bool) -> Result<(), Box<dyn std::erro
     println!();
     println!("{}", "Downloading update...".cyan());
 
-    let pb = ProgressBar::new(100);
-    pb.set_style(
-        ProgressStyle::with_template(
-            "{spinner:.green} [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({eta})",
-        )?
-        .progress_chars("#>-"),
+    // Find the correct CLI asset from the release
+    let os_str = std::env::consts::OS;
+    let arch_str = std::env::consts::ARCH;
+    let target_asset = latest.assets.iter()
+        .find(|asset| {
+            asset.name.starts_with("undoc-")
+                && asset.name.contains(os_str)
+                && asset.name.contains(arch_str)
+        })
+        .ok_or_else(|| {
+            format!("No CLI asset found for {}-{}", os_str, arch_str)
+        })?;
+
+    println!("{} {}", "Found asset:".dimmed(), target_asset.name.dimmed());
+
+    // Use direct download URL (avoids needing Accept header for API URL)
+    let download_url = format!(
+        "https://github.com/{}/{}/releases/download/v{}/{}",
+        REPO_OWNER, REPO_NAME, latest_version, target_asset.name
     );
 
-    let target = get_target();
-    let status = Update::configure()
-        .repo_owner(REPO_OWNER)
-        .repo_name(REPO_NAME)
-        .bin_name(BIN_NAME)
-        .identifier(&format!("undoc-cli-{}", target))
-        .target(&target)
-        .current_version(current_version)
-        .show_download_progress(true)
-        .no_confirm(true)
-        .build()?
-        .update()?;
+    let tmp_dir = self_update::TempDir::new()?;
+    let tmp_archive_path = tmp_dir.path().join(&target_asset.name);
+    let mut tmp_archive = std::fs::File::create(&tmp_archive_path)?;
 
-    pb.finish_and_clear();
+    let mut download = self_update::Download::from_url(&download_url);
+    download.show_progress(true);
+    download.download_to(&mut tmp_archive)?;
 
-    match status {
-        self_update::Status::UpToDate(v) => {
-            println!("{} Already up to date (v{})", "✓".green().bold(), v);
-        }
-        self_update::Status::Updated(v) => {
-            println!();
-            println!("{} Successfully updated to v{}!", "✓".green().bold(), v);
-            println!();
-            println!("Restart undoc to use the new version.");
-        }
-    }
+    print!("Extracting archive... ");
+    std::io::Write::flush(&mut std::io::stdout())?;
+    let bin_name = format!("{}{}", BIN_NAME, std::env::consts::EXE_SUFFIX);
+    self_update::Extract::from_source(&tmp_archive_path)
+        .extract_file(tmp_dir.path(), &bin_name)?;
+    println!("Done");
+
+    print!("Replacing binary file... ");
+    std::io::Write::flush(&mut std::io::stdout())?;
+    let new_exe = tmp_dir.path().join(&bin_name);
+    self_update::self_replace::self_replace(new_exe)?;
+    println!("Done");
+
+    println!();
+    println!("{} Successfully updated to v{}!", "✓".green().bold(), latest_version);
+    println!();
+    println!("Restart undoc to use the new version.");
 
     Ok(())
 }
 
-/// Get the target triple for the current platform
-fn get_target() -> String {
-    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-    return "x86_64-pc-windows-msvc".to_string();
-
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    return "x86_64-unknown-linux-gnu".to_string();
-
-    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-    return "x86_64-apple-darwin".to_string();
-
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    return "aarch64-apple-darwin".to_string();
-
-    #[cfg(not(any(
-        all(target_os = "windows", target_arch = "x86_64"),
-        all(target_os = "linux", target_arch = "x86_64"),
-        all(target_os = "macos", target_arch = "x86_64"),
-        all(target_os = "macos", target_arch = "aarch64"),
-    )))]
-    {
-        // Fallback: try to determine at runtime
-        let arch = std::env::consts::ARCH;
-        let os = std::env::consts::OS;
-        match (os, arch) {
-            ("windows", "x86_64") => "x86_64-pc-windows-msvc".to_string(),
-            ("linux", "x86_64") => "x86_64-unknown-linux-gnu".to_string(),
-            ("macos", "x86_64") => "x86_64-apple-darwin".to_string(),
-            ("macos", "aarch64") => "aarch64-apple-darwin".to_string(),
-            _ => format!("{}-unknown-{}", arch, os),
-        }
-    }
-}
