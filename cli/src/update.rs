@@ -179,15 +179,15 @@ pub fn run_update(check_only: bool, force: bool) -> Result<(), Box<dyn std::erro
     // Find the correct CLI asset from the release
     let os_str = std::env::consts::OS;
     let arch_str = std::env::consts::ARCH;
-    let target_asset = latest.assets.iter()
+    let target_asset = latest
+        .assets
+        .iter()
         .find(|asset| {
             asset.name.starts_with("undoc-")
                 && asset.name.contains(os_str)
                 && asset.name.contains(arch_str)
         })
-        .ok_or_else(|| {
-            format!("No CLI asset found for {}-{}", os_str, arch_str)
-        })?;
+        .ok_or_else(|| format!("No CLI asset found for {}-{}", os_str, arch_str))?;
 
     println!("{} {}", "Found asset:".dimmed(), target_asset.name.dimmed());
 
@@ -208,8 +208,7 @@ pub fn run_update(check_only: bool, force: bool) -> Result<(), Box<dyn std::erro
     print!("Extracting archive... ");
     std::io::Write::flush(&mut std::io::stdout())?;
     let bin_name = format!("{}{}", BIN_NAME, std::env::consts::EXE_SUFFIX);
-    self_update::Extract::from_source(&tmp_archive_path)
-        .extract_file(tmp_dir.path(), &bin_name)?;
+    self_update::Extract::from_source(&tmp_archive_path).extract_file(tmp_dir.path(), &bin_name)?;
     println!("Done");
 
     print!("Replacing binary file... ");
@@ -219,10 +218,13 @@ pub fn run_update(check_only: bool, force: bool) -> Result<(), Box<dyn std::erro
     println!("Done");
 
     println!();
-    println!("{} Successfully updated to v{}!", "✓".green().bold(), latest_version);
+    println!(
+        "{} Successfully updated to v{}!",
+        "✓".green().bold(),
+        latest_version
+    );
     println!();
     println!("Restart undoc to use the new version.");
 
     Ok(())
 }
-
