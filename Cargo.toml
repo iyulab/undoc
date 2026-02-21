@@ -14,7 +14,7 @@ documentation = "https://docs.rs/undoc"
 readme = "README.md"
 keywords = ["docx", "xlsx", "pptx", "markdown", "office"]
 categories = ["parsing", "text-processing"]
-rust-version = "1.75"
+rust-version = "1.87"
 
 [lib]
 crate-type = ["lib", "cdylib"]
