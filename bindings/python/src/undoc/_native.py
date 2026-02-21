@@ -61,6 +61,13 @@ def _get_lib_path() -> Path:
     if not lib_name:
         raise OSError(f"Unsupported platform: {system}")
 
+    # Check UNDOC_LIB_PATH environment variable first
+    env_path = os.environ.get("UNDOC_LIB_PATH")
+    if env_path:
+        p = Path(env_path)
+        if p.exists():
+            return p
+
     if system == "Linux":
         runtime_id = _get_linux_runtime_id(machine)
     else:
