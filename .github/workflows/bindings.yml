@@ -28,6 +28,10 @@ jobs:
             target: x86_64-unknown-linux-gnu
             artifact: libundoc.so
             runtime: linux-x64
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            artifact: libundoc.so
+            runtime: linux-musl-x64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             artifact: undoc.dll
@@ -48,6 +52,10 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+
+      - name: Install musl-tools
+        if: contains(matrix.target, 'musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
 
       - name: Build native library
         run: cargo build --release --target ${{ matrix.target }} --features ffi
@@ -81,11 +89,13 @@ jobs:
       - name: Copy native libraries to package
         run: |
           mkdir -p bindings/python/src/undoc/lib/linux-x64
+          mkdir -p bindings/python/src/undoc/lib/linux-musl-x64
           mkdir -p bindings/python/src/undoc/lib/win-x64
           mkdir -p bindings/python/src/undoc/lib/osx-x64
           mkdir -p bindings/python/src/undoc/lib/osx-arm64
 
           cp ./native-libs/native-linux-x64/* bindings/python/src/undoc/lib/linux-x64/
+          cp ./native-libs/native-linux-musl-x64/* bindings/python/src/undoc/lib/linux-musl-x64/
           cp ./native-libs/native-win-x64/* bindings/python/src/undoc/lib/win-x64/
           cp ./native-libs/native-osx-x64/* bindings/python/src/undoc/lib/osx-x64/
           cp ./native-libs/native-osx-arm64/* bindings/python/src/undoc/lib/osx-arm64/
@@ -134,6 +144,7 @@ jobs:
         run: |
           mkdir -p bindings/csharp/Undoc/runtimes/win-x64/native
           mkdir -p bindings/csharp/Undoc/runtimes/linux-x64/native
+          mkdir -p bindings/csharp/Undoc/runtimes/linux-musl-x64/native
           mkdir -p bindings/csharp/Undoc/runtimes/osx-x64/native
           mkdir -p bindings/csharp/Undoc/runtimes/osx-arm64/native
 
@@ -148,6 +159,12 @@ jobs:
         with:
           name: native-linux-x64
           path: bindings/csharp/Undoc/runtimes/linux-x64/native/
+
+      - name: Download Linux musl native library
+        uses: actions/download-artifact@v4
+        with:
+          name: native-linux-musl-x64
+          path: bindings/csharp/Undoc/runtimes/linux-musl-x64/native/
 
       - name: Download macOS x64 native library
         uses: actions/download-artifact@v4

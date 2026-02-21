@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "undoc"
-version = "0.1.13"
+version = "0.1.14"
 description = "High-performance Microsoft Office document extraction to Markdown"
 readme = "README.md"
 license = { text = "MIT" }
