@@ -59,6 +59,8 @@ jobs:
 
       - name: Build native library
         run: cargo build --release --target ${{ matrix.target }} --features ffi
+        env:
+          RUSTFLAGS: ${{ contains(matrix.target, 'musl') && '-C target-feature=-crt-static' || '' }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
