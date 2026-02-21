@@ -33,9 +33,9 @@ public class MarkdownOptions
     /// </summary>
     public bool ParagraphSpacing { get; set; } = false;
 
-    internal int ToFlags()
+    internal uint ToFlags()
     {
-        int flags = 0;
+        uint flags = 0;
         if (IncludeFrontmatter) flags |= NativeMethods.UNDOC_FLAG_FRONTMATTER;
         if (EscapeSpecialChars) flags |= NativeMethods.UNDOC_FLAG_ESCAPE_SPECIAL;
         if (ParagraphSpacing) flags |= NativeMethods.UNDOC_FLAG_PARAGRAPH_SPACING;
@@ -123,7 +123,7 @@ public class UndocDocument : IDisposable
     public string ToMarkdown(MarkdownOptions? options = null)
     {
         ThrowIfDisposed();
-        int flags = options?.ToFlags() ?? 0;
+        uint flags = options?.ToFlags() ?? 0;
         var ptr = NativeMethods.undoc_to_markdown(_handle, flags);
         if (ptr == IntPtr.Zero)
             throw new UndocException($"Failed to convert to markdown: {GetLastError()}");

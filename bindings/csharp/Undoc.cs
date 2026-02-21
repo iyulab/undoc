@@ -69,7 +69,7 @@ namespace Iyulab.Undoc
         public static extern void undoc_free_document(IntPtr doc);
 
         [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-        public static extern IntPtr undoc_to_markdown(IntPtr doc, int flags);
+        public static extern IntPtr undoc_to_markdown(IntPtr doc, uint flags);
 
         [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
         public static extern IntPtr undoc_to_text(IntPtr doc);
@@ -181,7 +181,7 @@ namespace Iyulab.Undoc
         public string ToMarkdown(MarkdownFlags flags = MarkdownFlags.None)
         {
             ThrowIfDisposed();
-            var ptr = UndocNative.undoc_to_markdown(_handle, (int)flags);
+            var ptr = UndocNative.undoc_to_markdown(_handle, (uint)flags);
             if (ptr == IntPtr.Zero)
             {
                 throw new UndocException(GetLastError());

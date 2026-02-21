@@ -132,7 +132,7 @@ _lib.undoc_parse_bytes.restype = ctypes.c_void_p
 _lib.undoc_free_document.argtypes = [ctypes.c_void_p]
 _lib.undoc_free_document.restype = None
 
-_lib.undoc_to_markdown.argtypes = [ctypes.c_void_p, ctypes.c_int]
+_lib.undoc_to_markdown.argtypes = [ctypes.c_void_p, ctypes.c_uint]
 _lib.undoc_to_markdown.restype = ctypes.c_char_p
 
 _lib.undoc_to_text.argtypes = [ctypes.c_void_p]

@@ -93,9 +93,9 @@ pub struct UndocDocument {
 }
 
 /// Flags for markdown rendering.
-pub const UNDOC_FLAG_FRONTMATTER: c_int = 1;
-pub const UNDOC_FLAG_ESCAPE_SPECIAL: c_int = 2;
-pub const UNDOC_FLAG_PARAGRAPH_SPACING: c_int = 4;
+pub const UNDOC_FLAG_FRONTMATTER: u32 = 1;
+pub const UNDOC_FLAG_ESCAPE_SPECIAL: u32 = 2;
+pub const UNDOC_FLAG_PARAGRAPH_SPACING: u32 = 4;
 
 /// JSON format options.
 pub const UNDOC_JSON_PRETTY: c_int = 0;
@@ -223,7 +223,7 @@ pub unsafe extern "C" fn undoc_free_document(doc: *mut UndocDocument) {
 /// - Returns null on error. Use `undoc_last_error` to get the error message.
 /// - The returned string must be freed with `undoc_free_string`.
 #[no_mangle]
-pub unsafe extern "C" fn undoc_to_markdown(doc: *const UndocDocument, flags: c_int) -> *mut c_char {
+pub unsafe extern "C" fn undoc_to_markdown(doc: *const UndocDocument, flags: u32) -> *mut c_char {
     clear_last_error();
 
     if doc.is_null() {

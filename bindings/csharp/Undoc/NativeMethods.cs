@@ -46,9 +46,9 @@ internal static class NativeMethods
     }
 
     // Flags for markdown rendering
-    public const int UNDOC_FLAG_FRONTMATTER = 1;
-    public const int UNDOC_FLAG_ESCAPE_SPECIAL = 2;
-    public const int UNDOC_FLAG_PARAGRAPH_SPACING = 4;
+    public const uint UNDOC_FLAG_FRONTMATTER = 1;
+    public const uint UNDOC_FLAG_ESCAPE_SPECIAL = 2;
+    public const uint UNDOC_FLAG_PARAGRAPH_SPACING = 4;
 
     // JSON format options
     public const int UNDOC_JSON_PRETTY = 0;
@@ -88,7 +88,7 @@ internal static class NativeMethods
     /// Convert a document to Markdown.
     /// </summary>
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    public static extern IntPtr undoc_to_markdown(IntPtr doc, int flags);
+    public static extern IntPtr undoc_to_markdown(IntPtr doc, uint flags);
 
     /// <summary>
     /// Convert a document to plain text.
