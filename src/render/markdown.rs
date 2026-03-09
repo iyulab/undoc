@@ -50,6 +50,24 @@ fn build_resource_map(doc: &Document) -> ResourceMap {
         .collect()
 }
 
+/// Render header or footer paragraphs as a blockquote with italic label.
+fn render_header_footer(
+    label: &str,
+    paragraphs: &[Paragraph],
+    options: &RenderOptions,
+    resource_map: &ResourceMap,
+    output: &mut String,
+) {
+    let texts: Vec<String> = paragraphs
+        .iter()
+        .map(|p| render_paragraph(p, options, None, resource_map))
+        .filter(|t| !t.is_empty())
+        .collect();
+    if !texts.is_empty() {
+        output.push_str(&format!("> *{}: {}*\n\n", label, texts.join(" | ")));
+    }
+}
+
 /// Get image path from resource ID, resolving to actual filename if available.
 fn resolve_image_path(resource_id: &str, resource_map: &ResourceMap, prefix: &str) -> String {
     let filename = resource_map
@@ -77,6 +95,11 @@ fn to_markdown_standard(doc: &Document, options: &RenderOptions) -> Result<Strin
                 output.push_str("\n---\n\n");
             }
             output.push_str(&format!("## {}\n\n", name));
+        }
+
+        // Render header if present (DOCX)
+        if let Some(ref header) = section.header {
+            render_header_footer("Header", header, options, &resource_map, &mut output);
         }
 
         // Render content blocks
@@ -114,6 +137,11 @@ fn to_markdown_standard(doc: &Document, options: &RenderOptions) -> Result<Strin
                     output.push_str(&format!("![{}]({})\n\n", alt, path));
                 }
             }
+        }
+
+        // Render footer if present (DOCX)
+        if let Some(ref footer) = section.footer {
+            render_header_footer("Footer", footer, options, &resource_map, &mut output);
         }
 
         // Render notes if present (for PPTX)
@@ -169,6 +197,11 @@ fn to_markdown_with_analyzer(
             output.push_str(&format!("## {}\n\n", name));
         }
 
+        // Render header if present (DOCX)
+        if let Some(ref header) = section.header {
+            render_header_footer("Header", header, options, &resource_map, &mut output);
+        }
+
         // Get decisions for this section
         let section_decisions = decisions.get(section_idx);
 
@@ -215,6 +248,11 @@ fn to_markdown_with_analyzer(
                     output.push_str(&format!("![{}]({})\n\n", alt, path));
                 }
             }
+        }
+
+        // Render footer if present (DOCX)
+        if let Some(ref footer) = section.footer {
+            render_header_footer("Footer", footer, options, &resource_map, &mut output);
         }
 
         // Render notes if present (for PPTX)
@@ -1275,5 +1313,70 @@ mod tests {
             "Expected right alignment marker, got: {}",
             md
         );
+    }
+
+    #[test]
+    fn test_render_header_footer() {
+        let mut doc = Document::new();
+        let mut section = Section::new(0);
+        section.header = Some(vec![Paragraph::with_text("My Header")]);
+        section.footer = Some(vec![Paragraph::with_text("Page 1 of 10")]);
+        section.add_paragraph(Paragraph::with_text("Body content"));
+        doc.add_section(section);
+
+        let options = RenderOptions::default();
+        let md = to_markdown(&doc, &options).unwrap();
+
+        assert!(
+            md.contains("> *Header: My Header*"),
+            "Expected header in output, got: {}",
+            md
+        );
+        assert!(
+            md.contains("> *Footer: Page 1 of 10*"),
+            "Expected footer in output, got: {}",
+            md
+        );
+        // Verify ordering: header before body, footer after body
+        let header_pos = md.find("> *Header:").unwrap();
+        let body_pos = md.find("Body content").unwrap();
+        let footer_pos = md.find("> *Footer:").unwrap();
+        assert!(header_pos < body_pos, "Header should appear before body");
+        assert!(body_pos < footer_pos, "Footer should appear after body");
+    }
+
+    #[test]
+    fn test_render_header_footer_multiple_paragraphs() {
+        let mut doc = Document::new();
+        let mut section = Section::new(0);
+        section.header = Some(vec![
+            Paragraph::with_text("Company"),
+            Paragraph::with_text("Department"),
+        ]);
+        section.add_paragraph(Paragraph::with_text("Content"));
+        doc.add_section(section);
+
+        let options = RenderOptions::default();
+        let md = to_markdown(&doc, &options).unwrap();
+
+        assert!(
+            md.contains("> *Header: Company | Department*"),
+            "Multiple header paragraphs should be joined with ' | ', got: {}",
+            md
+        );
+    }
+
+    #[test]
+    fn test_render_no_header_footer() {
+        let mut doc = Document::new();
+        let mut section = Section::new(0);
+        section.add_paragraph(Paragraph::with_text("Body only"));
+        doc.add_section(section);
+
+        let options = RenderOptions::default();
+        let md = to_markdown(&doc, &options).unwrap();
+
+        assert!(!md.contains("Header:"), "No header should be rendered");
+        assert!(!md.contains("Footer:"), "No footer should be rendered");
     }
 }

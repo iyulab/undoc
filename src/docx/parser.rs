@@ -1,5 +1,7 @@
 //! DOCX parser implementation.
 
+use std::collections::HashMap;
+
 use crate::charts;
 use crate::container::OoxmlContainer;
 use crate::error::{Error, Result};
@@ -18,6 +20,10 @@ pub struct DocxParser {
     styles: StyleMap,
     numbering: NumberingMap,
     relationships: crate::container::Relationships,
+    /// Footnote id → plain text content
+    footnotes: HashMap<String, String>,
+    /// Endnote id → plain text content
+    endnotes: HashMap<String, String>,
 }
 
 impl DocxParser {
@@ -54,11 +60,27 @@ impl DocxParser {
             .read_relationships("word/document.xml")
             .unwrap_or_default();
 
+        // Parse footnotes
+        let footnotes = if let Ok(xml) = container.read_xml("word/footnotes.xml") {
+            parse_notes_xml(&xml, b"w:footnote")
+        } else {
+            HashMap::new()
+        };
+
+        // Parse endnotes
+        let endnotes = if let Ok(xml) = container.read_xml("word/endnotes.xml") {
+            parse_notes_xml(&xml, b"w:endnote")
+        } else {
+            HashMap::new()
+        };
+
         Ok(Self {
             container,
             styles,
             numbering,
             relationships,
+            footnotes,
+            endnotes,
         })
     }
 
@@ -76,6 +98,38 @@ impl DocxParser {
         let chart_tables = self.parse_charts()?;
         for table in chart_tables {
             main_section.add_block(Block::Table(table));
+        }
+
+        // Append footnote definitions at end of section
+        if !self.footnotes.is_empty() {
+            let mut ids: Vec<&String> = self.footnotes.keys().collect();
+            ids.sort_by(|a, b| {
+                a.parse::<u64>()
+                    .unwrap_or(u64::MAX)
+                    .cmp(&b.parse::<u64>().unwrap_or(u64::MAX))
+            });
+            for id in ids {
+                if let Some(text) = self.footnotes.get(id) {
+                    let para = Paragraph::with_text(format!("[^{}]: {}", id, text));
+                    main_section.add_block(Block::Paragraph(para));
+                }
+            }
+        }
+
+        // Append endnote definitions at end of section
+        if !self.endnotes.is_empty() {
+            let mut ids: Vec<&String> = self.endnotes.keys().collect();
+            ids.sort_by(|a, b| {
+                a.parse::<u64>()
+                    .unwrap_or(u64::MAX)
+                    .cmp(&b.parse::<u64>().unwrap_or(u64::MAX))
+            });
+            for id in ids {
+                if let Some(text) = self.endnotes.get(id) {
+                    let para = Paragraph::with_text(format!("[^e{}]: {}", id, text));
+                    main_section.add_block(Block::Paragraph(para));
+                }
+            }
         }
 
         doc.add_section(main_section);
@@ -160,7 +214,11 @@ impl DocxParser {
         let mut paragraph_xml = String::new();
         let mut table_xml = String::new();
         let mut in_paragraph = false;
+        let mut para_depth: u32 = 0; // Track nested w:p depth (for text boxes)
         let mut table_depth: u32 = 0; // Track nested table depth
+        let mut in_sect_pr = false; // Track w:sectPr for header/footer references
+        let mut default_header_rid: Option<String> = None;
+        let mut default_footer_rid: Option<String> = None;
 
         loop {
             match reader.read_event_into(&mut buf) {
@@ -170,7 +228,7 @@ impl DocxParser {
                         b"w:body" => {
                             in_body = true;
                         }
-                        b"w:p" if in_body && table_depth == 0 => {
+                        b"w:p" if in_body && table_depth == 0 && !in_paragraph => {
                             in_paragraph = true;
                             paragraph_xml.clear();
                             paragraph_xml.push_str("<w:p");
@@ -183,6 +241,9 @@ impl DocxParser {
                             }
                             paragraph_xml.push('>');
                         }
+                        b"w:sectPr" if in_body && !in_paragraph && table_depth == 0 => {
+                            in_sect_pr = true;
+                        }
                         b"w:tbl" if in_body => {
                             if table_depth == 0 {
                                 // Start collecting table XML
@@ -193,6 +254,10 @@ impl DocxParser {
                         }
                         _ => {
                             if in_paragraph {
+                                // Track nested w:p depth for text boxes
+                                if name.as_ref() == b"w:p" {
+                                    para_depth += 1;
+                                }
                                 paragraph_xml.push('<');
                                 paragraph_xml.push_str(&String::from_utf8_lossy(name.as_ref()));
                                 for attr in e.attributes().flatten() {
@@ -219,7 +284,35 @@ impl DocxParser {
                     }
                 }
                 Ok(quick_xml::events::Event::Empty(ref e)) => {
-                    if in_paragraph {
+                    // Handle header/footer references inside w:sectPr
+                    if in_sect_pr {
+                        let name = e.name();
+                        match name.as_ref() {
+                            b"w:headerReference" | b"w:footerReference" => {
+                                let mut ref_type = String::new();
+                                let mut r_id = String::new();
+                                for attr in e.attributes().flatten() {
+                                    match attr.key.as_ref() {
+                                        b"w:type" => {
+                                            ref_type = String::from_utf8_lossy(&attr.value).to_string();
+                                        }
+                                        b"r:id" => {
+                                            r_id = String::from_utf8_lossy(&attr.value).to_string();
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                if ref_type == "default" && !r_id.is_empty() {
+                                    if name.as_ref() == b"w:headerReference" {
+                                        default_header_rid = Some(r_id);
+                                    } else {
+                                        default_footer_rid = Some(r_id);
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    } else if in_paragraph {
                         let name = e.name();
                         paragraph_xml.push('<');
                         paragraph_xml.push_str(&String::from_utf8_lossy(name.as_ref()));
@@ -260,10 +353,20 @@ impl DocxParser {
                         b"w:body" => {
                             in_body = false;
                         }
-                        b"w:p" if in_paragraph && table_depth == 0 => {
+                        b"w:sectPr" if in_sect_pr => {
+                            in_sect_pr = false;
+                        }
+                        b"w:p" if in_paragraph && table_depth == 0 && para_depth == 0 => {
                             paragraph_xml.push_str("</w:p>");
+                            // Extract text box paragraphs before parsing the main paragraph
+                            let textbox_paras =
+                                self.extract_textbox_paragraphs(&paragraph_xml);
                             if let Ok(para) = self.parse_paragraph(&paragraph_xml) {
                                 section.add_block(Block::Paragraph(para));
+                            }
+                            // Add text box paragraphs as separate blocks
+                            for tb_para in textbox_paras {
+                                section.add_block(Block::Paragraph(tb_para));
                             }
                             in_paragraph = false;
                         }
@@ -279,6 +382,10 @@ impl DocxParser {
                         }
                         _ => {
                             if in_paragraph {
+                                // Track nested w:p depth for text boxes
+                                if name.as_ref() == b"w:p" {
+                                    para_depth = para_depth.saturating_sub(1);
+                                }
                                 paragraph_xml.push_str("</");
                                 paragraph_xml.push_str(&String::from_utf8_lossy(name.as_ref()));
                                 paragraph_xml.push('>');
@@ -302,7 +409,31 @@ impl DocxParser {
             buf.clear();
         }
 
+        // Resolve and parse header/footer from sectPr references
+        if let Some(rid) = default_header_rid {
+            if let Some(paragraphs) = self.parse_header_footer_by_rid(&rid) {
+                if !paragraphs.is_empty() {
+                    section.header = Some(paragraphs);
+                }
+            }
+        }
+        if let Some(rid) = default_footer_rid {
+            if let Some(paragraphs) = self.parse_header_footer_by_rid(&rid) {
+                if !paragraphs.is_empty() {
+                    section.footer = Some(paragraphs);
+                }
+            }
+        }
+
         Ok(section)
+    }
+
+    /// Resolve a relationship ID to a header/footer XML path and parse its paragraphs.
+    fn parse_header_footer_by_rid(&self, rid: &str) -> Option<Vec<Paragraph>> {
+        let rel = self.relationships.get(rid)?;
+        let path = OoxmlContainer::resolve_path("word/document.xml", &rel.target);
+        let xml = self.container.read_xml(&path).ok()?;
+        Some(parse_header_footer_xml(&xml))
     }
 
     /// Parse a single paragraph element.
@@ -323,6 +454,8 @@ impl DocxParser {
         let mut in_drawing = false; // Track w:drawing elements for images
         let mut in_ins = false; // Track w:ins elements (tracked changes - insertions)
         let mut in_del = false; // Track w:del elements (tracked changes - deletions)
+        let mut txbx_content_depth: u32 = 0; // Track w:txbxContent nesting (suppress text capture)
+        let mut mc_fallback_depth: u32 = 0; // Track mc:Fallback nesting (skip entirely)
         let mut current_style = TextStyle::default();
         let mut current_hyperlink: Option<String> = None;
         let mut current_image_alt: Option<String> = None;
@@ -330,6 +463,16 @@ impl DocxParser {
         loop {
             match reader.read_event_into(&mut buf) {
                 Ok(quick_xml::events::Event::Start(ref e)) => match e.name().as_ref() {
+                    // Skip mc:Fallback branches to avoid duplicating text box content
+                    b"mc:Fallback" => {
+                        mc_fallback_depth += 1;
+                    }
+                    // Track w:txbxContent to suppress text capture (extracted separately)
+                    b"w:txbxContent" if mc_fallback_depth == 0 => {
+                        txbx_content_depth += 1;
+                    }
+                    _ if mc_fallback_depth > 0 => {} // Skip everything inside mc:Fallback
+                    _ if txbx_content_depth > 0 => {} // Skip everything inside w:txbxContent
                     b"w:pPr" => in_ppr = true,
                     b"w:rPr" => in_rpr = true,
                     b"w:r" => {
@@ -359,6 +502,7 @@ impl DocxParser {
                     _ => {}
                 },
                 Ok(quick_xml::events::Event::Empty(ref e)) => match e.name().as_ref() {
+                    _ if mc_fallback_depth > 0 || txbx_content_depth > 0 => {} // Skip
                     b"w:pStyle" if in_ppr => {
                         for attr in e.attributes().flatten() {
                             if attr.key.as_ref() == b"w:val" {
@@ -623,11 +767,36 @@ impl DocxParser {
                             revision: current_revision,
                         });
                     }
+                    // Footnote reference handling
+                    b"w:footnoteReference" if in_run => {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.as_ref() == b"w:id" {
+                                let id = String::from_utf8_lossy(&attr.value).to_string();
+                                // Only insert marker if this footnote has content
+                                if self.footnotes.contains_key(&id) {
+                                    para.runs.push(TextRun::plain(format!("[^{}]", id)));
+                                }
+                            }
+                        }
+                    }
+                    // Endnote reference handling
+                    b"w:endnoteReference" if in_run => {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.as_ref() == b"w:id" {
+                                let id = String::from_utf8_lossy(&attr.value).to_string();
+                                // Only insert marker if this endnote has content
+                                if self.endnotes.contains_key(&id) {
+                                    para.runs.push(TextRun::plain(format!("[^e{}]", id)));
+                                }
+                            }
+                        }
+                    }
                     _ => {}
                 },
                 Ok(quick_xml::events::Event::Text(ref e)) => {
                     // Only extract text from w:t elements, skip w:instrText (field codes)
-                    if in_run && in_text && !in_instr_text {
+                    // Also skip text inside mc:Fallback and w:txbxContent (extracted separately)
+                    if in_run && in_text && !in_instr_text && mc_fallback_depth == 0 && txbx_content_depth == 0 {
                         let text = e.unescape().unwrap_or_default().to_string();
                         if !text.is_empty() {
                             let current_revision = if in_del {
@@ -650,6 +819,13 @@ impl DocxParser {
                     }
                 }
                 Ok(quick_xml::events::Event::End(ref e)) => match e.name().as_ref() {
+                    b"mc:Fallback" if mc_fallback_depth > 0 => {
+                        mc_fallback_depth -= 1;
+                    }
+                    b"w:txbxContent" if txbx_content_depth > 0 => {
+                        txbx_content_depth -= 1;
+                    }
+                    _ if mc_fallback_depth > 0 || txbx_content_depth > 0 => {} // Skip
                     b"w:pPr" => in_ppr = false,
                     b"w:rPr" => in_rpr = false,
                     b"w:r" => in_run = false,
@@ -675,6 +851,125 @@ impl DocxParser {
         para.list_info = self.parse_list_info(xml);
 
         Ok(para)
+    }
+
+    /// Extract paragraphs from `w:txbxContent` elements (text boxes/shapes).
+    ///
+    /// Text boxes in DOCX appear inside `w:drawing` or `mc:AlternateContent` elements.
+    /// This method finds all `w:txbxContent` sections (skipping those inside `mc:Fallback`
+    /// to avoid duplication) and parses the inner `<w:p>` elements as regular paragraphs.
+    fn extract_textbox_paragraphs(&mut self, xml: &str) -> Vec<Paragraph> {
+        let mut paragraphs = Vec::new();
+        let mut reader = quick_xml::Reader::from_str(xml);
+        reader.config_mut().trim_text(false);
+
+        let mut buf = Vec::new();
+        let mut mc_fallback_depth: u32 = 0;
+        let mut txbx_content_depth: u32 = 0;
+        let mut in_txbx_para = false;
+        let mut txbx_para_xml = String::new();
+        let mut txbx_para_depth: u32 = 0; // Track nested elements inside the text box <w:p>
+
+        loop {
+            match reader.read_event_into(&mut buf) {
+                Ok(quick_xml::events::Event::Start(ref e)) => {
+                    let name = e.name();
+                    match name.as_ref() {
+                        b"mc:Fallback" => {
+                            mc_fallback_depth += 1;
+                        }
+                        b"w:txbxContent" if mc_fallback_depth == 0 => {
+                            txbx_content_depth += 1;
+                        }
+                        b"w:p" if txbx_content_depth > 0 && !in_txbx_para => {
+                            in_txbx_para = true;
+                            txbx_para_depth = 0;
+                            txbx_para_xml.clear();
+                            txbx_para_xml.push_str("<w:p");
+                            for attr in e.attributes().flatten() {
+                                txbx_para_xml.push_str(&format!(
+                                    " {}=\"{}\"",
+                                    String::from_utf8_lossy(attr.key.as_ref()),
+                                    String::from_utf8_lossy(&attr.value)
+                                ));
+                            }
+                            txbx_para_xml.push('>');
+                        }
+                        _ if in_txbx_para => {
+                            txbx_para_depth += 1;
+                            txbx_para_xml.push('<');
+                            txbx_para_xml
+                                .push_str(&String::from_utf8_lossy(name.as_ref()));
+                            for attr in e.attributes().flatten() {
+                                txbx_para_xml.push_str(&format!(
+                                    " {}=\"{}\"",
+                                    String::from_utf8_lossy(attr.key.as_ref()),
+                                    String::from_utf8_lossy(&attr.value)
+                                ));
+                            }
+                            txbx_para_xml.push('>');
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(quick_xml::events::Event::Empty(ref e)) => {
+                    if in_txbx_para {
+                        let name = e.name();
+                        txbx_para_xml.push('<');
+                        txbx_para_xml
+                            .push_str(&String::from_utf8_lossy(name.as_ref()));
+                        for attr in e.attributes().flatten() {
+                            txbx_para_xml.push_str(&format!(
+                                " {}=\"{}\"",
+                                String::from_utf8_lossy(attr.key.as_ref()),
+                                String::from_utf8_lossy(&attr.value)
+                            ));
+                        }
+                        txbx_para_xml.push_str("/>");
+                    }
+                }
+                Ok(quick_xml::events::Event::Text(ref e)) => {
+                    if in_txbx_para {
+                        let text = e.unescape().unwrap_or_default();
+                        txbx_para_xml.push_str(&escape_xml(&text));
+                    }
+                }
+                Ok(quick_xml::events::Event::End(ref e)) => {
+                    let name = e.name();
+                    match name.as_ref() {
+                        b"mc:Fallback" if mc_fallback_depth > 0 => {
+                            mc_fallback_depth -= 1;
+                        }
+                        b"w:txbxContent" if txbx_content_depth > 0 => {
+                            txbx_content_depth -= 1;
+                        }
+                        b"w:p" if in_txbx_para && txbx_para_depth == 0 => {
+                            txbx_para_xml.push_str("</w:p>");
+                            if let Ok(para) = self.parse_paragraph(&txbx_para_xml) {
+                                if !para.plain_text().is_empty() {
+                                    paragraphs.push(para);
+                                }
+                            }
+                            in_txbx_para = false;
+                        }
+                        _ if in_txbx_para => {
+                            txbx_para_depth = txbx_para_depth.saturating_sub(1);
+                            txbx_para_xml.push_str("</");
+                            txbx_para_xml
+                                .push_str(&String::from_utf8_lossy(name.as_ref()));
+                            txbx_para_xml.push('>');
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(quick_xml::events::Event::Eof) => break,
+                Err(_) => break,
+                _ => {}
+            }
+            buf.clear();
+        }
+
+        paragraphs
     }
 
     /// Parse list info from paragraph XML.
@@ -1122,6 +1417,150 @@ impl DocxParser {
     }
 }
 
+/// Parse footnotes.xml or endnotes.xml into a map of id → plain text.
+///
+/// `note_tag` should be `b"w:footnote"` or `b"w:endnote"`.
+/// Entries with `w:type="separator"` or `w:type="continuationSeparator"` are skipped.
+fn parse_notes_xml(xml: &str, note_tag: &[u8]) -> HashMap<String, String> {
+    let mut notes = HashMap::new();
+    let mut reader = quick_xml::Reader::from_str(xml);
+    reader.config_mut().trim_text(false);
+
+    let mut buf = Vec::new();
+    let mut current_id: Option<String> = None;
+    let mut current_text = String::new();
+    let mut in_note = false;
+    let mut in_text = false;
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(quick_xml::events::Event::Start(ref e)) => {
+                if e.name().as_ref() == note_tag {
+                    let mut id = None;
+                    let mut note_type = None;
+                    for attr in e.attributes().flatten() {
+                        match attr.key.as_ref() {
+                            b"w:id" => {
+                                id = Some(
+                                    String::from_utf8_lossy(&attr.value).to_string(),
+                                );
+                            }
+                            b"w:type" => {
+                                note_type = Some(
+                                    String::from_utf8_lossy(&attr.value).to_string(),
+                                );
+                            }
+                            _ => {}
+                        }
+                    }
+                    // Skip separator and continuationSeparator types
+                    if let Some(ref t) = note_type {
+                        if t == "separator" || t == "continuationSeparator" {
+                            // Don't set in_note, so content is ignored
+                            buf.clear();
+                            continue;
+                        }
+                    }
+                    if let Some(id_val) = id {
+                        in_note = true;
+                        current_id = Some(id_val);
+                        current_text.clear();
+                    }
+                } else if in_note && e.name().as_ref() == b"w:t" {
+                    in_text = true;
+                }
+            }
+            Ok(quick_xml::events::Event::Text(ref e)) => {
+                if in_note && in_text {
+                    if let Ok(text) = e.unescape() {
+                        current_text.push_str(&text);
+                    }
+                }
+            }
+            Ok(quick_xml::events::Event::End(ref e)) => {
+                if e.name().as_ref() == note_tag {
+                    if in_note {
+                        if let Some(id) = current_id.take() {
+                            let trimmed = current_text.trim().to_string();
+                            if !trimmed.is_empty() {
+                                notes.insert(id, trimmed);
+                            }
+                        }
+                        in_note = false;
+                    }
+                } else if e.name().as_ref() == b"w:t" {
+                    in_text = false;
+                }
+            }
+            Ok(quick_xml::events::Event::Eof) => break,
+            Err(_) => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+
+    notes
+}
+
+/// Parse a header or footer XML file (w:hdr or w:ftr) into a list of paragraphs.
+///
+/// Header/footer XML has the same structure as the document body:
+/// `<w:hdr>` or `<w:ftr>` containing `<w:p>` paragraphs with `<w:r>` runs and `<w:t>` text.
+/// This function extracts plain text only (no styles or formatting).
+fn parse_header_footer_xml(xml: &str) -> Vec<Paragraph> {
+    let mut paragraphs = Vec::new();
+    let mut reader = quick_xml::Reader::from_str(xml);
+    reader.config_mut().trim_text(false);
+
+    let mut buf = Vec::new();
+    let mut in_paragraph = false;
+    let mut in_text = false;
+    let mut current_text = String::new();
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(quick_xml::events::Event::Start(ref e)) => match e.name().as_ref() {
+                b"w:p" => {
+                    in_paragraph = true;
+                    current_text.clear();
+                }
+                b"w:t" if in_paragraph => {
+                    in_text = true;
+                }
+                _ => {}
+            },
+            Ok(quick_xml::events::Event::Text(ref e)) => {
+                if in_paragraph && in_text {
+                    if let Ok(text) = e.unescape() {
+                        current_text.push_str(&text);
+                    }
+                }
+            }
+            Ok(quick_xml::events::Event::End(ref e)) => match e.name().as_ref() {
+                b"w:p" => {
+                    if in_paragraph {
+                        let trimmed = current_text.trim().to_string();
+                        if !trimmed.is_empty() {
+                            paragraphs.push(Paragraph::with_text(trimmed));
+                        }
+                        in_paragraph = false;
+                    }
+                }
+                b"w:t" => {
+                    in_text = false;
+                }
+                _ => {}
+            },
+            Ok(quick_xml::events::Event::Eof) => break,
+            Err(_) => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+
+    paragraphs
+}
+
 /// Helper to get a boolean attribute value.
 fn get_bool_attr(e: &quick_xml::events::BytesStart, key: &[u8]) -> Option<bool> {
     for attr in e.attributes().flatten() {
@@ -1288,6 +1727,8 @@ mod tests {
             styles: StyleMap::default(),
             numbering: NumberingMap::default(),
             relationships: crate::container::Relationships::default(),
+            footnotes: HashMap::new(),
+            endnotes: HashMap::new(),
         };
 
         let para = parser.parse_paragraph(xml).unwrap();
@@ -1324,6 +1765,8 @@ mod tests {
             styles: StyleMap::default(),
             numbering: NumberingMap::default(),
             relationships: crate::container::Relationships::default(),
+            footnotes: HashMap::new(),
+            endnotes: HashMap::new(),
         };
 
         let para = parser.parse_paragraph(xml).unwrap();
@@ -1362,6 +1805,8 @@ mod tests {
             styles: StyleMap::default(),
             numbering: NumberingMap::default(),
             relationships: crate::container::Relationships::default(),
+            footnotes: HashMap::new(),
+            endnotes: HashMap::new(),
         };
 
         let para = parser.parse_paragraph(xml).unwrap();
@@ -1396,6 +1841,8 @@ mod tests {
             styles: StyleMap::default(),
             numbering: NumberingMap::default(),
             relationships: crate::container::Relationships::default(),
+            footnotes: HashMap::new(),
+            endnotes: HashMap::new(),
         };
 
         let para = parser.parse_paragraph(xml).unwrap();
@@ -1430,6 +1877,8 @@ mod tests {
             styles: StyleMap::default(),
             numbering: NumberingMap::default(),
             relationships: crate::container::Relationships::default(),
+            footnotes: HashMap::new(),
+            endnotes: HashMap::new(),
         };
 
         let para = parser.parse_paragraph(xml).unwrap();
@@ -1460,6 +1909,8 @@ mod tests {
             styles: StyleMap::default(),
             numbering: NumberingMap::default(),
             relationships: crate::container::Relationships::default(),
+            footnotes: HashMap::new(),
+            endnotes: HashMap::new(),
         };
 
         let para = parser.parse_paragraph(xml).unwrap();
@@ -1503,6 +1954,8 @@ mod tests {
             styles: StyleMap::default(),
             numbering: NumberingMap::default(),
             relationships: crate::container::Relationships::default(),
+            footnotes: HashMap::new(),
+            endnotes: HashMap::new(),
         };
 
         let para = parser.parse_paragraph(xml).unwrap();
@@ -1549,6 +2002,8 @@ mod tests {
             styles: StyleMap::default(),
             numbering: NumberingMap::default(),
             relationships: crate::container::Relationships::default(),
+            footnotes: HashMap::new(),
+            endnotes: HashMap::new(),
         };
 
         let para = parser.parse_paragraph(xml).unwrap();
@@ -1571,6 +2026,457 @@ mod tests {
             deleted_text.contains("deleted"),
             "Expected 'deleted' text in revision, got: '{}'",
             deleted_text
+        );
+    }
+
+    // =========================================================================
+    // Footnote / Endnote Tests
+    // =========================================================================
+
+    #[test]
+    fn test_parse_footnotes_xml() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+        <w:footnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+            <w:footnote w:id="0" w:type="separator">
+                <w:p><w:r><w:t>___</w:t></w:r></w:p>
+            </w:footnote>
+            <w:footnote w:id="1" w:type="continuationSeparator">
+                <w:p><w:r><w:t>---</w:t></w:r></w:p>
+            </w:footnote>
+            <w:footnote w:id="2">
+                <w:p><w:r><w:t>This is footnote two.</w:t></w:r></w:p>
+            </w:footnote>
+            <w:footnote w:id="3">
+                <w:p><w:r><w:t>Another footnote.</w:t></w:r></w:p>
+            </w:footnote>
+        </w:footnotes>"#;
+
+        let notes = parse_notes_xml(xml, b"w:footnote");
+
+        // Separator and continuationSeparator should be skipped
+        assert!(!notes.contains_key("0"), "separator should be skipped");
+        assert!(
+            !notes.contains_key("1"),
+            "continuationSeparator should be skipped"
+        );
+
+        // Content footnotes should be parsed
+        assert_eq!(notes.get("2").unwrap(), "This is footnote two.");
+        assert_eq!(notes.get("3").unwrap(), "Another footnote.");
+        assert_eq!(notes.len(), 2);
+    }
+
+    #[test]
+    fn test_parse_endnotes_xml() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+        <w:endnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+            <w:endnote w:id="0" w:type="separator">
+                <w:p><w:r><w:t>___</w:t></w:r></w:p>
+            </w:endnote>
+            <w:endnote w:id="1">
+                <w:p><w:r><w:t>Endnote content here.</w:t></w:r></w:p>
+            </w:endnote>
+        </w:endnotes>"#;
+
+        let notes = parse_notes_xml(xml, b"w:endnote");
+
+        assert!(!notes.contains_key("0"), "separator should be skipped");
+        assert_eq!(notes.get("1").unwrap(), "Endnote content here.");
+        assert_eq!(notes.len(), 1);
+    }
+
+    #[test]
+    fn test_footnote_multi_run_text() {
+        // Footnote with multiple runs should concatenate text
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+        <w:footnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+            <w:footnote w:id="1">
+                <w:p>
+                    <w:r><w:t>First </w:t></w:r>
+                    <w:r><w:t>second </w:t></w:r>
+                    <w:r><w:t>third.</w:t></w:r>
+                </w:p>
+            </w:footnote>
+        </w:footnotes>"#;
+
+        let notes = parse_notes_xml(xml, b"w:footnote");
+        assert_eq!(notes.get("1").unwrap(), "First second third.");
+    }
+
+    #[test]
+    fn test_footnote_reference_in_paragraph() {
+        // Test that w:footnoteReference inserts [^N] marker
+        let xml = r#"<w:p>
+            <w:r><w:t>Some text</w:t></w:r>
+            <w:r><w:footnoteReference w:id="2"/></w:r>
+            <w:r><w:t> more text</w:t></w:r>
+        </w:p>"#;
+
+        let container = crate::container::OoxmlContainer::from_bytes(Vec::new());
+        if container.is_err() {
+            return;
+        }
+        let container = container.unwrap();
+        let mut footnotes = HashMap::new();
+        footnotes.insert("2".to_string(), "Footnote content".to_string());
+
+        let mut parser = DocxParser {
+            container,
+            styles: StyleMap::default(),
+            numbering: NumberingMap::default(),
+            relationships: crate::container::Relationships::default(),
+            footnotes,
+            endnotes: HashMap::new(),
+        };
+
+        let para = parser.parse_paragraph(xml).unwrap();
+        let text = para.plain_text();
+
+        assert!(
+            text.contains("[^2]"),
+            "Expected footnote reference [^2], got: '{}'",
+            text
+        );
+        assert!(
+            text.contains("Some text"),
+            "Expected original text, got: '{}'",
+            text
+        );
+    }
+
+    #[test]
+    fn test_endnote_reference_in_paragraph() {
+        // Test that w:endnoteReference inserts [^eN] marker
+        let xml = r#"<w:p>
+            <w:r><w:t>Text with endnote</w:t></w:r>
+            <w:r><w:endnoteReference w:id="1"/></w:r>
+        </w:p>"#;
+
+        let container = crate::container::OoxmlContainer::from_bytes(Vec::new());
+        if container.is_err() {
+            return;
+        }
+        let container = container.unwrap();
+        let mut endnotes = HashMap::new();
+        endnotes.insert("1".to_string(), "Endnote content".to_string());
+
+        let mut parser = DocxParser {
+            container,
+            styles: StyleMap::default(),
+            numbering: NumberingMap::default(),
+            relationships: crate::container::Relationships::default(),
+            footnotes: HashMap::new(),
+            endnotes,
+        };
+
+        let para = parser.parse_paragraph(xml).unwrap();
+        let text = para.plain_text();
+
+        assert!(
+            text.contains("[^e1]"),
+            "Expected endnote reference [^e1], got: '{}'",
+            text
+        );
+    }
+
+    #[test]
+    fn test_footnote_reference_skipped_when_no_content() {
+        // If the footnote id doesn't exist in the map, no marker should be inserted
+        let xml = r#"<w:p>
+            <w:r><w:t>Text</w:t></w:r>
+            <w:r><w:footnoteReference w:id="99"/></w:r>
+        </w:p>"#;
+
+        let container = crate::container::OoxmlContainer::from_bytes(Vec::new());
+        if container.is_err() {
+            return;
+        }
+        let container = container.unwrap();
+        let mut parser = DocxParser {
+            container,
+            styles: StyleMap::default(),
+            numbering: NumberingMap::default(),
+            relationships: crate::container::Relationships::default(),
+            footnotes: HashMap::new(), // No footnotes
+            endnotes: HashMap::new(),
+        };
+
+        let para = parser.parse_paragraph(xml).unwrap();
+        let text = para.plain_text();
+
+        assert!(
+            !text.contains("[^"),
+            "Should not insert marker for unknown footnote, got: '{}'",
+            text
+        );
+    }
+
+    #[test]
+    fn test_empty_footnote_skipped() {
+        // Footnotes with only whitespace should not be included
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+        <w:footnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+            <w:footnote w:id="1">
+                <w:p><w:r><w:t>   </w:t></w:r></w:p>
+            </w:footnote>
+            <w:footnote w:id="2">
+                <w:p><w:r><w:t>Real content.</w:t></w:r></w:p>
+            </w:footnote>
+        </w:footnotes>"#;
+
+        let notes = parse_notes_xml(xml, b"w:footnote");
+        assert!(!notes.contains_key("1"), "Whitespace-only note should be skipped");
+        assert_eq!(notes.get("2").unwrap(), "Real content.");
+    }
+
+    #[test]
+    fn test_parse_header_footer_xml_basic() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+        <w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+            <w:p>
+                <w:r><w:t>Company Name</w:t></w:r>
+            </w:p>
+            <w:p>
+                <w:r><w:t>Confidential</w:t></w:r>
+            </w:p>
+        </w:hdr>"#;
+
+        let paragraphs = parse_header_footer_xml(xml);
+        assert_eq!(paragraphs.len(), 2);
+        assert_eq!(paragraphs[0].plain_text(), "Company Name");
+        assert_eq!(paragraphs[1].plain_text(), "Confidential");
+    }
+
+    #[test]
+    fn test_parse_header_footer_xml_empty_paragraphs_skipped() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+        <w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+            <w:p></w:p>
+            <w:p>
+                <w:r><w:t>Page 1</w:t></w:r>
+            </w:p>
+            <w:p>
+                <w:r><w:t>   </w:t></w:r>
+            </w:p>
+        </w:ftr>"#;
+
+        let paragraphs = parse_header_footer_xml(xml);
+        assert_eq!(paragraphs.len(), 1);
+        assert_eq!(paragraphs[0].plain_text(), "Page 1");
+    }
+
+    #[test]
+    fn test_parse_header_footer_xml_multiple_runs() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+        <w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+            <w:p>
+                <w:r><w:t>Draft - </w:t></w:r>
+                <w:r><w:t>Do Not Distribute</w:t></w:r>
+            </w:p>
+        </w:hdr>"#;
+
+        let paragraphs = parse_header_footer_xml(xml);
+        assert_eq!(paragraphs.len(), 1);
+        assert_eq!(paragraphs[0].plain_text(), "Draft - Do Not Distribute");
+    }
+
+    #[test]
+    fn test_parse_header_footer_xml_empty() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+        <w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+        </w:hdr>"#;
+
+        let paragraphs = parse_header_footer_xml(xml);
+        assert!(paragraphs.is_empty());
+    }
+
+    // =========================================================================
+    // Text Box Content Extraction Tests (w:txbxContent)
+    // =========================================================================
+
+    /// Helper to create a minimal DOCX in memory with given document.xml content.
+    fn create_minimal_docx(document_xml: &str) -> Vec<u8> {
+        use std::io::{Cursor, Write};
+        let buf = Cursor::new(Vec::new());
+        let mut zip = zip::ZipWriter::new(buf);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+
+        // [Content_Types].xml
+        zip.start_file("[Content_Types].xml", options).unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>"#).unwrap();
+
+        // _rels/.rels
+        zip.start_file("_rels/.rels", options).unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>"#).unwrap();
+
+        // word/_rels/document.xml.rels
+        zip.start_file("word/_rels/document.xml.rels", options)
+            .unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+</Relationships>"#).unwrap();
+
+        // word/document.xml
+        zip.start_file("word/document.xml", options).unwrap();
+        zip.write_all(document_xml.as_bytes()).unwrap();
+
+        zip.finish().unwrap().into_inner()
+    }
+
+    #[test]
+    fn test_textbox_content_extracted() {
+        // Text box via w:drawing > wps:txbx > w:txbxContent
+        let doc_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+            xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
+  <w:body>
+    <w:p>
+      <w:r>
+        <w:t>Normal paragraph</w:t>
+      </w:r>
+    </w:p>
+    <w:p>
+      <w:r>
+        <w:drawing>
+          <wps:wsp>
+            <wps:txbx>
+              <w:txbxContent>
+                <w:p>
+                  <w:r><w:t>Text box content here</w:t></w:r>
+                </w:p>
+              </w:txbxContent>
+            </wps:txbx>
+          </wps:wsp>
+        </w:drawing>
+      </w:r>
+    </w:p>
+  </w:body>
+</w:document>"#;
+
+        let data = create_minimal_docx(doc_xml);
+        let mut parser = DocxParser::from_bytes(data).unwrap();
+        let doc = parser.parse().unwrap();
+        let text = doc.plain_text();
+
+        assert!(
+            text.contains("Normal paragraph"),
+            "Should contain normal paragraph text"
+        );
+        assert!(
+            text.contains("Text box content here"),
+            "Should contain text box content, got: {}",
+            text
+        );
+    }
+
+    #[test]
+    fn test_textbox_mc_alternate_content_no_duplication() {
+        // mc:AlternateContent with text box in both Choice and Fallback
+        // Should only extract once (from Choice branch)
+        let doc_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+            xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+            xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"
+            xmlns:v="urn:schemas-microsoft-com:vml">
+  <w:body>
+    <w:p>
+      <w:r>
+        <mc:AlternateContent>
+          <mc:Choice>
+            <w:drawing>
+              <wps:wsp>
+                <wps:txbx>
+                  <w:txbxContent>
+                    <w:p>
+                      <w:r><w:t>Unique text box</w:t></w:r>
+                    </w:p>
+                  </w:txbxContent>
+                </wps:txbx>
+              </wps:wsp>
+            </w:drawing>
+          </mc:Choice>
+          <mc:Fallback>
+            <w:pict>
+              <v:shape>
+                <v:textbox>
+                  <w:txbxContent>
+                    <w:p>
+                      <w:r><w:t>Unique text box</w:t></w:r>
+                    </w:p>
+                  </w:txbxContent>
+                </v:textbox>
+              </v:shape>
+            </w:pict>
+          </mc:Fallback>
+        </mc:AlternateContent>
+      </w:r>
+    </w:p>
+  </w:body>
+</w:document>"#;
+
+        let data = create_minimal_docx(doc_xml);
+        let mut parser = DocxParser::from_bytes(data).unwrap();
+        let doc = parser.parse().unwrap();
+        let text = doc.plain_text();
+
+        // Count occurrences - should appear exactly once
+        let count = text.matches("Unique text box").count();
+        assert_eq!(
+            count, 1,
+            "Text box content should appear exactly once, not duplicated. Full text: {}",
+            text
+        );
+    }
+
+    #[test]
+    fn test_textbox_multiple_paragraphs() {
+        // Text box with multiple paragraphs
+        let doc_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+            xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
+  <w:body>
+    <w:p>
+      <w:r>
+        <w:drawing>
+          <wps:wsp>
+            <wps:txbx>
+              <w:txbxContent>
+                <w:p>
+                  <w:r><w:t>First text box paragraph</w:t></w:r>
+                </w:p>
+                <w:p>
+                  <w:r><w:t>Second text box paragraph</w:t></w:r>
+                </w:p>
+              </w:txbxContent>
+            </wps:txbx>
+          </wps:wsp>
+        </w:drawing>
+      </w:r>
+    </w:p>
+  </w:body>
+</w:document>"#;
+
+        let data = create_minimal_docx(doc_xml);
+        let mut parser = DocxParser::from_bytes(data).unwrap();
+        let doc = parser.parse().unwrap();
+        let text = doc.plain_text();
+
+        assert!(
+            text.contains("First text box paragraph"),
+            "Should contain first text box paragraph"
+        );
+        assert!(
+            text.contains("Second text box paragraph"),
+            "Should contain second text box paragraph"
         );
     }
 }

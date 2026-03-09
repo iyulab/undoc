@@ -315,6 +315,9 @@ impl OoxmlContainer {
                                 }
                                 "created" => meta.created = Some(text),
                                 "modified" => meta.modified = Some(text),
+                                "lastModifiedBy" => {
+                                    meta.last_modified_by = Some(text)
+                                }
                                 _ => {}
                             }
                         }
@@ -330,7 +333,68 @@ impl OoxmlContainer {
             }
         }
 
+        // Enrich with app.xml metadata
+        self.parse_app_metadata(&mut meta);
+
         Ok(meta)
+    }
+
+    /// Parse extended metadata from docProps/app.xml.
+    ///
+    /// Extracts Application, Pages, Words, and Slides properties.
+    /// Only sets `page_count` and `word_count` if not already populated.
+    fn parse_app_metadata(&self, meta: &mut Metadata) {
+        let xml = match self.read_xml("docProps/app.xml") {
+            Ok(xml) => xml,
+            Err(_) => return,
+        };
+
+        let mut reader = quick_xml::Reader::from_str(&xml);
+        reader.config_mut().trim_text(true);
+
+        let mut buf = Vec::new();
+        let mut current_element: Option<String> = None;
+
+        loop {
+            match reader.read_event_into(&mut buf) {
+                Ok(quick_xml::events::Event::Start(e)) => {
+                    let name = e.name();
+                    current_element =
+                        Some(String::from_utf8_lossy(name.local_name().as_ref()).to_string());
+                }
+                Ok(quick_xml::events::Event::Text(e)) => {
+                    if let Some(ref elem) = current_element {
+                        let text = e.unescape().unwrap_or_default().to_string();
+                        match elem.as_str() {
+                            "Application" => meta.application = Some(text),
+                            "Pages" => {
+                                if meta.page_count.is_none() {
+                                    meta.page_count = text.parse::<u32>().ok();
+                                }
+                            }
+                            "Words" => {
+                                if meta.word_count.is_none() {
+                                    meta.word_count = text.parse::<u32>().ok();
+                                }
+                            }
+                            "Slides" => {
+                                if meta.page_count.is_none() {
+                                    meta.page_count = text.parse::<u32>().ok();
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                Ok(quick_xml::events::Event::End(_)) => {
+                    current_element = None;
+                }
+                Ok(quick_xml::events::Event::Eof) => break,
+                Err(_) => break,
+                _ => {}
+            }
+            buf.clear();
+        }
     }
 
     /// Parse a relationships file.
@@ -692,6 +756,183 @@ mod tests {
 
             let slides = container.list_files_with_prefix("ppt/slides/");
             assert!(!slides.is_empty());
+        }
+    }
+
+    /// Helper: create a minimal OOXML ZIP archive with given entries.
+    fn create_test_zip(entries: &[(&str, &str)]) -> Vec<u8> {
+        use std::io::Write;
+        let buf = Vec::new();
+        let cursor = Cursor::new(buf);
+        let mut zip = zip::ZipWriter::new(cursor);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        for (name, content) in entries {
+            zip.start_file(*name, options).unwrap();
+            zip.write_all(content.as_bytes()).unwrap();
+        }
+        let cursor = zip.finish().unwrap();
+        cursor.into_inner()
+    }
+
+    #[test]
+    fn test_parse_core_metadata_last_modified_by() {
+        let core_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties"
+                   xmlns:dc="http://purl.org/dc/elements/1.1/"
+                   xmlns:dcterms="http://purl.org/dc/terms/">
+  <dc:title>Test Title</dc:title>
+  <dc:creator>Author Name</dc:creator>
+  <cp:lastModifiedBy>Editor Name</cp:lastModifiedBy>
+  <dcterms:created>2024-01-01T00:00:00Z</dcterms:created>
+</cp:coreProperties>"#;
+
+        let data = create_test_zip(&[
+            ("[Content_Types].xml", "<Types/>"),
+            ("docProps/core.xml", core_xml),
+        ]);
+
+        let container = OoxmlContainer::from_bytes(data).unwrap();
+        let meta = container.parse_core_metadata().unwrap();
+
+        assert_eq!(meta.title.as_deref(), Some("Test Title"));
+        assert_eq!(meta.author.as_deref(), Some("Author Name"));
+        assert_eq!(meta.last_modified_by.as_deref(), Some("Editor Name"));
+        assert_eq!(meta.created.as_deref(), Some("2024-01-01T00:00:00Z"));
+    }
+
+    #[test]
+    fn test_parse_app_metadata_basic() {
+        let app_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties">
+  <Application>Microsoft Office Word</Application>
+  <Pages>5</Pages>
+  <Words>1234</Words>
+</Properties>"#;
+
+        let data = create_test_zip(&[
+            ("[Content_Types].xml", "<Types/>"),
+            ("docProps/app.xml", app_xml),
+        ]);
+
+        let container = OoxmlContainer::from_bytes(data).unwrap();
+        let meta = container.parse_core_metadata().unwrap();
+
+        assert_eq!(meta.application.as_deref(), Some("Microsoft Office Word"));
+        assert_eq!(meta.page_count, Some(5));
+        assert_eq!(meta.word_count, Some(1234));
+    }
+
+    #[test]
+    fn test_parse_app_metadata_slides() {
+        let app_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties">
+  <Application>Microsoft Office PowerPoint</Application>
+  <Slides>10</Slides>
+</Properties>"#;
+
+        let data = create_test_zip(&[
+            ("[Content_Types].xml", "<Types/>"),
+            ("docProps/app.xml", app_xml),
+        ]);
+
+        let container = OoxmlContainer::from_bytes(data).unwrap();
+        let meta = container.parse_core_metadata().unwrap();
+
+        assert_eq!(
+            meta.application.as_deref(),
+            Some("Microsoft Office PowerPoint")
+        );
+        assert_eq!(meta.page_count, Some(10));
+        assert_eq!(meta.word_count, None);
+    }
+
+    #[test]
+    fn test_parse_app_metadata_pages_does_not_override_slides() {
+        // When both Pages and Slides are present, the first one encountered wins
+        // (Pages comes before Slides in the XML), which is correct since
+        // DOCX has Pages, PPTX has Slides — they don't coexist in practice.
+        let app_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties">
+  <Application>Test</Application>
+  <Pages>3</Pages>
+  <Slides>10</Slides>
+</Properties>"#;
+
+        let data = create_test_zip(&[
+            ("[Content_Types].xml", "<Types/>"),
+            ("docProps/app.xml", app_xml),
+        ]);
+
+        let container = OoxmlContainer::from_bytes(data).unwrap();
+        let meta = container.parse_core_metadata().unwrap();
+
+        // Pages is parsed first, so page_count = 3; Slides won't override it
+        assert_eq!(meta.page_count, Some(3));
+    }
+
+    #[test]
+    fn test_parse_app_metadata_missing_file() {
+        // No app.xml — should not fail, just leave fields as None
+        let data = create_test_zip(&[("[Content_Types].xml", "<Types/>")]);
+
+        let container = OoxmlContainer::from_bytes(data).unwrap();
+        let meta = container.parse_core_metadata().unwrap();
+
+        assert_eq!(meta.application, None);
+        assert_eq!(meta.page_count, None);
+        assert_eq!(meta.word_count, None);
+    }
+
+    #[test]
+    fn test_parse_combined_core_and_app_metadata() {
+        let core_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties"
+                   xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <dc:title>My Document</dc:title>
+  <dc:creator>Jane Doe</dc:creator>
+  <cp:lastModifiedBy>John Smith</cp:lastModifiedBy>
+</cp:coreProperties>"#;
+
+        let app_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties">
+  <Application>LibreOffice</Application>
+  <Pages>12</Pages>
+  <Words>5000</Words>
+</Properties>"#;
+
+        let data = create_test_zip(&[
+            ("[Content_Types].xml", "<Types/>"),
+            ("docProps/core.xml", core_xml),
+            ("docProps/app.xml", app_xml),
+        ]);
+
+        let container = OoxmlContainer::from_bytes(data).unwrap();
+        let meta = container.parse_core_metadata().unwrap();
+
+        assert_eq!(meta.title.as_deref(), Some("My Document"));
+        assert_eq!(meta.author.as_deref(), Some("Jane Doe"));
+        assert_eq!(meta.last_modified_by.as_deref(), Some("John Smith"));
+        assert_eq!(meta.application.as_deref(), Some("LibreOffice"));
+        assert_eq!(meta.page_count, Some(12));
+        assert_eq!(meta.word_count, Some(5000));
+    }
+
+    #[test]
+    fn test_docx_metadata_with_app() {
+        let path = "test-files/file-sample_1MB.docx";
+        if std::path::Path::new(path).exists() {
+            let container = OoxmlContainer::open(path).unwrap();
+            let meta = container.parse_core_metadata().unwrap();
+
+            // Verify parse_core_metadata completes without error and
+            // enriches with app.xml data when available.
+            // The specific test file may not have all app.xml fields,
+            // so just verify no errors occur.
+            println!("Application: {:?}", meta.application);
+            println!("Page count: {:?}", meta.page_count);
+            println!("Word count: {:?}", meta.word_count);
+            println!("Last modified by: {:?}", meta.last_modified_by);
         }
     }
 }
