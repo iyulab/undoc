@@ -215,6 +215,9 @@ impl DocxParser {
         let mut table_xml = String::new();
         let mut in_paragraph = false;
         let mut table_depth: u32 = 0; // Track nested table depth
+        let mut in_sect_pr = false; // Track w:sectPr for header/footer references
+        let mut default_header_rid: Option<String> = None;
+        let mut default_footer_rid: Option<String> = None;
 
         loop {
             match reader.read_event_into(&mut buf) {
@@ -236,6 +239,9 @@ impl DocxParser {
                                 ));
                             }
                             paragraph_xml.push('>');
+                        }
+                        b"w:sectPr" if in_body && !in_paragraph && table_depth == 0 => {
+                            in_sect_pr = true;
                         }
                         b"w:tbl" if in_body => {
                             if table_depth == 0 {
@@ -273,7 +279,35 @@ impl DocxParser {
                     }
                 }
                 Ok(quick_xml::events::Event::Empty(ref e)) => {
-                    if in_paragraph {
+                    // Handle header/footer references inside w:sectPr
+                    if in_sect_pr {
+                        let name = e.name();
+                        match name.as_ref() {
+                            b"w:headerReference" | b"w:footerReference" => {
+                                let mut ref_type = String::new();
+                                let mut r_id = String::new();
+                                for attr in e.attributes().flatten() {
+                                    match attr.key.as_ref() {
+                                        b"w:type" => {
+                                            ref_type = String::from_utf8_lossy(&attr.value).to_string();
+                                        }
+                                        b"r:id" => {
+                                            r_id = String::from_utf8_lossy(&attr.value).to_string();
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                if ref_type == "default" && !r_id.is_empty() {
+                                    if name.as_ref() == b"w:headerReference" {
+                                        default_header_rid = Some(r_id);
+                                    } else {
+                                        default_footer_rid = Some(r_id);
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    } else if in_paragraph {
                         let name = e.name();
                         paragraph_xml.push('<');
                         paragraph_xml.push_str(&String::from_utf8_lossy(name.as_ref()));
@@ -313,6 +347,9 @@ impl DocxParser {
                     match name.as_ref() {
                         b"w:body" => {
                             in_body = false;
+                        }
+                        b"w:sectPr" if in_sect_pr => {
+                            in_sect_pr = false;
                         }
                         b"w:p" if in_paragraph && table_depth == 0 => {
                             paragraph_xml.push_str("</w:p>");
@@ -356,7 +393,31 @@ impl DocxParser {
             buf.clear();
         }
 
+        // Resolve and parse header/footer from sectPr references
+        if let Some(rid) = default_header_rid {
+            if let Some(paragraphs) = self.parse_header_footer_by_rid(&rid) {
+                if !paragraphs.is_empty() {
+                    section.header = Some(paragraphs);
+                }
+            }
+        }
+        if let Some(rid) = default_footer_rid {
+            if let Some(paragraphs) = self.parse_header_footer_by_rid(&rid) {
+                if !paragraphs.is_empty() {
+                    section.footer = Some(paragraphs);
+                }
+            }
+        }
+
         Ok(section)
+    }
+
+    /// Resolve a relationship ID to a header/footer XML path and parse its paragraphs.
+    fn parse_header_footer_by_rid(&self, rid: &str) -> Option<Vec<Paragraph>> {
+        let rel = self.relationships.get(rid)?;
+        let path = OoxmlContainer::resolve_path("word/document.xml", &rel.target);
+        let xml = self.container.read_xml(&path).ok()?;
+        Some(parse_header_footer_xml(&xml))
     }
 
     /// Parse a single paragraph element.
@@ -1285,6 +1346,65 @@ fn parse_notes_xml(xml: &str, note_tag: &[u8]) -> HashMap<String, String> {
     notes
 }
 
+/// Parse a header or footer XML file (w:hdr or w:ftr) into a list of paragraphs.
+///
+/// Header/footer XML has the same structure as the document body:
+/// `<w:hdr>` or `<w:ftr>` containing `<w:p>` paragraphs with `<w:r>` runs and `<w:t>` text.
+/// This function extracts plain text only (no styles or formatting).
+fn parse_header_footer_xml(xml: &str) -> Vec<Paragraph> {
+    let mut paragraphs = Vec::new();
+    let mut reader = quick_xml::Reader::from_str(xml);
+    reader.config_mut().trim_text(false);
+
+    let mut buf = Vec::new();
+    let mut in_paragraph = false;
+    let mut in_text = false;
+    let mut current_text = String::new();
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(quick_xml::events::Event::Start(ref e)) => match e.name().as_ref() {
+                b"w:p" => {
+                    in_paragraph = true;
+                    current_text.clear();
+                }
+                b"w:t" if in_paragraph => {
+                    in_text = true;
+                }
+                _ => {}
+            },
+            Ok(quick_xml::events::Event::Text(ref e)) => {
+                if in_paragraph && in_text {
+                    if let Ok(text) = e.unescape() {
+                        current_text.push_str(&text);
+                    }
+                }
+            }
+            Ok(quick_xml::events::Event::End(ref e)) => match e.name().as_ref() {
+                b"w:p" => {
+                    if in_paragraph {
+                        let trimmed = current_text.trim().to_string();
+                        if !trimmed.is_empty() {
+                            paragraphs.push(Paragraph::with_text(trimmed));
+                        }
+                        in_paragraph = false;
+                    }
+                }
+                b"w:t" => {
+                    in_text = false;
+                }
+                _ => {}
+            },
+            Ok(quick_xml::events::Event::Eof) => break,
+            Err(_) => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+
+    paragraphs
+}
+
 /// Helper to get a boolean attribute value.
 fn get_bool_attr(e: &quick_xml::events::BytesStart, key: &[u8]) -> Option<bool> {
     for attr in e.attributes().flatten() {
@@ -1951,5 +2071,66 @@ mod tests {
         let notes = parse_notes_xml(xml, b"w:footnote");
         assert!(!notes.contains_key("1"), "Whitespace-only note should be skipped");
         assert_eq!(notes.get("2").unwrap(), "Real content.");
+    }
+
+    #[test]
+    fn test_parse_header_footer_xml_basic() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+        <w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+            <w:p>
+                <w:r><w:t>Company Name</w:t></w:r>
+            </w:p>
+            <w:p>
+                <w:r><w:t>Confidential</w:t></w:r>
+            </w:p>
+        </w:hdr>"#;
+
+        let paragraphs = parse_header_footer_xml(xml);
+        assert_eq!(paragraphs.len(), 2);
+        assert_eq!(paragraphs[0].plain_text(), "Company Name");
+        assert_eq!(paragraphs[1].plain_text(), "Confidential");
+    }
+
+    #[test]
+    fn test_parse_header_footer_xml_empty_paragraphs_skipped() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+        <w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+            <w:p></w:p>
+            <w:p>
+                <w:r><w:t>Page 1</w:t></w:r>
+            </w:p>
+            <w:p>
+                <w:r><w:t>   </w:t></w:r>
+            </w:p>
+        </w:ftr>"#;
+
+        let paragraphs = parse_header_footer_xml(xml);
+        assert_eq!(paragraphs.len(), 1);
+        assert_eq!(paragraphs[0].plain_text(), "Page 1");
+    }
+
+    #[test]
+    fn test_parse_header_footer_xml_multiple_runs() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+        <w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+            <w:p>
+                <w:r><w:t>Draft - </w:t></w:r>
+                <w:r><w:t>Do Not Distribute</w:t></w:r>
+            </w:p>
+        </w:hdr>"#;
+
+        let paragraphs = parse_header_footer_xml(xml);
+        assert_eq!(paragraphs.len(), 1);
+        assert_eq!(paragraphs[0].plain_text(), "Draft - Do Not Distribute");
+    }
+
+    #[test]
+    fn test_parse_header_footer_xml_empty() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+        <w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+        </w:hdr>"#;
+
+        let paragraphs = parse_header_footer_xml(xml);
+        assert!(paragraphs.is_empty());
     }
 }
