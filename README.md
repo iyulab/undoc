@@ -18,7 +18,8 @@ A high-performance Rust library for extracting content from Microsoft Office doc
 - **Table cell alignment**: Proper left/center/right alignment in Markdown
 - **PPTX table extraction**: Full table parsing from PowerPoint slides
 - **CJK text support**: Smart spacing for Korean, Chinese, Japanese content
-- **Asset extraction**: Images, charts, and embedded media with resolved paths
+- **Asset extraction**: Images, charts, and embedded media with resolved paths (XLSX drawings included)
+- **Rich content**: Footnotes/endnotes, headers/footers, text boxes, cell comments, hyperlinks
 - **Text cleanup**: Multiple presets for LLM training data preparation
 - **Self-update**: Built-in update mechanism via GitHub releases
 - **C-ABI FFI**: Native library for C#, Python, and other languages
@@ -447,9 +448,11 @@ Structured Markdown with preserved formatting:
 - **Headings**: Document headings → `#`, `##`, `###`
 - **Lists**: Ordered and unordered with nesting
 - **Tables**: Markdown tables (with HTML/ASCII fallback for complex layouts)
-- **Inline styles**: Bold (`**`), italic (`*`), underline, strikethrough
-- **Hyperlinks**: Preserved as Markdown links
-- **Images**: Reference-style image links
+- **Inline styles**: Bold (`**`), italic (`*`), underline (`<u>`), strikethrough, superscript/subscript
+- **Hyperlinks**: Preserved as Markdown links (DOCX, XLSX, PPTX)
+- **Images**: Linked image references from document drawings
+- **Footnotes**: Markdown reference-style (`[^N]` / `[^N]: text`)
+- **Headers/Footers**: Rendered as blockquotes
 
 ### Plain Text
 
