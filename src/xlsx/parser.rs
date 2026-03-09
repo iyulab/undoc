@@ -412,9 +412,7 @@ impl XlsxParser {
                     match e.name().as_ref() {
                         b"row" => {
                             if let Some(row) = current_row.take() {
-                                if !row.cells.is_empty() {
-                                    table.add_row(row);
-                                }
+                                table.add_row(row);
                             }
                             in_row = false;
                             is_first_row = false;
@@ -490,6 +488,15 @@ impl XlsxParser {
                 _ => {}
             }
             buf.clear();
+        }
+
+        // Trim trailing empty rows to avoid bloat
+        while table
+            .rows
+            .last()
+            .is_some_and(|r| r.cells.is_empty() || r.cells.iter().all(|c| c.plain_text().is_empty()))
+        {
+            table.rows.pop();
         }
 
         Ok(table)
