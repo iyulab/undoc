@@ -214,6 +214,7 @@ impl DocxParser {
         let mut paragraph_xml = String::new();
         let mut table_xml = String::new();
         let mut in_paragraph = false;
+        let mut para_depth: u32 = 0; // Track nested w:p depth (for text boxes)
         let mut table_depth: u32 = 0; // Track nested table depth
         let mut in_sect_pr = false; // Track w:sectPr for header/footer references
         let mut default_header_rid: Option<String> = None;
@@ -227,7 +228,7 @@ impl DocxParser {
                         b"w:body" => {
                             in_body = true;
                         }
-                        b"w:p" if in_body && table_depth == 0 => {
+                        b"w:p" if in_body && table_depth == 0 && !in_paragraph => {
                             in_paragraph = true;
                             paragraph_xml.clear();
                             paragraph_xml.push_str("<w:p");
@@ -253,6 +254,10 @@ impl DocxParser {
                         }
                         _ => {
                             if in_paragraph {
+                                // Track nested w:p depth for text boxes
+                                if name.as_ref() == b"w:p" {
+                                    para_depth += 1;
+                                }
                                 paragraph_xml.push('<');
                                 paragraph_xml.push_str(&String::from_utf8_lossy(name.as_ref()));
                                 for attr in e.attributes().flatten() {
@@ -351,10 +356,17 @@ impl DocxParser {
                         b"w:sectPr" if in_sect_pr => {
                             in_sect_pr = false;
                         }
-                        b"w:p" if in_paragraph && table_depth == 0 => {
+                        b"w:p" if in_paragraph && table_depth == 0 && para_depth == 0 => {
                             paragraph_xml.push_str("</w:p>");
+                            // Extract text box paragraphs before parsing the main paragraph
+                            let textbox_paras =
+                                self.extract_textbox_paragraphs(&paragraph_xml);
                             if let Ok(para) = self.parse_paragraph(&paragraph_xml) {
                                 section.add_block(Block::Paragraph(para));
+                            }
+                            // Add text box paragraphs as separate blocks
+                            for tb_para in textbox_paras {
+                                section.add_block(Block::Paragraph(tb_para));
                             }
                             in_paragraph = false;
                         }
@@ -370,6 +382,10 @@ impl DocxParser {
                         }
                         _ => {
                             if in_paragraph {
+                                // Track nested w:p depth for text boxes
+                                if name.as_ref() == b"w:p" {
+                                    para_depth = para_depth.saturating_sub(1);
+                                }
                                 paragraph_xml.push_str("</");
                                 paragraph_xml.push_str(&String::from_utf8_lossy(name.as_ref()));
                                 paragraph_xml.push('>');
@@ -438,6 +454,8 @@ impl DocxParser {
         let mut in_drawing = false; // Track w:drawing elements for images
         let mut in_ins = false; // Track w:ins elements (tracked changes - insertions)
         let mut in_del = false; // Track w:del elements (tracked changes - deletions)
+        let mut txbx_content_depth: u32 = 0; // Track w:txbxContent nesting (suppress text capture)
+        let mut mc_fallback_depth: u32 = 0; // Track mc:Fallback nesting (skip entirely)
         let mut current_style = TextStyle::default();
         let mut current_hyperlink: Option<String> = None;
         let mut current_image_alt: Option<String> = None;
@@ -445,6 +463,16 @@ impl DocxParser {
         loop {
             match reader.read_event_into(&mut buf) {
                 Ok(quick_xml::events::Event::Start(ref e)) => match e.name().as_ref() {
+                    // Skip mc:Fallback branches to avoid duplicating text box content
+                    b"mc:Fallback" => {
+                        mc_fallback_depth += 1;
+                    }
+                    // Track w:txbxContent to suppress text capture (extracted separately)
+                    b"w:txbxContent" if mc_fallback_depth == 0 => {
+                        txbx_content_depth += 1;
+                    }
+                    _ if mc_fallback_depth > 0 => {} // Skip everything inside mc:Fallback
+                    _ if txbx_content_depth > 0 => {} // Skip everything inside w:txbxContent
                     b"w:pPr" => in_ppr = true,
                     b"w:rPr" => in_rpr = true,
                     b"w:r" => {
@@ -474,6 +502,7 @@ impl DocxParser {
                     _ => {}
                 },
                 Ok(quick_xml::events::Event::Empty(ref e)) => match e.name().as_ref() {
+                    _ if mc_fallback_depth > 0 || txbx_content_depth > 0 => {} // Skip
                     b"w:pStyle" if in_ppr => {
                         for attr in e.attributes().flatten() {
                             if attr.key.as_ref() == b"w:val" {
@@ -766,7 +795,8 @@ impl DocxParser {
                 },
                 Ok(quick_xml::events::Event::Text(ref e)) => {
                     // Only extract text from w:t elements, skip w:instrText (field codes)
-                    if in_run && in_text && !in_instr_text {
+                    // Also skip text inside mc:Fallback and w:txbxContent (extracted separately)
+                    if in_run && in_text && !in_instr_text && mc_fallback_depth == 0 && txbx_content_depth == 0 {
                         let text = e.unescape().unwrap_or_default().to_string();
                         if !text.is_empty() {
                             let current_revision = if in_del {
@@ -789,6 +819,13 @@ impl DocxParser {
                     }
                 }
                 Ok(quick_xml::events::Event::End(ref e)) => match e.name().as_ref() {
+                    b"mc:Fallback" if mc_fallback_depth > 0 => {
+                        mc_fallback_depth -= 1;
+                    }
+                    b"w:txbxContent" if txbx_content_depth > 0 => {
+                        txbx_content_depth -= 1;
+                    }
+                    _ if mc_fallback_depth > 0 || txbx_content_depth > 0 => {} // Skip
                     b"w:pPr" => in_ppr = false,
                     b"w:rPr" => in_rpr = false,
                     b"w:r" => in_run = false,
@@ -814,6 +851,125 @@ impl DocxParser {
         para.list_info = self.parse_list_info(xml);
 
         Ok(para)
+    }
+
+    /// Extract paragraphs from `w:txbxContent` elements (text boxes/shapes).
+    ///
+    /// Text boxes in DOCX appear inside `w:drawing` or `mc:AlternateContent` elements.
+    /// This method finds all `w:txbxContent` sections (skipping those inside `mc:Fallback`
+    /// to avoid duplication) and parses the inner `<w:p>` elements as regular paragraphs.
+    fn extract_textbox_paragraphs(&mut self, xml: &str) -> Vec<Paragraph> {
+        let mut paragraphs = Vec::new();
+        let mut reader = quick_xml::Reader::from_str(xml);
+        reader.config_mut().trim_text(false);
+
+        let mut buf = Vec::new();
+        let mut mc_fallback_depth: u32 = 0;
+        let mut txbx_content_depth: u32 = 0;
+        let mut in_txbx_para = false;
+        let mut txbx_para_xml = String::new();
+        let mut txbx_para_depth: u32 = 0; // Track nested elements inside the text box <w:p>
+
+        loop {
+            match reader.read_event_into(&mut buf) {
+                Ok(quick_xml::events::Event::Start(ref e)) => {
+                    let name = e.name();
+                    match name.as_ref() {
+                        b"mc:Fallback" => {
+                            mc_fallback_depth += 1;
+                        }
+                        b"w:txbxContent" if mc_fallback_depth == 0 => {
+                            txbx_content_depth += 1;
+                        }
+                        b"w:p" if txbx_content_depth > 0 && !in_txbx_para => {
+                            in_txbx_para = true;
+                            txbx_para_depth = 0;
+                            txbx_para_xml.clear();
+                            txbx_para_xml.push_str("<w:p");
+                            for attr in e.attributes().flatten() {
+                                txbx_para_xml.push_str(&format!(
+                                    " {}=\"{}\"",
+                                    String::from_utf8_lossy(attr.key.as_ref()),
+                                    String::from_utf8_lossy(&attr.value)
+                                ));
+                            }
+                            txbx_para_xml.push('>');
+                        }
+                        _ if in_txbx_para => {
+                            txbx_para_depth += 1;
+                            txbx_para_xml.push('<');
+                            txbx_para_xml
+                                .push_str(&String::from_utf8_lossy(name.as_ref()));
+                            for attr in e.attributes().flatten() {
+                                txbx_para_xml.push_str(&format!(
+                                    " {}=\"{}\"",
+                                    String::from_utf8_lossy(attr.key.as_ref()),
+                                    String::from_utf8_lossy(&attr.value)
+                                ));
+                            }
+                            txbx_para_xml.push('>');
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(quick_xml::events::Event::Empty(ref e)) => {
+                    if in_txbx_para {
+                        let name = e.name();
+                        txbx_para_xml.push('<');
+                        txbx_para_xml
+                            .push_str(&String::from_utf8_lossy(name.as_ref()));
+                        for attr in e.attributes().flatten() {
+                            txbx_para_xml.push_str(&format!(
+                                " {}=\"{}\"",
+                                String::from_utf8_lossy(attr.key.as_ref()),
+                                String::from_utf8_lossy(&attr.value)
+                            ));
+                        }
+                        txbx_para_xml.push_str("/>");
+                    }
+                }
+                Ok(quick_xml::events::Event::Text(ref e)) => {
+                    if in_txbx_para {
+                        let text = e.unescape().unwrap_or_default();
+                        txbx_para_xml.push_str(&escape_xml(&text));
+                    }
+                }
+                Ok(quick_xml::events::Event::End(ref e)) => {
+                    let name = e.name();
+                    match name.as_ref() {
+                        b"mc:Fallback" if mc_fallback_depth > 0 => {
+                            mc_fallback_depth -= 1;
+                        }
+                        b"w:txbxContent" if txbx_content_depth > 0 => {
+                            txbx_content_depth -= 1;
+                        }
+                        b"w:p" if in_txbx_para && txbx_para_depth == 0 => {
+                            txbx_para_xml.push_str("</w:p>");
+                            if let Ok(para) = self.parse_paragraph(&txbx_para_xml) {
+                                if !para.plain_text().is_empty() {
+                                    paragraphs.push(para);
+                                }
+                            }
+                            in_txbx_para = false;
+                        }
+                        _ if in_txbx_para => {
+                            txbx_para_depth = txbx_para_depth.saturating_sub(1);
+                            txbx_para_xml.push_str("</");
+                            txbx_para_xml
+                                .push_str(&String::from_utf8_lossy(name.as_ref()));
+                            txbx_para_xml.push('>');
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(quick_xml::events::Event::Eof) => break,
+                Err(_) => break,
+                _ => {}
+            }
+            buf.clear();
+        }
+
+        paragraphs
     }
 
     /// Parse list info from paragraph XML.
@@ -2132,5 +2288,195 @@ mod tests {
 
         let paragraphs = parse_header_footer_xml(xml);
         assert!(paragraphs.is_empty());
+    }
+
+    // =========================================================================
+    // Text Box Content Extraction Tests (w:txbxContent)
+    // =========================================================================
+
+    /// Helper to create a minimal DOCX in memory with given document.xml content.
+    fn create_minimal_docx(document_xml: &str) -> Vec<u8> {
+        use std::io::{Cursor, Write};
+        let buf = Cursor::new(Vec::new());
+        let mut zip = zip::ZipWriter::new(buf);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+
+        // [Content_Types].xml
+        zip.start_file("[Content_Types].xml", options).unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>"#).unwrap();
+
+        // _rels/.rels
+        zip.start_file("_rels/.rels", options).unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>"#).unwrap();
+
+        // word/_rels/document.xml.rels
+        zip.start_file("word/_rels/document.xml.rels", options)
+            .unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+</Relationships>"#).unwrap();
+
+        // word/document.xml
+        zip.start_file("word/document.xml", options).unwrap();
+        zip.write_all(document_xml.as_bytes()).unwrap();
+
+        zip.finish().unwrap().into_inner()
+    }
+
+    #[test]
+    fn test_textbox_content_extracted() {
+        // Text box via w:drawing > wps:txbx > w:txbxContent
+        let doc_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+            xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
+  <w:body>
+    <w:p>
+      <w:r>
+        <w:t>Normal paragraph</w:t>
+      </w:r>
+    </w:p>
+    <w:p>
+      <w:r>
+        <w:drawing>
+          <wps:wsp>
+            <wps:txbx>
+              <w:txbxContent>
+                <w:p>
+                  <w:r><w:t>Text box content here</w:t></w:r>
+                </w:p>
+              </w:txbxContent>
+            </wps:txbx>
+          </wps:wsp>
+        </w:drawing>
+      </w:r>
+    </w:p>
+  </w:body>
+</w:document>"#;
+
+        let data = create_minimal_docx(doc_xml);
+        let mut parser = DocxParser::from_bytes(data).unwrap();
+        let doc = parser.parse().unwrap();
+        let text = doc.plain_text();
+
+        assert!(
+            text.contains("Normal paragraph"),
+            "Should contain normal paragraph text"
+        );
+        assert!(
+            text.contains("Text box content here"),
+            "Should contain text box content, got: {}",
+            text
+        );
+    }
+
+    #[test]
+    fn test_textbox_mc_alternate_content_no_duplication() {
+        // mc:AlternateContent with text box in both Choice and Fallback
+        // Should only extract once (from Choice branch)
+        let doc_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+            xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+            xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"
+            xmlns:v="urn:schemas-microsoft-com:vml">
+  <w:body>
+    <w:p>
+      <w:r>
+        <mc:AlternateContent>
+          <mc:Choice>
+            <w:drawing>
+              <wps:wsp>
+                <wps:txbx>
+                  <w:txbxContent>
+                    <w:p>
+                      <w:r><w:t>Unique text box</w:t></w:r>
+                    </w:p>
+                  </w:txbxContent>
+                </wps:txbx>
+              </wps:wsp>
+            </w:drawing>
+          </mc:Choice>
+          <mc:Fallback>
+            <w:pict>
+              <v:shape>
+                <v:textbox>
+                  <w:txbxContent>
+                    <w:p>
+                      <w:r><w:t>Unique text box</w:t></w:r>
+                    </w:p>
+                  </w:txbxContent>
+                </v:textbox>
+              </v:shape>
+            </w:pict>
+          </mc:Fallback>
+        </mc:AlternateContent>
+      </w:r>
+    </w:p>
+  </w:body>
+</w:document>"#;
+
+        let data = create_minimal_docx(doc_xml);
+        let mut parser = DocxParser::from_bytes(data).unwrap();
+        let doc = parser.parse().unwrap();
+        let text = doc.plain_text();
+
+        // Count occurrences - should appear exactly once
+        let count = text.matches("Unique text box").count();
+        assert_eq!(
+            count, 1,
+            "Text box content should appear exactly once, not duplicated. Full text: {}",
+            text
+        );
+    }
+
+    #[test]
+    fn test_textbox_multiple_paragraphs() {
+        // Text box with multiple paragraphs
+        let doc_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+            xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
+  <w:body>
+    <w:p>
+      <w:r>
+        <w:drawing>
+          <wps:wsp>
+            <wps:txbx>
+              <w:txbxContent>
+                <w:p>
+                  <w:r><w:t>First text box paragraph</w:t></w:r>
+                </w:p>
+                <w:p>
+                  <w:r><w:t>Second text box paragraph</w:t></w:r>
+                </w:p>
+              </w:txbxContent>
+            </wps:txbx>
+          </wps:wsp>
+        </w:drawing>
+      </w:r>
+    </w:p>
+  </w:body>
+</w:document>"#;
+
+        let data = create_minimal_docx(doc_xml);
+        let mut parser = DocxParser::from_bytes(data).unwrap();
+        let doc = parser.parse().unwrap();
+        let text = doc.plain_text();
+
+        assert!(
+            text.contains("First text box paragraph"),
+            "Should contain first text box paragraph"
+        );
+        assert!(
+            text.contains("Second text box paragraph"),
+            "Should contain second text box paragraph"
+        );
     }
 }
