@@ -195,18 +195,28 @@ impl XlsxParser {
                 };
 
                 if let Ok(xml) = self.container.read_xml(&sheet_path) {
-                    // Parse sheet-level relationships for hyperlinks
+                    // Parse sheet-level relationships for hyperlinks and comments
                     let rels_path = Self::rels_path_for(&sheet_path);
-                    let hyperlink_map = if let Ok(rels_xml) =
+                    let sheet_dir = sheet_path.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
+                    let (hyperlink_map, comment_map) = if let Ok(rels_xml) =
                         self.container.read_xml(&rels_path)
                     {
                         let sheet_rels = Self::parse_relationships(&rels_xml);
-                        Self::parse_hyperlinks(&xml, &sheet_rels)
+                        let hlinks = Self::parse_hyperlinks(&xml, &sheet_rels);
+
+                        // Find comments relationship and parse comments XML
+                        let comments = Self::find_and_parse_comments(
+                            &self.container,
+                            &sheet_rels,
+                            sheet_dir,
+                        );
+
+                        (hlinks, comments)
                     } else {
-                        HashMap::new()
+                        (HashMap::new(), HashMap::new())
                     };
 
-                    if let Ok(table) = self.parse_sheet(&xml, &hyperlink_map) {
+                    if let Ok(table) = self.parse_sheet(&xml, &hyperlink_map, &comment_map) {
                         section.add_block(Block::Table(table));
                     }
 
@@ -313,7 +323,15 @@ impl XlsxParser {
     ///
     /// `hyperlink_map` maps uppercase cell references (e.g. "A1") to URLs.
     /// When a cell matches, all its TextRuns get the hyperlink URL set.
-    fn parse_sheet(&self, xml: &str, hyperlink_map: &HashMap<String, String>) -> Result<Table> {
+    ///
+    /// `comment_map` maps uppercase cell references (e.g. "A1") to comment text.
+    /// When a cell matches, the comment is appended as an italic TextRun.
+    fn parse_sheet(
+        &self,
+        xml: &str,
+        hyperlink_map: &HashMap<String, String>,
+        comment_map: &HashMap<String, String>,
+    ) -> Result<Table> {
         // First pass: parse merge cells
         let merge_map = Self::parse_merge_cells(xml);
 
@@ -427,9 +445,22 @@ impl XlsxParser {
                                 text_run.hyperlink = Some(url);
                             }
 
+                            let mut runs = vec![text_run];
+
+                            // Append comment as an italic TextRun if present
+                            if let Some(comment_text) = current_cell_ref
+                                .as_ref()
+                                .and_then(|r| comment_map.get(r))
+                            {
+                                let mut comment_run =
+                                    TextRun::plain(&format!(" [Comment: {}]", comment_text));
+                                comment_run.style.italic = true;
+                                runs.push(comment_run);
+                            }
+
                             let cell = Cell {
                                 content: vec![Paragraph {
-                                    runs: vec![text_run],
+                                    runs,
                                     ..Default::default()
                                 }],
                                 nested_tables: Vec::new(),
@@ -589,6 +620,113 @@ impl XlsxParser {
                 }
             }
         }
+    }
+
+    /// Parse comments XML and return a map of uppercase cell reference to comment text.
+    ///
+    /// The XML structure is:
+    /// ```xml
+    /// <comments>
+    ///   <commentList>
+    ///     <comment ref="A1" authorId="0">
+    ///       <text><r><t>Comment text</t></r></text>
+    ///     </comment>
+    ///   </commentList>
+    /// </comments>
+    /// ```
+    fn parse_comments_xml(xml: &str) -> HashMap<String, String> {
+        let mut comments = HashMap::new();
+        let mut reader = quick_xml::Reader::from_str(xml);
+        reader.config_mut().trim_text(true);
+        let mut buf = Vec::new();
+
+        let mut in_comment = false;
+        let mut in_text = false;
+        let mut in_t = false;
+        let mut current_ref = String::new();
+        let mut current_text = String::new();
+
+        loop {
+            match reader.read_event_into(&mut buf) {
+                Ok(quick_xml::events::Event::Start(ref e)) => {
+                    let local = e.name().local_name();
+                    match local.as_ref() {
+                        b"comment" => {
+                            in_comment = true;
+                            current_ref.clear();
+                            current_text.clear();
+                            for attr in e.attributes().flatten() {
+                                if attr.key.as_ref() == b"ref" {
+                                    current_ref =
+                                        String::from_utf8_lossy(&attr.value).to_uppercase();
+                                }
+                            }
+                        }
+                        b"text" if in_comment => {
+                            in_text = true;
+                        }
+                        b"t" if in_text => {
+                            in_t = true;
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(quick_xml::events::Event::Text(ref e)) => {
+                    if in_t {
+                        let text = e.unescape().unwrap_or_default();
+                        if !current_text.is_empty() {
+                            current_text.push(' ');
+                        }
+                        current_text.push_str(&text);
+                    }
+                }
+                Ok(quick_xml::events::Event::End(ref e)) => {
+                    let local = e.name().local_name();
+                    match local.as_ref() {
+                        b"comment" => {
+                            if !current_ref.is_empty() && !current_text.is_empty() {
+                                comments.insert(current_ref.clone(), current_text.clone());
+                            }
+                            in_comment = false;
+                            in_text = false;
+                            in_t = false;
+                        }
+                        b"text" => {
+                            in_text = false;
+                        }
+                        b"t" => {
+                            in_t = false;
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(quick_xml::events::Event::Eof) => break,
+                Err(_) => break,
+                _ => {}
+            }
+            buf.clear();
+        }
+
+        comments
+    }
+
+    /// Find the comments file for a sheet via its relationships, read it, and parse.
+    fn find_and_parse_comments(
+        container: &OoxmlContainer,
+        sheet_rels: &HashMap<String, (String, String)>,
+        sheet_dir: &str,
+    ) -> HashMap<String, String> {
+        // Look for a relationship whose type contains "comments"
+        for (rel_type, target) in sheet_rels.values() {
+            if !rel_type.contains("comments") {
+                continue;
+            }
+            let comments_path = Self::resolve_relative_path(sheet_dir, target);
+            if let Ok(comments_xml) = container.read_xml(&comments_path) {
+                return Self::parse_comments_xml(&comments_xml);
+            }
+        }
+        HashMap::new()
     }
 
     /// Parse drawing images linked to a sheet.
@@ -1354,5 +1492,105 @@ mod tests {
         let sheet_rels = XlsxParser::parse_relationships(rels_xml);
         let hyperlinks = XlsxParser::parse_hyperlinks(sheet_xml, &sheet_rels);
         assert!(hyperlinks.is_empty());
+    }
+
+    #[test]
+    fn test_parse_comments_xml_basic() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+            <comments xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+                <authors>
+                    <author>John Doe</author>
+                </authors>
+                <commentList>
+                    <comment ref="A1" authorId="0">
+                        <text>
+                            <r><t>This is a comment</t></r>
+                        </text>
+                    </comment>
+                    <comment ref="B5" authorId="0">
+                        <text>
+                            <r><t>Another comment</t></r>
+                        </text>
+                    </comment>
+                </commentList>
+            </comments>"#;
+
+        let comments = XlsxParser::parse_comments_xml(xml);
+        assert_eq!(comments.len(), 2);
+        assert_eq!(comments.get("A1").unwrap(), "This is a comment");
+        assert_eq!(comments.get("B5").unwrap(), "Another comment");
+    }
+
+    #[test]
+    fn test_parse_comments_xml_multiple_runs() {
+        // Comment with multiple <r><t>...</t></r> runs should concatenate text
+        let xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+            <comments xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+                <authors><author>Author</author></authors>
+                <commentList>
+                    <comment ref="C3" authorId="0">
+                        <text>
+                            <r><t>First part</t></r>
+                            <r><t>Second part</t></r>
+                        </text>
+                    </comment>
+                </commentList>
+            </comments>"#;
+
+        let comments = XlsxParser::parse_comments_xml(xml);
+        assert_eq!(comments.len(), 1);
+        assert_eq!(comments.get("C3").unwrap(), "First part Second part");
+    }
+
+    #[test]
+    fn test_parse_comments_xml_empty() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+            <comments xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+                <authors><author>Author</author></authors>
+                <commentList/>
+            </comments>"#;
+
+        let comments = XlsxParser::parse_comments_xml(xml);
+        assert!(comments.is_empty());
+    }
+
+    #[test]
+    fn test_parse_comments_xml_case_insensitive_ref() {
+        // Cell ref should be uppercased
+        let xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+            <comments xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+                <authors><author>Author</author></authors>
+                <commentList>
+                    <comment ref="a1" authorId="0">
+                        <text><r><t>Lowercase ref</t></r></text>
+                    </comment>
+                </commentList>
+            </comments>"#;
+
+        let comments = XlsxParser::parse_comments_xml(xml);
+        assert_eq!(comments.len(), 1);
+        assert!(comments.contains_key("A1"));
+        assert_eq!(comments.get("A1").unwrap(), "Lowercase ref");
+    }
+
+    #[test]
+    fn test_find_and_parse_comments_resolves_path() {
+        // Verify find_and_parse_comments looks for "comments" in relationship types
+        let rels_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+            <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+                <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing1.xml"/>
+                <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" Target="../comments1.xml"/>
+            </Relationships>"#;
+
+        let sheet_rels = XlsxParser::parse_relationships(rels_xml);
+
+        // Verify the relationship is correctly identified as comments type
+        let (rel_type, target) = sheet_rels.get("rId2").unwrap();
+        assert!(rel_type.contains("comments"));
+        assert_eq!(target, "../comments1.xml");
+
+        // Verify path resolution
+        let resolved = XlsxParser::resolve_relative_path("xl/worksheets", target);
+        assert_eq!(resolved, "xl/comments1.xml");
     }
 }
