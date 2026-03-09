@@ -238,7 +238,6 @@ impl PptxParser {
                         if e.name().as_ref() == b"Relationship" {
                             let mut id = String::new();
                             let mut target = String::new();
-                            let mut rel_type = String::new();
 
                             for attr in e.attributes().flatten() {
                                 match attr.key.as_ref() {
@@ -248,20 +247,12 @@ impl PptxParser {
                                     b"Target" => {
                                         target = String::from_utf8_lossy(&attr.value).to_string();
                                     }
-                                    b"Type" => {
-                                        rel_type = String::from_utf8_lossy(&attr.value).to_string();
-                                    }
                                     _ => {}
                                 }
                             }
 
-                            // Store hyperlinks, image, and chart relationships
-                            if !id.is_empty()
-                                && !target.is_empty()
-                                && (rel_type.contains("hyperlink")
-                                    || rel_type.contains("image")
-                                    || rel_type.contains("chart"))
-                            {
+                            // Store all relationships (consumers filter by type as needed)
+                            if !id.is_empty() && !target.is_empty() {
                                 rels.insert(id, target);
                             }
                         }
