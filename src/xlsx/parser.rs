@@ -451,7 +451,7 @@ impl XlsxParser {
                                 .and_then(|r| comment_map.get(r))
                             {
                                 let mut comment_run =
-                                    TextRun::plain(&format!(" [Comment: {}]", comment_text));
+                                    TextRun::plain(format!(" [Comment: {}]", comment_text));
                                 comment_run.style.italic = true;
                                 runs.push(comment_run);
                             }
