@@ -195,7 +195,18 @@ impl XlsxParser {
                 };
 
                 if let Ok(xml) = self.container.read_xml(&sheet_path) {
-                    if let Ok(table) = self.parse_sheet(&xml) {
+                    // Parse sheet-level relationships for hyperlinks
+                    let rels_path = Self::rels_path_for(&sheet_path);
+                    let hyperlink_map = if let Ok(rels_xml) =
+                        self.container.read_xml(&rels_path)
+                    {
+                        let sheet_rels = Self::parse_relationships(&rels_xml);
+                        Self::parse_hyperlinks(&xml, &sheet_rels)
+                    } else {
+                        HashMap::new()
+                    };
+
+                    if let Ok(table) = self.parse_sheet(&xml, &hyperlink_map) {
                         section.add_block(Block::Table(table));
                     }
 
@@ -299,7 +310,10 @@ impl XlsxParser {
     }
 
     /// Parse a worksheet XML into a table.
-    fn parse_sheet(&self, xml: &str) -> Result<Table> {
+    ///
+    /// `hyperlink_map` maps uppercase cell references (e.g. "A1") to URLs.
+    /// When a cell matches, all its TextRuns get the hyperlink URL set.
+    fn parse_sheet(&self, xml: &str, hyperlink_map: &HashMap<String, String>) -> Result<Table> {
         // First pass: parse merge cells
         let merge_map = Self::parse_merge_cells(xml);
 
@@ -402,9 +416,20 @@ impl XlsxParser {
                                 .copied()
                                 .unwrap_or((1, 1));
 
+                            // Check if this cell has a hyperlink
+                            let hyperlink_url = current_cell_ref
+                                .as_ref()
+                                .and_then(|r| hyperlink_map.get(r))
+                                .cloned();
+
+                            let mut text_run = TextRun::plain(&value);
+                            if let Some(url) = hyperlink_url {
+                                text_run.hyperlink = Some(url);
+                            }
+
                             let cell = Cell {
                                 content: vec![Paragraph {
-                                    runs: vec![TextRun::plain(&value)],
+                                    runs: vec![text_run],
                                     ..Default::default()
                                 }],
                                 nested_tables: Vec::new(),
@@ -486,6 +511,82 @@ impl XlsxParser {
                     }
                 }
                 value.to_string()
+            }
+        }
+    }
+
+    /// Parse `<hyperlinks>` section from worksheet XML and resolve URLs via sheet rels.
+    ///
+    /// Returns a map of uppercase cell reference (e.g. "A1") to URL string.
+    fn parse_hyperlinks(
+        xml: &str,
+        sheet_rels: &HashMap<String, (String, String)>,
+    ) -> HashMap<String, String> {
+        let mut hyperlinks = HashMap::new();
+        let mut reader = quick_xml::Reader::from_str(xml);
+        reader.config_mut().trim_text(true);
+        let mut buf = Vec::new();
+        let mut in_hyperlinks = false;
+
+        loop {
+            match reader.read_event_into(&mut buf) {
+                Ok(quick_xml::events::Event::Start(ref e)) => {
+                    match e.name().as_ref() {
+                        b"hyperlinks" => {
+                            in_hyperlinks = true;
+                        }
+                        b"hyperlink" if in_hyperlinks => {
+                            Self::collect_hyperlink_attrs(e, sheet_rels, &mut hyperlinks);
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(quick_xml::events::Event::Empty(ref e))
+                    if in_hyperlinks && e.name().as_ref() == b"hyperlink" =>
+                {
+                    Self::collect_hyperlink_attrs(e, sheet_rels, &mut hyperlinks);
+                }
+                Ok(quick_xml::events::Event::End(ref e)) => {
+                    if e.name().as_ref() == b"hyperlinks" {
+                        break; // Done with hyperlinks section
+                    }
+                }
+                Ok(quick_xml::events::Event::Eof) => break,
+                Err(_) => break,
+                _ => {}
+            }
+            buf.clear();
+        }
+
+        hyperlinks
+    }
+
+    /// Extract cell ref and r:id from a `<hyperlink>` element and insert into map.
+    fn collect_hyperlink_attrs(
+        e: &quick_xml::events::BytesStart<'_>,
+        sheet_rels: &HashMap<String, (String, String)>,
+        hyperlinks: &mut HashMap<String, String>,
+    ) {
+        let mut cell_ref = String::new();
+        let mut r_id = String::new();
+
+        for attr in e.attributes().flatten() {
+            match attr.key.as_ref() {
+                b"ref" => {
+                    cell_ref = String::from_utf8_lossy(&attr.value).to_uppercase();
+                }
+                b"r:id" => {
+                    r_id = String::from_utf8_lossy(&attr.value).to_string();
+                }
+                _ => {}
+            }
+        }
+
+        if !cell_ref.is_empty() && !r_id.is_empty() {
+            if let Some((rel_type, target)) = sheet_rels.get(&r_id) {
+                if rel_type.contains("hyperlink") {
+                    hyperlinks.insert(cell_ref, target.clone());
+                }
             }
         }
     }
@@ -1182,5 +1283,76 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_parse_hyperlinks() {
+        let sheet_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+            <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+                       xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+                <sheetData>
+                    <row r="1">
+                        <c r="A1" t="s"><v>0</v></c>
+                        <c r="B1" t="s"><v>1</v></c>
+                    </row>
+                </sheetData>
+                <hyperlinks>
+                    <hyperlink ref="A1" r:id="rId1"/>
+                    <hyperlink ref="B1" r:id="rId2" display="Example"/>
+                </hyperlinks>
+            </worksheet>"#;
+
+        let rels_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+            <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+                <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://example.com" TargetMode="External"/>
+                <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://rust-lang.org" TargetMode="External"/>
+                <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing1.xml"/>
+            </Relationships>"#;
+
+        let sheet_rels = XlsxParser::parse_relationships(rels_xml);
+        let hyperlinks = XlsxParser::parse_hyperlinks(sheet_xml, &sheet_rels);
+
+        assert_eq!(hyperlinks.len(), 2);
+        assert_eq!(hyperlinks.get("A1").unwrap(), "https://example.com");
+        assert_eq!(hyperlinks.get("B1").unwrap(), "https://rust-lang.org");
+    }
+
+    #[test]
+    fn test_parse_hyperlinks_empty() {
+        // Sheet with no hyperlinks section
+        let sheet_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+            <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+                <sheetData>
+                    <row r="1">
+                        <c r="A1" t="s"><v>0</v></c>
+                    </row>
+                </sheetData>
+            </worksheet>"#;
+
+        let sheet_rels = HashMap::new();
+        let hyperlinks = XlsxParser::parse_hyperlinks(sheet_xml, &sheet_rels);
+        assert!(hyperlinks.is_empty());
+    }
+
+    #[test]
+    fn test_parse_hyperlinks_non_hyperlink_rels_ignored() {
+        // hyperlink element references a non-hyperlink relationship (should be ignored)
+        let sheet_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+            <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+                       xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+                <sheetData/>
+                <hyperlinks>
+                    <hyperlink ref="A1" r:id="rId1"/>
+                </hyperlinks>
+            </worksheet>"#;
+
+        let rels_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+            <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+                <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing1.xml"/>
+            </Relationships>"#;
+
+        let sheet_rels = XlsxParser::parse_relationships(rels_xml);
+        let hyperlinks = XlsxParser::parse_hyperlinks(sheet_xml, &sheet_rels);
+        assert!(hyperlinks.is_empty());
     }
 }
