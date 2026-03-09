@@ -198,6 +198,12 @@ impl XlsxParser {
                     if let Ok(table) = self.parse_sheet(&xml) {
                         section.add_block(Block::Table(table));
                     }
+
+                    // Parse drawing images linked to this sheet
+                    let images = self.parse_sheet_drawing_images(&sheet_path);
+                    for image in images {
+                        section.add_block(image);
+                    }
                 }
             }
 
@@ -484,6 +490,304 @@ impl XlsxParser {
         }
     }
 
+    /// Parse drawing images linked to a sheet.
+    ///
+    /// Follows the OOXML relationship chain:
+    /// 1. sheet rels → find drawing relationship → drawing XML path
+    /// 2. drawing rels → rId → media filename mapping
+    /// 3. drawing XML → xdr:pic > xdr:blipFill > a:blip r:embed → rId
+    fn parse_sheet_drawing_images(&self, sheet_path: &str) -> Vec<Block> {
+        // Step 1: Parse sheet-level rels to find drawing target
+        let rels_path = Self::rels_path_for(sheet_path);
+        let sheet_rels = match self.container.read_xml(&rels_path) {
+            Ok(xml) => Self::parse_relationships(&xml),
+            Err(_) => return Vec::new(),
+        };
+
+        // Find drawing relationships (Type contains "drawing")
+        let sheet_dir = sheet_path.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
+        let mut all_images = Vec::new();
+
+        for (rel_type, target) in sheet_rels.values() {
+            if !rel_type.contains("drawing") {
+                continue;
+            }
+
+            // Resolve the drawing path relative to the sheet directory
+            let drawing_path = Self::resolve_relative_path(sheet_dir, target);
+
+            // Step 2: Parse drawing rels for rId → media filename mapping
+            let drawing_rels_path = Self::rels_path_for(&drawing_path);
+            let drawing_rels = match self.container.read_xml(&drawing_rels_path) {
+                Ok(xml) => {
+                    let rels = Self::parse_relationships(&xml);
+                    // Build rId → filename map (only image relationships)
+                    let drawing_dir = drawing_path.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
+                    rels.into_iter()
+                        .filter(|(_, (t, _))| t.contains("image"))
+                        .map(|(id, (_, tgt))| {
+                            let resolved = Self::resolve_relative_path(drawing_dir, &tgt);
+                            let filename = resolved.rsplit('/').next().unwrap_or(&resolved).to_string();
+                            (id, filename)
+                        })
+                        .collect::<HashMap<String, String>>()
+                }
+                Err(_) => continue,
+            };
+
+            if drawing_rels.is_empty() {
+                continue;
+            }
+
+            // Step 3: Parse drawing XML for pic elements with a:blip references
+            if let Ok(xml) = self.container.read_xml(&drawing_path) {
+                if let Ok(images) = Self::parse_drawing_images(&xml, &drawing_rels) {
+                    all_images.extend(images);
+                }
+            }
+        }
+
+        all_images
+    }
+
+    /// Build the _rels path for a given part path.
+    /// e.g., "xl/worksheets/sheet1.xml" → "xl/worksheets/_rels/sheet1.xml.rels"
+    fn rels_path_for(part_path: &str) -> String {
+        if let Some((dir, file)) = part_path.rsplit_once('/') {
+            format!("{}/_rels/{}.rels", dir, file)
+        } else {
+            format!("_rels/{}.rels", part_path)
+        }
+    }
+
+    /// Resolve a relative path (e.g., "../drawings/drawing1.xml") against a base directory.
+    fn resolve_relative_path(base_dir: &str, relative: &str) -> String {
+        if relative.starts_with('/') {
+            return relative.trim_start_matches('/').to_string();
+        }
+
+        let mut parts: Vec<&str> = if base_dir.is_empty() {
+            Vec::new()
+        } else {
+            base_dir.split('/').collect()
+        };
+
+        for segment in relative.split('/') {
+            match segment {
+                ".." => { parts.pop(); }
+                "." | "" => {}
+                s => parts.push(s),
+            }
+        }
+
+        parts.join("/")
+    }
+
+    /// Parse a relationships XML file and return a map of id → (type, target).
+    fn parse_relationships(xml: &str) -> HashMap<String, (String, String)> {
+        let mut rels = HashMap::new();
+        let mut reader = quick_xml::Reader::from_str(xml);
+        reader.config_mut().trim_text(true);
+        let mut buf = Vec::new();
+
+        loop {
+            match reader.read_event_into(&mut buf) {
+                Ok(quick_xml::events::Event::Empty(ref e))
+                | Ok(quick_xml::events::Event::Start(ref e)) => {
+                    if e.name().as_ref() == b"Relationship" {
+                        let mut id = String::new();
+                        let mut rel_type = String::new();
+                        let mut target = String::new();
+
+                        for attr in e.attributes().flatten() {
+                            match attr.key.as_ref() {
+                                b"Id" => id = String::from_utf8_lossy(&attr.value).to_string(),
+                                b"Type" => rel_type = String::from_utf8_lossy(&attr.value).to_string(),
+                                b"Target" => target = String::from_utf8_lossy(&attr.value).to_string(),
+                                _ => {}
+                            }
+                        }
+
+                        if !id.is_empty() && !target.is_empty() {
+                            rels.insert(id, (rel_type, target));
+                        }
+                    }
+                }
+                Ok(quick_xml::events::Event::Eof) => break,
+                Err(_) => break,
+                _ => {}
+            }
+            buf.clear();
+        }
+
+        rels
+    }
+
+    /// Parse drawing XML for pic elements and create Block::Image for each.
+    ///
+    /// Structure: xdr:pic > xdr:nvPicPr > xdr:cNvPr[@name]
+    ///            xdr:pic > xdr:blipFill > a:blip[@r:embed]
+    ///            xdr:pic > xdr:spPr > a:xfrm > a:ext[@cx, @cy]
+    fn parse_drawing_images(
+        xml: &str,
+        rels: &HashMap<String, String>,
+    ) -> Result<Vec<Block>> {
+        let mut images = Vec::new();
+        let mut reader = quick_xml::Reader::from_str(xml);
+        reader.config_mut().trim_text(true);
+        let mut buf = Vec::new();
+
+        let mut in_pic = false;
+        let mut in_nvpicpr = false;
+        let mut in_blipfill = false;
+        let mut in_sppr = false;
+        let mut current_name: Option<String> = None;
+        let mut current_rel_id: Option<String> = None;
+        let mut current_width: Option<u32> = None;
+        let mut current_height: Option<u32> = None;
+
+        loop {
+            match reader.read_event_into(&mut buf) {
+                Ok(quick_xml::events::Event::Start(ref e)) => {
+                    let local_name = e.name().local_name();
+                    match local_name.as_ref() {
+                        b"pic" => {
+                            in_pic = true;
+                            current_name = None;
+                            current_rel_id = None;
+                            current_width = None;
+                            current_height = None;
+                        }
+                        b"nvPicPr" if in_pic => {
+                            in_nvpicpr = true;
+                        }
+                        b"cNvPr" if in_nvpicpr => {
+                            for attr in e.attributes().flatten() {
+                                if attr.key.local_name().as_ref() == b"name" {
+                                    current_name =
+                                        Some(String::from_utf8_lossy(&attr.value).to_string());
+                                }
+                            }
+                        }
+                        b"blipFill" if in_pic => {
+                            in_blipfill = true;
+                        }
+                        b"blip" if in_blipfill => {
+                            for attr in e.attributes().flatten() {
+                                if attr.key.local_name().as_ref() == b"embed" {
+                                    current_rel_id =
+                                        Some(String::from_utf8_lossy(&attr.value).to_string());
+                                }
+                            }
+                        }
+                        b"spPr" if in_pic => {
+                            in_sppr = true;
+                        }
+                        b"ext" if in_sppr => {
+                            for attr in e.attributes().flatten() {
+                                match attr.key.local_name().as_ref() {
+                                    b"cx" => {
+                                        if let Ok(cx) =
+                                            String::from_utf8_lossy(&attr.value).parse::<u32>()
+                                        {
+                                            current_width = Some(cx);
+                                        }
+                                    }
+                                    b"cy" => {
+                                        if let Ok(cy) =
+                                            String::from_utf8_lossy(&attr.value).parse::<u32>()
+                                        {
+                                            current_height = Some(cy);
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(quick_xml::events::Event::Empty(ref e)) => {
+                    let local_name = e.name().local_name();
+                    match local_name.as_ref() {
+                        b"cNvPr" if in_nvpicpr => {
+                            for attr in e.attributes().flatten() {
+                                if attr.key.local_name().as_ref() == b"name" {
+                                    current_name =
+                                        Some(String::from_utf8_lossy(&attr.value).to_string());
+                                }
+                            }
+                        }
+                        b"blip" if in_blipfill => {
+                            for attr in e.attributes().flatten() {
+                                if attr.key.local_name().as_ref() == b"embed" {
+                                    current_rel_id =
+                                        Some(String::from_utf8_lossy(&attr.value).to_string());
+                                }
+                            }
+                        }
+                        b"ext" if in_sppr => {
+                            for attr in e.attributes().flatten() {
+                                match attr.key.local_name().as_ref() {
+                                    b"cx" => {
+                                        if let Ok(cx) =
+                                            String::from_utf8_lossy(&attr.value).parse::<u32>()
+                                        {
+                                            current_width = Some(cx);
+                                        }
+                                    }
+                                    b"cy" => {
+                                        if let Ok(cy) =
+                                            String::from_utf8_lossy(&attr.value).parse::<u32>()
+                                        {
+                                            current_height = Some(cy);
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(quick_xml::events::Event::End(ref e)) => {
+                    let local_name = e.name().local_name();
+                    match local_name.as_ref() {
+                        b"pic" => {
+                            if let Some(rel_id) = current_rel_id.take() {
+                                if let Some(filename) = rels.get(&rel_id) {
+                                    images.push(Block::Image {
+                                        resource_id: filename.clone(),
+                                        alt_text: current_name.take(),
+                                        width: current_width.take(),
+                                        height: current_height.take(),
+                                    });
+                                }
+                            }
+                            in_pic = false;
+                        }
+                        b"nvPicPr" => {
+                            in_nvpicpr = false;
+                        }
+                        b"blipFill" => {
+                            in_blipfill = false;
+                        }
+                        b"spPr" => {
+                            in_sppr = false;
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(quick_xml::events::Event::Eof) => break,
+                Err(e) => return Err(Error::XmlParse(e.to_string())),
+                _ => {}
+            }
+            buf.clear();
+        }
+
+        Ok(images)
+    }
+
     /// Extract resources (images, media) from the workbook.
     fn extract_resources(&self, doc: &mut Document) -> Result<()> {
         for file in self.container.list_files() {
@@ -677,5 +981,206 @@ mod tests {
             Styles::serial_to_date(44197.0),
             Some("2021-01-01".to_string())
         );
+    }
+
+    #[test]
+    fn test_rels_path_for() {
+        assert_eq!(
+            XlsxParser::rels_path_for("xl/worksheets/sheet1.xml"),
+            "xl/worksheets/_rels/sheet1.xml.rels"
+        );
+        assert_eq!(
+            XlsxParser::rels_path_for("xl/drawings/drawing1.xml"),
+            "xl/drawings/_rels/drawing1.xml.rels"
+        );
+    }
+
+    #[test]
+    fn test_resolve_relative_path() {
+        assert_eq!(
+            XlsxParser::resolve_relative_path("xl/worksheets", "../drawings/drawing1.xml"),
+            "xl/drawings/drawing1.xml"
+        );
+        assert_eq!(
+            XlsxParser::resolve_relative_path("xl/drawings", "../media/image1.png"),
+            "xl/media/image1.png"
+        );
+        assert_eq!(
+            XlsxParser::resolve_relative_path("", "xl/media/image1.png"),
+            "xl/media/image1.png"
+        );
+    }
+
+    #[test]
+    fn test_parse_relationships() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+            <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+                <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing1.xml"/>
+                <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/printerSettings" Target="../printerSettings/printerSettings1.bin"/>
+            </Relationships>"#;
+
+        let rels = XlsxParser::parse_relationships(xml);
+        assert_eq!(rels.len(), 2);
+
+        let (rel_type, target) = rels.get("rId1").unwrap();
+        assert!(rel_type.contains("drawing"));
+        assert_eq!(target, "../drawings/drawing1.xml");
+
+        let (rel_type, _) = rels.get("rId2").unwrap();
+        assert!(rel_type.contains("printerSettings"));
+    }
+
+    #[test]
+    fn test_parse_drawing_images() {
+        // Synthetic drawing XML with two images
+        let drawing_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+            <xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing"
+                       xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+                       xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+                <xdr:twoCellAnchor>
+                    <xdr:pic>
+                        <xdr:nvPicPr>
+                            <xdr:cNvPr id="2" name="Logo"/>
+                            <xdr:cNvPicPr/>
+                        </xdr:nvPicPr>
+                        <xdr:blipFill>
+                            <a:blip r:embed="rId1"/>
+                        </xdr:blipFill>
+                        <xdr:spPr>
+                            <a:xfrm>
+                                <a:off x="0" y="0"/>
+                                <a:ext cx="914400" cy="457200"/>
+                            </a:xfrm>
+                        </xdr:spPr>
+                    </xdr:pic>
+                </xdr:twoCellAnchor>
+                <xdr:twoCellAnchor>
+                    <xdr:pic>
+                        <xdr:nvPicPr>
+                            <xdr:cNvPr id="3" name="Chart Screenshot"/>
+                            <xdr:cNvPicPr/>
+                        </xdr:nvPicPr>
+                        <xdr:blipFill>
+                            <a:blip r:embed="rId2"/>
+                        </xdr:blipFill>
+                        <xdr:spPr>
+                            <a:xfrm>
+                                <a:off x="100" y="100"/>
+                                <a:ext cx="1828800" cy="1371600"/>
+                            </a:xfrm>
+                        </xdr:spPr>
+                    </xdr:pic>
+                </xdr:twoCellAnchor>
+            </xdr:wsDr>"#;
+
+        let mut rels = HashMap::new();
+        rels.insert("rId1".to_string(), "image1.png".to_string());
+        rels.insert("rId2".to_string(), "image2.jpeg".to_string());
+
+        let images = XlsxParser::parse_drawing_images(drawing_xml, &rels).unwrap();
+        assert_eq!(images.len(), 2);
+
+        match &images[0] {
+            Block::Image { resource_id, alt_text, width, height } => {
+                assert_eq!(resource_id, "image1.png");
+                assert_eq!(alt_text.as_deref(), Some("Logo"));
+                assert_eq!(*width, Some(914400));
+                assert_eq!(*height, Some(457200));
+            }
+            other => panic!("Expected Block::Image, got {:?}", other),
+        }
+
+        match &images[1] {
+            Block::Image { resource_id, alt_text, width, height } => {
+                assert_eq!(resource_id, "image2.jpeg");
+                assert_eq!(alt_text.as_deref(), Some("Chart Screenshot"));
+                assert_eq!(*width, Some(1828800));
+                assert_eq!(*height, Some(1371600));
+            }
+            other => panic!("Expected Block::Image, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_drawing_images_empty_blip() {
+        // Test with self-closing blip element (empty element form)
+        let drawing_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+            <xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing"
+                       xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+                       xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+                <xdr:oneCellAnchor>
+                    <xdr:pic>
+                        <xdr:nvPicPr>
+                            <xdr:cNvPr id="2" name="Pic1"/>
+                            <xdr:cNvPicPr/>
+                        </xdr:nvPicPr>
+                        <xdr:blipFill>
+                            <a:blip r:embed="rId1"></a:blip>
+                        </xdr:blipFill>
+                        <xdr:spPr/>
+                    </xdr:pic>
+                </xdr:oneCellAnchor>
+            </xdr:wsDr>"#;
+
+        let mut rels = HashMap::new();
+        rels.insert("rId1".to_string(), "image1.png".to_string());
+
+        let images = XlsxParser::parse_drawing_images(drawing_xml, &rels).unwrap();
+        assert_eq!(images.len(), 1);
+
+        match &images[0] {
+            Block::Image { resource_id, alt_text, .. } => {
+                assert_eq!(resource_id, "image1.png");
+                assert_eq!(alt_text.as_deref(), Some("Pic1"));
+            }
+            other => panic!("Expected Block::Image, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_drawing_no_images() {
+        // Drawing with only shapes (no pic elements) — like existing test files
+        let drawing_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+            <xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing"
+                       xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+                <xdr:twoCellAnchor>
+                    <xdr:sp macro="" textlink="">
+                        <xdr:nvSpPr>
+                            <xdr:cNvPr id="5" name="Rectangle 0"/>
+                            <xdr:cNvSpPr/>
+                        </xdr:nvSpPr>
+                        <xdr:spPr>
+                            <a:prstGeom prst="rect"><a:avLst/></a:prstGeom>
+                        </xdr:spPr>
+                    </xdr:sp>
+                </xdr:twoCellAnchor>
+            </xdr:wsDr>"#;
+
+        let rels = HashMap::new();
+        let images = XlsxParser::parse_drawing_images(drawing_xml, &rels).unwrap();
+        assert!(images.is_empty());
+    }
+
+    #[test]
+    fn test_xlsx_with_drawing_no_images() {
+        // Test that existing test files with drawings but no images still parse correctly
+        let path = "test-files/Auto Expense Report.xlsx";
+        if std::path::Path::new(path).exists() {
+            let mut parser = XlsxParser::open(path).unwrap();
+            let doc = parser.parse().unwrap();
+
+            // Should parse without errors and have sections
+            assert!(!doc.sections.is_empty());
+
+            // No Block::Image should be present (this file has shapes, not images)
+            for section in &doc.sections {
+                for block in &section.content {
+                    assert!(
+                        !matches!(block, Block::Image { .. }),
+                        "Expected no images in Auto Expense Report.xlsx"
+                    );
+                }
+            }
+        }
     }
 }
