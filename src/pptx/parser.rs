@@ -841,7 +841,9 @@ impl PptxParser {
                             in_table = true;
                             table_depth += 1;
                         }
-                        // p:sp - shape
+                        // p:sp - shape (also matches inner shapes inside p:grpSp groups,
+                        // because quick_xml's flat event stream processes nested elements
+                        // the same as top-level ones by local name)
                         b"sp" if !in_table => {
                             in_shape = true;
                             current_heading = HeadingLevel::None;
@@ -1477,6 +1479,165 @@ mod tests {
                 "Expected to find email link ncicb@pop.nci.nih.gov"
             );
         }
+    }
+
+    /// Helper to create a minimal PPTX in memory with given slide XML content.
+    fn create_minimal_pptx(slide_xml: &str) -> Vec<u8> {
+        use std::io::{Cursor, Write};
+        let buf = Cursor::new(Vec::new());
+        let mut zip = zip::ZipWriter::new(buf);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+
+        // [Content_Types].xml
+        zip.start_file("[Content_Types].xml", options).unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>
+  <Override PartName="/ppt/slides/slide1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>
+</Types>"#).unwrap();
+
+        // _rels/.rels
+        zip.start_file("_rels/.rels", options).unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="ppt/presentation.xml"/>
+</Relationships>"#).unwrap();
+
+        // ppt/_rels/presentation.xml.rels
+        zip.start_file("ppt/_rels/presentation.xml.rels", options).unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide1.xml"/>
+</Relationships>"#).unwrap();
+
+        // ppt/presentation.xml
+        zip.start_file("ppt/presentation.xml", options).unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+<p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
+                xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <p:sldIdLst>
+    <p:sldId id="256" r:id="rId1"/>
+  </p:sldIdLst>
+</p:presentation>"#).unwrap();
+
+        // ppt/slides/_rels/slide1.xml.rels
+        zip.start_file("ppt/slides/_rels/slide1.xml.rels", options).unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+</Relationships>"#).unwrap();
+
+        // ppt/slides/slide1.xml
+        zip.start_file("ppt/slides/slide1.xml", options).unwrap();
+        zip.write_all(slide_xml.as_bytes()).unwrap();
+
+        zip.finish().unwrap().into_inner()
+    }
+
+    #[test]
+    fn test_parse_grouped_shapes() {
+        let slide_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+       xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
+       xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <p:cSld>
+    <p:spTree>
+      <p:sp>
+        <p:txBody>
+          <a:p><a:r><a:t>Top level shape</a:t></a:r></a:p>
+        </p:txBody>
+      </p:sp>
+      <p:grpSp>
+        <p:nvGrpSpPr>
+          <p:cNvPr id="10" name="Group 1"/>
+          <p:cNvGrpSpPr/>
+          <p:nvPr/>
+        </p:nvGrpSpPr>
+        <p:grpSpPr/>
+        <p:sp>
+          <p:txBody>
+            <a:p><a:r><a:t>Grouped shape 1</a:t></a:r></a:p>
+          </p:txBody>
+        </p:sp>
+        <p:sp>
+          <p:txBody>
+            <a:p><a:r><a:t>Grouped shape 2</a:t></a:r></a:p>
+          </p:txBody>
+        </p:sp>
+      </p:grpSp>
+    </p:spTree>
+  </p:cSld>
+</p:sld>"#;
+
+        let data = create_minimal_pptx(slide_xml);
+        let mut parser = PptxParser::from_bytes(data).unwrap();
+        let doc = parser.parse().unwrap();
+        let text = doc.plain_text();
+
+        assert!(
+            text.contains("Top level shape"),
+            "Should contain top-level shape text, got: {}",
+            text
+        );
+        assert!(
+            text.contains("Grouped shape 1"),
+            "Should contain first grouped shape text, got: {}",
+            text
+        );
+        assert!(
+            text.contains("Grouped shape 2"),
+            "Should contain second grouped shape text, got: {}",
+            text
+        );
+    }
+
+    #[test]
+    fn test_parse_nested_grouped_shapes() {
+        let slide_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+       xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
+       xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <p:cSld>
+    <p:spTree>
+      <p:grpSp>
+        <p:nvGrpSpPr><p:cNvPr id="10" name="Outer Group"/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>
+        <p:grpSpPr/>
+        <p:sp>
+          <p:txBody>
+            <a:p><a:r><a:t>Outer group text</a:t></a:r></a:p>
+          </p:txBody>
+        </p:sp>
+        <p:grpSp>
+          <p:nvGrpSpPr><p:cNvPr id="20" name="Inner Group"/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>
+          <p:grpSpPr/>
+          <p:sp>
+            <p:txBody>
+              <a:p><a:r><a:t>Inner group text</a:t></a:r></a:p>
+            </p:txBody>
+          </p:sp>
+        </p:grpSp>
+      </p:grpSp>
+    </p:spTree>
+  </p:cSld>
+</p:sld>"#;
+
+        let data = create_minimal_pptx(slide_xml);
+        let mut parser = PptxParser::from_bytes(data).unwrap();
+        let doc = parser.parse().unwrap();
+        let text = doc.plain_text();
+
+        assert!(
+            text.contains("Outer group text"),
+            "Should contain outer group shape text, got: {}",
+            text
+        );
+        assert!(
+            text.contains("Inner group text"),
+            "Should contain inner (nested) group shape text, got: {}",
+            text
+        );
     }
 
     #[test]
