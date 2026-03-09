@@ -1,5 +1,7 @@
 //! DOCX parser implementation.
 
+use std::collections::HashMap;
+
 use crate::charts;
 use crate::container::OoxmlContainer;
 use crate::error::{Error, Result};
@@ -18,6 +20,10 @@ pub struct DocxParser {
     styles: StyleMap,
     numbering: NumberingMap,
     relationships: crate::container::Relationships,
+    /// Footnote id → plain text content
+    footnotes: HashMap<String, String>,
+    /// Endnote id → plain text content
+    endnotes: HashMap<String, String>,
 }
 
 impl DocxParser {
@@ -54,11 +60,27 @@ impl DocxParser {
             .read_relationships("word/document.xml")
             .unwrap_or_default();
 
+        // Parse footnotes
+        let footnotes = if let Ok(xml) = container.read_xml("word/footnotes.xml") {
+            parse_notes_xml(&xml, b"w:footnote")
+        } else {
+            HashMap::new()
+        };
+
+        // Parse endnotes
+        let endnotes = if let Ok(xml) = container.read_xml("word/endnotes.xml") {
+            parse_notes_xml(&xml, b"w:endnote")
+        } else {
+            HashMap::new()
+        };
+
         Ok(Self {
             container,
             styles,
             numbering,
             relationships,
+            footnotes,
+            endnotes,
         })
     }
 
@@ -76,6 +98,38 @@ impl DocxParser {
         let chart_tables = self.parse_charts()?;
         for table in chart_tables {
             main_section.add_block(Block::Table(table));
+        }
+
+        // Append footnote definitions at end of section
+        if !self.footnotes.is_empty() {
+            let mut ids: Vec<&String> = self.footnotes.keys().collect();
+            ids.sort_by(|a, b| {
+                a.parse::<u64>()
+                    .unwrap_or(u64::MAX)
+                    .cmp(&b.parse::<u64>().unwrap_or(u64::MAX))
+            });
+            for id in ids {
+                if let Some(text) = self.footnotes.get(id) {
+                    let para = Paragraph::with_text(format!("[^{}]: {}", id, text));
+                    main_section.add_block(Block::Paragraph(para));
+                }
+            }
+        }
+
+        // Append endnote definitions at end of section
+        if !self.endnotes.is_empty() {
+            let mut ids: Vec<&String> = self.endnotes.keys().collect();
+            ids.sort_by(|a, b| {
+                a.parse::<u64>()
+                    .unwrap_or(u64::MAX)
+                    .cmp(&b.parse::<u64>().unwrap_or(u64::MAX))
+            });
+            for id in ids {
+                if let Some(text) = self.endnotes.get(id) {
+                    let para = Paragraph::with_text(format!("[^e{}]: {}", id, text));
+                    main_section.add_block(Block::Paragraph(para));
+                }
+            }
         }
 
         doc.add_section(main_section);
@@ -623,6 +677,30 @@ impl DocxParser {
                             revision: current_revision,
                         });
                     }
+                    // Footnote reference handling
+                    b"w:footnoteReference" if in_run => {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.as_ref() == b"w:id" {
+                                let id = String::from_utf8_lossy(&attr.value).to_string();
+                                // Only insert marker if this footnote has content
+                                if self.footnotes.contains_key(&id) {
+                                    para.runs.push(TextRun::plain(format!("[^{}]", id)));
+                                }
+                            }
+                        }
+                    }
+                    // Endnote reference handling
+                    b"w:endnoteReference" if in_run => {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.as_ref() == b"w:id" {
+                                let id = String::from_utf8_lossy(&attr.value).to_string();
+                                // Only insert marker if this endnote has content
+                                if self.endnotes.contains_key(&id) {
+                                    para.runs.push(TextRun::plain(format!("[^e{}]", id)));
+                                }
+                            }
+                        }
+                    }
                     _ => {}
                 },
                 Ok(quick_xml::events::Event::Text(ref e)) => {
@@ -1122,6 +1200,91 @@ impl DocxParser {
     }
 }
 
+/// Parse footnotes.xml or endnotes.xml into a map of id → plain text.
+///
+/// `note_tag` should be `b"w:footnote"` or `b"w:endnote"`.
+/// Entries with `w:type="separator"` or `w:type="continuationSeparator"` are skipped.
+fn parse_notes_xml(xml: &str, note_tag: &[u8]) -> HashMap<String, String> {
+    let mut notes = HashMap::new();
+    let mut reader = quick_xml::Reader::from_str(xml);
+    reader.config_mut().trim_text(false);
+
+    let mut buf = Vec::new();
+    let mut current_id: Option<String> = None;
+    let mut current_text = String::new();
+    let mut in_note = false;
+    let mut in_text = false;
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(quick_xml::events::Event::Start(ref e)) => {
+                if e.name().as_ref() == note_tag {
+                    let mut id = None;
+                    let mut note_type = None;
+                    for attr in e.attributes().flatten() {
+                        match attr.key.as_ref() {
+                            b"w:id" => {
+                                id = Some(
+                                    String::from_utf8_lossy(&attr.value).to_string(),
+                                );
+                            }
+                            b"w:type" => {
+                                note_type = Some(
+                                    String::from_utf8_lossy(&attr.value).to_string(),
+                                );
+                            }
+                            _ => {}
+                        }
+                    }
+                    // Skip separator and continuationSeparator types
+                    if let Some(ref t) = note_type {
+                        if t == "separator" || t == "continuationSeparator" {
+                            // Don't set in_note, so content is ignored
+                            buf.clear();
+                            continue;
+                        }
+                    }
+                    if let Some(id_val) = id {
+                        in_note = true;
+                        current_id = Some(id_val);
+                        current_text.clear();
+                    }
+                } else if in_note && e.name().as_ref() == b"w:t" {
+                    in_text = true;
+                }
+            }
+            Ok(quick_xml::events::Event::Text(ref e)) => {
+                if in_note && in_text {
+                    if let Ok(text) = e.unescape() {
+                        current_text.push_str(&text);
+                    }
+                }
+            }
+            Ok(quick_xml::events::Event::End(ref e)) => {
+                if e.name().as_ref() == note_tag {
+                    if in_note {
+                        if let Some(id) = current_id.take() {
+                            let trimmed = current_text.trim().to_string();
+                            if !trimmed.is_empty() {
+                                notes.insert(id, trimmed);
+                            }
+                        }
+                        in_note = false;
+                    }
+                } else if e.name().as_ref() == b"w:t" {
+                    in_text = false;
+                }
+            }
+            Ok(quick_xml::events::Event::Eof) => break,
+            Err(_) => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+
+    notes
+}
+
 /// Helper to get a boolean attribute value.
 fn get_bool_attr(e: &quick_xml::events::BytesStart, key: &[u8]) -> Option<bool> {
     for attr in e.attributes().flatten() {
@@ -1288,6 +1451,8 @@ mod tests {
             styles: StyleMap::default(),
             numbering: NumberingMap::default(),
             relationships: crate::container::Relationships::default(),
+            footnotes: HashMap::new(),
+            endnotes: HashMap::new(),
         };
 
         let para = parser.parse_paragraph(xml).unwrap();
@@ -1324,6 +1489,8 @@ mod tests {
             styles: StyleMap::default(),
             numbering: NumberingMap::default(),
             relationships: crate::container::Relationships::default(),
+            footnotes: HashMap::new(),
+            endnotes: HashMap::new(),
         };
 
         let para = parser.parse_paragraph(xml).unwrap();
@@ -1362,6 +1529,8 @@ mod tests {
             styles: StyleMap::default(),
             numbering: NumberingMap::default(),
             relationships: crate::container::Relationships::default(),
+            footnotes: HashMap::new(),
+            endnotes: HashMap::new(),
         };
 
         let para = parser.parse_paragraph(xml).unwrap();
@@ -1396,6 +1565,8 @@ mod tests {
             styles: StyleMap::default(),
             numbering: NumberingMap::default(),
             relationships: crate::container::Relationships::default(),
+            footnotes: HashMap::new(),
+            endnotes: HashMap::new(),
         };
 
         let para = parser.parse_paragraph(xml).unwrap();
@@ -1430,6 +1601,8 @@ mod tests {
             styles: StyleMap::default(),
             numbering: NumberingMap::default(),
             relationships: crate::container::Relationships::default(),
+            footnotes: HashMap::new(),
+            endnotes: HashMap::new(),
         };
 
         let para = parser.parse_paragraph(xml).unwrap();
@@ -1460,6 +1633,8 @@ mod tests {
             styles: StyleMap::default(),
             numbering: NumberingMap::default(),
             relationships: crate::container::Relationships::default(),
+            footnotes: HashMap::new(),
+            endnotes: HashMap::new(),
         };
 
         let para = parser.parse_paragraph(xml).unwrap();
@@ -1503,6 +1678,8 @@ mod tests {
             styles: StyleMap::default(),
             numbering: NumberingMap::default(),
             relationships: crate::container::Relationships::default(),
+            footnotes: HashMap::new(),
+            endnotes: HashMap::new(),
         };
 
         let para = parser.parse_paragraph(xml).unwrap();
@@ -1549,6 +1726,8 @@ mod tests {
             styles: StyleMap::default(),
             numbering: NumberingMap::default(),
             relationships: crate::container::Relationships::default(),
+            footnotes: HashMap::new(),
+            endnotes: HashMap::new(),
         };
 
         let para = parser.parse_paragraph(xml).unwrap();
@@ -1572,5 +1751,205 @@ mod tests {
             "Expected 'deleted' text in revision, got: '{}'",
             deleted_text
         );
+    }
+
+    // =========================================================================
+    // Footnote / Endnote Tests
+    // =========================================================================
+
+    #[test]
+    fn test_parse_footnotes_xml() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+        <w:footnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+            <w:footnote w:id="0" w:type="separator">
+                <w:p><w:r><w:t>___</w:t></w:r></w:p>
+            </w:footnote>
+            <w:footnote w:id="1" w:type="continuationSeparator">
+                <w:p><w:r><w:t>---</w:t></w:r></w:p>
+            </w:footnote>
+            <w:footnote w:id="2">
+                <w:p><w:r><w:t>This is footnote two.</w:t></w:r></w:p>
+            </w:footnote>
+            <w:footnote w:id="3">
+                <w:p><w:r><w:t>Another footnote.</w:t></w:r></w:p>
+            </w:footnote>
+        </w:footnotes>"#;
+
+        let notes = parse_notes_xml(xml, b"w:footnote");
+
+        // Separator and continuationSeparator should be skipped
+        assert!(!notes.contains_key("0"), "separator should be skipped");
+        assert!(
+            !notes.contains_key("1"),
+            "continuationSeparator should be skipped"
+        );
+
+        // Content footnotes should be parsed
+        assert_eq!(notes.get("2").unwrap(), "This is footnote two.");
+        assert_eq!(notes.get("3").unwrap(), "Another footnote.");
+        assert_eq!(notes.len(), 2);
+    }
+
+    #[test]
+    fn test_parse_endnotes_xml() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+        <w:endnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+            <w:endnote w:id="0" w:type="separator">
+                <w:p><w:r><w:t>___</w:t></w:r></w:p>
+            </w:endnote>
+            <w:endnote w:id="1">
+                <w:p><w:r><w:t>Endnote content here.</w:t></w:r></w:p>
+            </w:endnote>
+        </w:endnotes>"#;
+
+        let notes = parse_notes_xml(xml, b"w:endnote");
+
+        assert!(!notes.contains_key("0"), "separator should be skipped");
+        assert_eq!(notes.get("1").unwrap(), "Endnote content here.");
+        assert_eq!(notes.len(), 1);
+    }
+
+    #[test]
+    fn test_footnote_multi_run_text() {
+        // Footnote with multiple runs should concatenate text
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+        <w:footnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+            <w:footnote w:id="1">
+                <w:p>
+                    <w:r><w:t>First </w:t></w:r>
+                    <w:r><w:t>second </w:t></w:r>
+                    <w:r><w:t>third.</w:t></w:r>
+                </w:p>
+            </w:footnote>
+        </w:footnotes>"#;
+
+        let notes = parse_notes_xml(xml, b"w:footnote");
+        assert_eq!(notes.get("1").unwrap(), "First second third.");
+    }
+
+    #[test]
+    fn test_footnote_reference_in_paragraph() {
+        // Test that w:footnoteReference inserts [^N] marker
+        let xml = r#"<w:p>
+            <w:r><w:t>Some text</w:t></w:r>
+            <w:r><w:footnoteReference w:id="2"/></w:r>
+            <w:r><w:t> more text</w:t></w:r>
+        </w:p>"#;
+
+        let container = crate::container::OoxmlContainer::from_bytes(Vec::new());
+        if container.is_err() {
+            return;
+        }
+        let container = container.unwrap();
+        let mut footnotes = HashMap::new();
+        footnotes.insert("2".to_string(), "Footnote content".to_string());
+
+        let mut parser = DocxParser {
+            container,
+            styles: StyleMap::default(),
+            numbering: NumberingMap::default(),
+            relationships: crate::container::Relationships::default(),
+            footnotes,
+            endnotes: HashMap::new(),
+        };
+
+        let para = parser.parse_paragraph(xml).unwrap();
+        let text = para.plain_text();
+
+        assert!(
+            text.contains("[^2]"),
+            "Expected footnote reference [^2], got: '{}'",
+            text
+        );
+        assert!(
+            text.contains("Some text"),
+            "Expected original text, got: '{}'",
+            text
+        );
+    }
+
+    #[test]
+    fn test_endnote_reference_in_paragraph() {
+        // Test that w:endnoteReference inserts [^eN] marker
+        let xml = r#"<w:p>
+            <w:r><w:t>Text with endnote</w:t></w:r>
+            <w:r><w:endnoteReference w:id="1"/></w:r>
+        </w:p>"#;
+
+        let container = crate::container::OoxmlContainer::from_bytes(Vec::new());
+        if container.is_err() {
+            return;
+        }
+        let container = container.unwrap();
+        let mut endnotes = HashMap::new();
+        endnotes.insert("1".to_string(), "Endnote content".to_string());
+
+        let mut parser = DocxParser {
+            container,
+            styles: StyleMap::default(),
+            numbering: NumberingMap::default(),
+            relationships: crate::container::Relationships::default(),
+            footnotes: HashMap::new(),
+            endnotes,
+        };
+
+        let para = parser.parse_paragraph(xml).unwrap();
+        let text = para.plain_text();
+
+        assert!(
+            text.contains("[^e1]"),
+            "Expected endnote reference [^e1], got: '{}'",
+            text
+        );
+    }
+
+    #[test]
+    fn test_footnote_reference_skipped_when_no_content() {
+        // If the footnote id doesn't exist in the map, no marker should be inserted
+        let xml = r#"<w:p>
+            <w:r><w:t>Text</w:t></w:r>
+            <w:r><w:footnoteReference w:id="99"/></w:r>
+        </w:p>"#;
+
+        let container = crate::container::OoxmlContainer::from_bytes(Vec::new());
+        if container.is_err() {
+            return;
+        }
+        let container = container.unwrap();
+        let mut parser = DocxParser {
+            container,
+            styles: StyleMap::default(),
+            numbering: NumberingMap::default(),
+            relationships: crate::container::Relationships::default(),
+            footnotes: HashMap::new(), // No footnotes
+            endnotes: HashMap::new(),
+        };
+
+        let para = parser.parse_paragraph(xml).unwrap();
+        let text = para.plain_text();
+
+        assert!(
+            !text.contains("[^"),
+            "Should not insert marker for unknown footnote, got: '{}'",
+            text
+        );
+    }
+
+    #[test]
+    fn test_empty_footnote_skipped() {
+        // Footnotes with only whitespace should not be included
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+        <w:footnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+            <w:footnote w:id="1">
+                <w:p><w:r><w:t>   </w:t></w:r></w:p>
+            </w:footnote>
+            <w:footnote w:id="2">
+                <w:p><w:r><w:t>Real content.</w:t></w:r></w:p>
+            </w:footnote>
+        </w:footnotes>"#;
+
+        let notes = parse_notes_xml(xml, b"w:footnote");
+        assert!(!notes.contains_key("1"), "Whitespace-only note should be skipped");
+        assert_eq!(notes.get("2").unwrap(), "Real content.");
     }
 }
