@@ -315,9 +315,7 @@ impl OoxmlContainer {
                                 }
                                 "created" => meta.created = Some(text),
                                 "modified" => meta.modified = Some(text),
-                                "lastModifiedBy" => {
-                                    meta.last_modified_by = Some(text)
-                                }
+                                "lastModifiedBy" => meta.last_modified_by = Some(text),
                                 _ => {}
                             }
                         }

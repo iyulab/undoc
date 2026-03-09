@@ -294,7 +294,8 @@ impl DocxParser {
                                 for attr in e.attributes().flatten() {
                                     match attr.key.as_ref() {
                                         b"w:type" => {
-                                            ref_type = String::from_utf8_lossy(&attr.value).to_string();
+                                            ref_type =
+                                                String::from_utf8_lossy(&attr.value).to_string();
                                         }
                                         b"r:id" => {
                                             r_id = String::from_utf8_lossy(&attr.value).to_string();
@@ -359,8 +360,7 @@ impl DocxParser {
                         b"w:p" if in_paragraph && table_depth == 0 && para_depth == 0 => {
                             paragraph_xml.push_str("</w:p>");
                             // Extract text box paragraphs before parsing the main paragraph
-                            let textbox_paras =
-                                self.extract_textbox_paragraphs(&paragraph_xml);
+                            let textbox_paras = self.extract_textbox_paragraphs(&paragraph_xml);
                             if let Ok(para) = self.parse_paragraph(&paragraph_xml) {
                                 section.add_block(Block::Paragraph(para));
                             }
@@ -796,7 +796,12 @@ impl DocxParser {
                 Ok(quick_xml::events::Event::Text(ref e)) => {
                     // Only extract text from w:t elements, skip w:instrText (field codes)
                     // Also skip text inside mc:Fallback and w:txbxContent (extracted separately)
-                    if in_run && in_text && !in_instr_text && mc_fallback_depth == 0 && txbx_content_depth == 0 {
+                    if in_run
+                        && in_text
+                        && !in_instr_text
+                        && mc_fallback_depth == 0
+                        && txbx_content_depth == 0
+                    {
                         let text = e.unescape().unwrap_or_default().to_string();
                         if !text.is_empty() {
                             let current_revision = if in_del {
@@ -898,8 +903,7 @@ impl DocxParser {
                         _ if in_txbx_para => {
                             txbx_para_depth += 1;
                             txbx_para_xml.push('<');
-                            txbx_para_xml
-                                .push_str(&String::from_utf8_lossy(name.as_ref()));
+                            txbx_para_xml.push_str(&String::from_utf8_lossy(name.as_ref()));
                             for attr in e.attributes().flatten() {
                                 txbx_para_xml.push_str(&format!(
                                     " {}=\"{}\"",
@@ -916,8 +920,7 @@ impl DocxParser {
                     if in_txbx_para {
                         let name = e.name();
                         txbx_para_xml.push('<');
-                        txbx_para_xml
-                            .push_str(&String::from_utf8_lossy(name.as_ref()));
+                        txbx_para_xml.push_str(&String::from_utf8_lossy(name.as_ref()));
                         for attr in e.attributes().flatten() {
                             txbx_para_xml.push_str(&format!(
                                 " {}=\"{}\"",
@@ -955,8 +958,7 @@ impl DocxParser {
                         _ if in_txbx_para => {
                             txbx_para_depth = txbx_para_depth.saturating_sub(1);
                             txbx_para_xml.push_str("</");
-                            txbx_para_xml
-                                .push_str(&String::from_utf8_lossy(name.as_ref()));
+                            txbx_para_xml.push_str(&String::from_utf8_lossy(name.as_ref()));
                             txbx_para_xml.push('>');
                         }
                         _ => {}
@@ -1441,14 +1443,10 @@ fn parse_notes_xml(xml: &str, note_tag: &[u8]) -> HashMap<String, String> {
                     for attr in e.attributes().flatten() {
                         match attr.key.as_ref() {
                             b"w:id" => {
-                                id = Some(
-                                    String::from_utf8_lossy(&attr.value).to_string(),
-                                );
+                                id = Some(String::from_utf8_lossy(&attr.value).to_string());
                             }
                             b"w:type" => {
-                                note_type = Some(
-                                    String::from_utf8_lossy(&attr.value).to_string(),
-                                );
+                                note_type = Some(String::from_utf8_lossy(&attr.value).to_string());
                             }
                             _ => {}
                         }
@@ -2225,7 +2223,10 @@ mod tests {
         </w:footnotes>"#;
 
         let notes = parse_notes_xml(xml, b"w:footnote");
-        assert!(!notes.contains_key("1"), "Whitespace-only note should be skipped");
+        assert!(
+            !notes.contains_key("1"),
+            "Whitespace-only note should be skipped"
+        );
         assert_eq!(notes.get("2").unwrap(), "Real content.");
     }
 
@@ -2321,9 +2322,12 @@ mod tests {
         // word/_rels/document.xml.rels
         zip.start_file("word/_rels/document.xml.rels", options)
             .unwrap();
-        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+        zip.write_all(
+            br#"<?xml version="1.0" encoding="UTF-8"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-</Relationships>"#).unwrap();
+</Relationships>"#,
+        )
+        .unwrap();
 
         // word/document.xml
         zip.start_file("word/document.xml", options).unwrap();

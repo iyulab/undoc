@@ -1507,7 +1507,8 @@ mod tests {
 </Relationships>"#).unwrap();
 
         // ppt/_rels/presentation.xml.rels
-        zip.start_file("ppt/_rels/presentation.xml.rels", options).unwrap();
+        zip.start_file("ppt/_rels/presentation.xml.rels", options)
+            .unwrap();
         zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide1.xml"/>
@@ -1515,19 +1516,26 @@ mod tests {
 
         // ppt/presentation.xml
         zip.start_file("ppt/presentation.xml", options).unwrap();
-        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+        zip.write_all(
+            br#"<?xml version="1.0" encoding="UTF-8"?>
 <p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
                 xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
   <p:sldIdLst>
     <p:sldId id="256" r:id="rId1"/>
   </p:sldIdLst>
-</p:presentation>"#).unwrap();
+</p:presentation>"#,
+        )
+        .unwrap();
 
         // ppt/slides/_rels/slide1.xml.rels
-        zip.start_file("ppt/slides/_rels/slide1.xml.rels", options).unwrap();
-        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+        zip.start_file("ppt/slides/_rels/slide1.xml.rels", options)
+            .unwrap();
+        zip.write_all(
+            br#"<?xml version="1.0" encoding="UTF-8"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-</Relationships>"#).unwrap();
+</Relationships>"#,
+        )
+        .unwrap();
 
         // ppt/slides/slide1.xml
         zip.start_file("ppt/slides/slide1.xml", options).unwrap();

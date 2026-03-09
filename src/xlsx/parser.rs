@@ -205,11 +205,8 @@ impl XlsxParser {
                         let hlinks = Self::parse_hyperlinks(&xml, &sheet_rels);
 
                         // Find comments relationship and parse comments XML
-                        let comments = Self::find_and_parse_comments(
-                            &self.container,
-                            &sheet_rels,
-                            sheet_dir,
-                        );
+                        let comments =
+                            Self::find_and_parse_comments(&self.container, &sheet_rels, sheet_dir);
 
                         (hlinks, comments)
                     } else {
@@ -446,9 +443,8 @@ impl XlsxParser {
                             let mut runs = vec![text_run];
 
                             // Append comment as an italic TextRun if present
-                            if let Some(comment_text) = current_cell_ref
-                                .as_ref()
-                                .and_then(|r| comment_map.get(r))
+                            if let Some(comment_text) =
+                                current_cell_ref.as_ref().and_then(|r| comment_map.get(r))
                             {
                                 let mut comment_run =
                                     TextRun::plain(format!(" [Comment: {}]", comment_text));
@@ -491,11 +487,9 @@ impl XlsxParser {
         }
 
         // Trim trailing empty rows to avoid bloat
-        while table
-            .rows
-            .last()
-            .is_some_and(|r| r.cells.is_empty() || r.cells.iter().all(|c| c.plain_text().is_empty()))
-        {
+        while table.rows.last().is_some_and(|r| {
+            r.cells.is_empty() || r.cells.iter().all(|c| c.plain_text().is_empty())
+        }) {
             table.rows.pop();
         }
 
@@ -568,17 +562,15 @@ impl XlsxParser {
 
         loop {
             match reader.read_event_into(&mut buf) {
-                Ok(quick_xml::events::Event::Start(ref e)) => {
-                    match e.name().as_ref() {
-                        b"hyperlinks" => {
-                            in_hyperlinks = true;
-                        }
-                        b"hyperlink" if in_hyperlinks => {
-                            Self::collect_hyperlink_attrs(e, sheet_rels, &mut hyperlinks);
-                        }
-                        _ => {}
+                Ok(quick_xml::events::Event::Start(ref e)) => match e.name().as_ref() {
+                    b"hyperlinks" => {
+                        in_hyperlinks = true;
                     }
-                }
+                    b"hyperlink" if in_hyperlinks => {
+                        Self::collect_hyperlink_attrs(e, sheet_rels, &mut hyperlinks);
+                    }
+                    _ => {}
+                },
                 Ok(quick_xml::events::Event::Empty(ref e))
                     if in_hyperlinks && e.name().as_ref() == b"hyperlink" =>
                 {
@@ -773,7 +765,8 @@ impl XlsxParser {
                         .filter(|(_, (t, _))| t.contains("image"))
                         .map(|(id, (_, tgt))| {
                             let resolved = Self::resolve_relative_path(drawing_dir, &tgt);
-                            let filename = resolved.rsplit('/').next().unwrap_or(&resolved).to_string();
+                            let filename =
+                                resolved.rsplit('/').next().unwrap_or(&resolved).to_string();
                             (id, filename)
                         })
                         .collect::<HashMap<String, String>>()
@@ -820,7 +813,9 @@ impl XlsxParser {
 
         for segment in relative.split('/') {
             match segment {
-                ".." => { parts.pop(); }
+                ".." => {
+                    parts.pop();
+                }
                 "." | "" => {}
                 s => parts.push(s),
             }
@@ -848,8 +843,12 @@ impl XlsxParser {
                         for attr in e.attributes().flatten() {
                             match attr.key.as_ref() {
                                 b"Id" => id = String::from_utf8_lossy(&attr.value).to_string(),
-                                b"Type" => rel_type = String::from_utf8_lossy(&attr.value).to_string(),
-                                b"Target" => target = String::from_utf8_lossy(&attr.value).to_string(),
+                                b"Type" => {
+                                    rel_type = String::from_utf8_lossy(&attr.value).to_string()
+                                }
+                                b"Target" => {
+                                    target = String::from_utf8_lossy(&attr.value).to_string()
+                                }
                                 _ => {}
                             }
                         }
@@ -874,10 +873,7 @@ impl XlsxParser {
     /// Structure: xdr:pic > xdr:nvPicPr > xdr:cNvPr[@name]
     ///            xdr:pic > xdr:blipFill > a:blip[@r:embed]
     ///            xdr:pic > xdr:spPr > a:xfrm > a:ext[@cx, @cy]
-    fn parse_drawing_images(
-        xml: &str,
-        rels: &HashMap<String, String>,
-    ) -> Result<Vec<Block>> {
+    fn parse_drawing_images(xml: &str, rels: &HashMap<String, String>) -> Result<Vec<Block>> {
         let mut images = Vec::new();
         let mut reader = quick_xml::Reader::from_str(xml);
         reader.config_mut().trim_text(true);
@@ -1327,7 +1323,12 @@ mod tests {
         assert_eq!(images.len(), 2);
 
         match &images[0] {
-            Block::Image { resource_id, alt_text, width, height } => {
+            Block::Image {
+                resource_id,
+                alt_text,
+                width,
+                height,
+            } => {
                 assert_eq!(resource_id, "image1.png");
                 assert_eq!(alt_text.as_deref(), Some("Logo"));
                 assert_eq!(*width, Some(914400));
@@ -1337,7 +1338,12 @@ mod tests {
         }
 
         match &images[1] {
-            Block::Image { resource_id, alt_text, width, height } => {
+            Block::Image {
+                resource_id,
+                alt_text,
+                width,
+                height,
+            } => {
                 assert_eq!(resource_id, "image2.jpeg");
                 assert_eq!(alt_text.as_deref(), Some("Chart Screenshot"));
                 assert_eq!(*width, Some(1828800));
@@ -1375,7 +1381,11 @@ mod tests {
         assert_eq!(images.len(), 1);
 
         match &images[0] {
-            Block::Image { resource_id, alt_text, .. } => {
+            Block::Image {
+                resource_id,
+                alt_text,
+                ..
+            } => {
                 assert_eq!(resource_id, "image1.png");
                 assert_eq!(alt_text.as_deref(), Some("Pic1"));
             }
