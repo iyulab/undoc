@@ -3,7 +3,8 @@
 use crate::container::OoxmlContainer;
 use crate::error::{Error, Result};
 use crate::model::{
-    Block, Cell, CellAlignment, Document, Metadata, Paragraph, Row, Section, Table, TextRun,
+    Block, Cell, CellAlignment, Document, Metadata, Paragraph, Resource, ResourceType, Row,
+    Section, Table, TextRun,
 };
 use std::collections::HashMap;
 use std::path::Path;
@@ -202,6 +203,9 @@ impl XlsxParser {
 
             doc.add_section(section);
         }
+
+        // Extract resources (images, media)
+        self.extract_resources(&mut doc)?;
 
         Ok(doc)
     }
@@ -480,6 +484,36 @@ impl XlsxParser {
         }
     }
 
+    /// Extract resources (images, media) from the workbook.
+    fn extract_resources(&self, doc: &mut Document) -> Result<()> {
+        for file in self.container.list_files() {
+            if file.starts_with("xl/media/") {
+                if let Ok(data) = self.container.read_binary(&file) {
+                    let filename = file.rsplit('/').next().unwrap_or(&file).to_string();
+                    let ext = std::path::Path::new(&file)
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .unwrap_or("");
+                    let size = data.len();
+
+                    let resource = Resource {
+                        resource_type: ResourceType::from_extension(ext),
+                        filename: Some(filename.clone()),
+                        mime_type: guess_mime_type(&file),
+                        data,
+                        size,
+                        width: None,
+                        height: None,
+                        alt_text: None,
+                    };
+                    doc.resources.insert(filename, resource);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     /// Get a reference to the container.
     pub fn container(&self) -> &OoxmlContainer {
         &self.container
@@ -493,6 +527,22 @@ impl XlsxParser {
     /// Get sheet names.
     pub fn sheet_names(&self) -> Vec<&str> {
         self.sheets.iter().map(|s| s.name.as_str()).collect()
+    }
+}
+
+/// Guess MIME type from file path.
+fn guess_mime_type(path: &str) -> Option<String> {
+    let ext = path.rsplit('.').next()?.to_lowercase();
+    match ext.as_str() {
+        "png" => Some("image/png".to_string()),
+        "jpg" | "jpeg" => Some("image/jpeg".to_string()),
+        "gif" => Some("image/gif".to_string()),
+        "bmp" => Some("image/bmp".to_string()),
+        "tiff" | "tif" => Some("image/tiff".to_string()),
+        "svg" => Some("image/svg+xml".to_string()),
+        "wmf" => Some("image/x-wmf".to_string()),
+        "emf" => Some("image/x-emf".to_string()),
+        _ => None,
     }
 }
 
