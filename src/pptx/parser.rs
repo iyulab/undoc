@@ -200,11 +200,7 @@ impl PptxParser {
                     let notes_rels = self.parse_slide_relationships(&notes_path)?;
                     let notes = self.parse_notes_with_rels(&xml, &notes_rels)?;
                     if !notes.is_empty() {
-                        // Add a separator and notes
-                        section.add_block(Block::Paragraph(Paragraph::with_text("--- Notes ---")));
-                        for para in notes {
-                            section.add_block(Block::Paragraph(para));
-                        }
+                        section.notes = Some(notes);
                     }
                 }
             }

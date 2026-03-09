@@ -485,6 +485,15 @@ fn render_run(run: &TextRun, options: &RenderOptions) -> String {
     if run.style.code {
         text = format!("`{}`", text.replace('`', "\\`"));
     }
+    if run.style.superscript {
+        text = format!("<sup>{}</sup>", text);
+    }
+    if run.style.subscript {
+        text = format!("<sub>{}</sub>", text);
+    }
+    if run.style.underline {
+        text = format!("<u>{}</u>", text);
+    }
     if run.style.strikethrough {
         text = format!("~~{}~~", text);
     }

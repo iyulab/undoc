@@ -605,6 +605,24 @@ impl DocxParser {
                             revision: current_revision,
                         });
                     }
+                    // Non-breaking space handling
+                    b"w:noBreakSpace" if in_run => {
+                        let current_revision = if in_del {
+                            RevisionType::Deleted
+                        } else if in_ins {
+                            RevisionType::Inserted
+                        } else {
+                            RevisionType::None
+                        };
+                        para.runs.push(TextRun {
+                            text: "\u{00A0}".to_string(), // Non-breaking space Unicode
+                            style: current_style.clone(),
+                            hyperlink: current_hyperlink.clone(),
+                            line_break: false,
+                            page_break: false,
+                            revision: current_revision,
+                        });
+                    }
                     _ => {}
                 },
                 Ok(quick_xml::events::Event::Text(ref e)) => {
