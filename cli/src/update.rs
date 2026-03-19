@@ -13,6 +13,106 @@ const REPO_NAME: &str = "undoc";
 const BIN_NAME: &str = "undoc";
 const CLI_CRATE_NAME: &str = "undoc-cli";
 
+/// Platform info for asset matching
+struct PlatformInfo {
+    /// Human-friendly OS name (windows, linux, macos)
+    os_name: &'static str,
+    /// Human-friendly arch name (x86_64, aarch64)
+    arch_name: &'static str,
+    /// Rust target triple (x86_64-pc-windows-msvc, etc.)
+    target_triple: &'static str,
+    /// Archive extension (zip for Windows, tar.gz for Unix)
+    archive_ext: &'static str,
+}
+
+/// Get platform info for the current system
+fn get_platform_info() -> PlatformInfo {
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    return PlatformInfo {
+        os_name: "windows",
+        arch_name: "x86_64",
+        target_triple: "x86_64-pc-windows-msvc",
+        archive_ext: "zip",
+    };
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    return PlatformInfo {
+        os_name: "linux",
+        arch_name: "x86_64",
+        target_triple: "x86_64-unknown-linux-gnu",
+        archive_ext: "tar.gz",
+    };
+
+    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+    return PlatformInfo {
+        os_name: "macos",
+        arch_name: "x86_64",
+        target_triple: "x86_64-apple-darwin",
+        archive_ext: "tar.gz",
+    };
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    return PlatformInfo {
+        os_name: "macos",
+        arch_name: "aarch64",
+        target_triple: "aarch64-apple-darwin",
+        archive_ext: "tar.gz",
+    };
+
+    #[cfg(not(any(
+        all(target_os = "windows", target_arch = "x86_64"),
+        all(target_os = "linux", target_arch = "x86_64"),
+        all(target_os = "macos", target_arch = "x86_64"),
+        all(target_os = "macos", target_arch = "aarch64"),
+    )))]
+    {
+        // Fallback for unsupported platforms
+        PlatformInfo {
+            os_name: std::env::consts::OS,
+            arch_name: std::env::consts::ARCH,
+            target_triple: "unknown",
+            archive_ext: "tar.gz",
+        }
+    }
+}
+
+/// Generate asset name patterns to search for (in priority order)
+fn get_asset_patterns(platform: &PlatformInfo, version: &str) -> Vec<String> {
+    let v = version.trim_start_matches('v');
+    vec![
+        // Human-friendly format (preferred): undoc-windows-x86_64-v0.1.0.zip
+        format!(
+            "undoc-{}-{}-v{}.{}",
+            platform.os_name, platform.arch_name, v, platform.archive_ext
+        ),
+        // Without 'v' prefix: undoc-windows-x86_64-0.1.0.zip
+        format!(
+            "undoc-{}-{}-{}.{}",
+            platform.os_name, platform.arch_name, v, platform.archive_ext
+        ),
+        // Target triple format: undoc-x86_64-pc-windows-msvc-v0.1.0.zip
+        format!(
+            "undoc-{}-v{}.{}",
+            platform.target_triple, v, platform.archive_ext
+        ),
+        // Target triple without 'v': undoc-x86_64-pc-windows-msvc-0.1.0.zip
+        format!(
+            "undoc-{}-{}.{}",
+            platform.target_triple, v, platform.archive_ext
+        ),
+    ]
+}
+
+/// Find matching asset name from a list of asset names using exact-match fallback patterns
+fn find_matching_asset(asset_names: &[String], patterns: &[String]) -> Option<String> {
+    for pattern in patterns {
+        if asset_names.iter().any(|name| name == pattern) {
+            return Some(pattern.clone());
+        }
+    }
+    None
+}
+
 /// Detect if installed via cargo install (binary in .cargo/bin)
 fn is_cargo_install() -> bool {
     if let Ok(exe_path) = std::env::current_exe() {
@@ -176,29 +276,45 @@ pub fn run_update(check_only: bool, force: bool) -> Result<(), Box<dyn std::erro
     println!();
     println!("{}", "Downloading update...".cyan());
 
-    // Find the correct CLI asset from the release
-    let os_str = std::env::consts::OS;
-    let arch_str = std::env::consts::ARCH;
-    let target_asset = latest
-        .assets
-        .iter()
-        .find(|asset| {
-            asset.name.starts_with("undoc-")
-                && asset.name.contains(os_str)
-                && asset.name.contains(arch_str)
-        })
-        .ok_or_else(|| format!("No CLI asset found for {}-{}", os_str, arch_str))?;
+    // Find the correct CLI asset using exact-match patterns
+    // (avoids `.contains()` collisions with FFI or other assets)
+    let platform = get_platform_info();
+    let patterns = get_asset_patterns(&platform, latest_version);
 
-    println!("{} {}", "Found asset:".dimmed(), target_asset.name.dimmed());
+    let asset_names: Vec<String> = latest.assets.iter().map(|a| a.name.clone()).collect();
+    let asset_name = find_matching_asset(&asset_names, &patterns);
+
+    if asset_name.is_none() {
+        println!("{}", "No matching asset found.".red());
+        println!("{}", "Searched for:".dimmed());
+        for p in &patterns {
+            println!("  - {}", p.dimmed());
+        }
+        println!();
+        println!(
+            "{} {}",
+            "Available assets:".dimmed(),
+            latest
+                .assets
+                .iter()
+                .map(|a| a.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        return Err("No compatible binary found for this platform".into());
+    }
+
+    let asset_name = asset_name.unwrap();
+    println!("{} {}", "Found asset:".dimmed(), asset_name.dimmed());
 
     // Use direct download URL (avoids needing Accept header for API URL)
     let download_url = format!(
         "https://github.com/{}/{}/releases/download/v{}/{}",
-        REPO_OWNER, REPO_NAME, latest_version, target_asset.name
+        REPO_OWNER, REPO_NAME, latest_version, asset_name
     );
 
     let tmp_dir = self_update::TempDir::new()?;
-    let tmp_archive_path = tmp_dir.path().join(&target_asset.name);
+    let tmp_archive_path = tmp_dir.path().join(&asset_name);
     let mut tmp_archive = std::fs::File::create(&tmp_archive_path)?;
 
     let mut download = self_update::Download::from_url(&download_url);
