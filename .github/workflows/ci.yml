@@ -10,8 +10,44 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  version-check:
+    name: Version Consistency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify all package versions match
+        shell: bash
+        run: |
+          # Extract version strings from the four canonical files listed in
+          # CLAUDE.md's "Version Bump Checklist". CI fails fast when any are
+          # out of sync — a full release can't ship mismatched versions.
+          root=$(grep -m1 '^version = ' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+          cli=$(grep -m1 '^version = ' cli/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+          py=$(grep -m1 '^version = ' bindings/python/pyproject.toml | sed 's/.*"\(.*\)".*/\1/')
+          cs=$(grep -oE '<Version>[^<]+</Version>' bindings/csharp/Undoc/Undoc.csproj | head -1 | sed 's/<[^>]*>//g')
+
+          echo "Root Cargo.toml:                    $root"
+          echo "cli/Cargo.toml:                     $cli"
+          echo "bindings/python/pyproject.toml:     $py"
+          echo "bindings/csharp/Undoc/Undoc.csproj: $cs"
+
+          fail=0
+          for v in "$cli" "$py" "$cs"; do
+            if [ "$v" != "$root" ]; then
+              fail=1
+            fi
+          done
+
+          if [ $fail -eq 1 ]; then
+            echo "::error::Version mismatch — update all four canonical files together per CLAUDE.md Version Bump Checklist."
+            exit 1
+          fi
+          echo "All versions match: $root"
+
   test:
     name: Test
+    needs: version-check
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -50,6 +86,7 @@ jobs:
 
   lint:
     name: Lint
+    needs: version-check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
