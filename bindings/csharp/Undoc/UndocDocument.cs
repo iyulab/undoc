@@ -10,6 +10,9 @@ namespace Undoc;
 /// </summary>
 public class UndocException : Exception
 {
+    /// <summary>
+    /// Initialize an undoc exception with a native or wrapper error message.
+    /// </summary>
     public UndocException(string message) : base(message) { }
 }
 
@@ -68,7 +71,7 @@ public class UndocDocument : IDisposable
         get
         {
             var ptr = NativeMethods.undoc_version();
-            return Marshal.PtrToStringAnsi(ptr) ?? "unknown";
+            return ptr == IntPtr.Zero ? "unknown" : PtrToStringUtf8(ptr);
         }
     }
 
@@ -128,14 +131,7 @@ public class UndocDocument : IDisposable
         if (ptr == IntPtr.Zero)
             throw new UndocException($"Failed to convert to markdown: {GetLastError()}");
 
-        try
-        {
-            return PtrToStringUtf8(ptr);
-        }
-        finally
-        {
-            NativeMethods.undoc_free_string(ptr);
-        }
+        return CopyAndFreeNativeUtf8String(ptr, NativeMethods.undoc_free_string);
     }
 
     /// <summary>
@@ -149,14 +145,7 @@ public class UndocDocument : IDisposable
         if (ptr == IntPtr.Zero)
             throw new UndocException($"Failed to convert to text: {GetLastError()}");
 
-        try
-        {
-            return PtrToStringUtf8(ptr);
-        }
-        finally
-        {
-            NativeMethods.undoc_free_string(ptr);
-        }
+        return CopyAndFreeNativeUtf8String(ptr, NativeMethods.undoc_free_string);
     }
 
     /// <summary>
@@ -172,14 +161,7 @@ public class UndocDocument : IDisposable
         if (ptr == IntPtr.Zero)
             throw new UndocException($"Failed to convert to JSON: {GetLastError()}");
 
-        try
-        {
-            return PtrToStringUtf8(ptr);
-        }
-        finally
-        {
-            NativeMethods.undoc_free_string(ptr);
-        }
+        return CopyAndFreeNativeUtf8String(ptr, NativeMethods.undoc_free_string);
     }
 
     /// <summary>
@@ -193,14 +175,7 @@ public class UndocDocument : IDisposable
         if (ptr == IntPtr.Zero)
             throw new UndocException($"Failed to get plain text: {GetLastError()}");
 
-        try
-        {
-            return PtrToStringUtf8(ptr);
-        }
-        finally
-        {
-            NativeMethods.undoc_free_string(ptr);
-        }
+        return CopyAndFreeNativeUtf8String(ptr, NativeMethods.undoc_free_string);
     }
 
     /// <summary>
@@ -245,14 +220,7 @@ public class UndocDocument : IDisposable
             if (ptr == IntPtr.Zero)
                 return null;
 
-            try
-            {
-                return PtrToStringUtf8(ptr);
-            }
-            finally
-            {
-                NativeMethods.undoc_free_string(ptr);
-            }
+            return CopyAndFreeNativeUtf8String(ptr, NativeMethods.undoc_free_string);
         }
     }
 
@@ -268,14 +236,7 @@ public class UndocDocument : IDisposable
             if (ptr == IntPtr.Zero)
                 return null;
 
-            try
-            {
-                return PtrToStringUtf8(ptr);
-            }
-            finally
-            {
-                NativeMethods.undoc_free_string(ptr);
-            }
+            return CopyAndFreeNativeUtf8String(ptr, NativeMethods.undoc_free_string);
         }
     }
 
@@ -290,15 +251,8 @@ public class UndocDocument : IDisposable
         if (ptr == IntPtr.Zero)
             return Array.Empty<string>();
 
-        try
-        {
-            var json = PtrToStringUtf8(ptr);
-            return JsonSerializer.Deserialize<string[]>(json) ?? Array.Empty<string>();
-        }
-        finally
-        {
-            NativeMethods.undoc_free_string(ptr);
-        }
+        var json = CopyAndFreeNativeUtf8String(ptr, NativeMethods.undoc_free_string);
+        return JsonSerializer.Deserialize<string[]>(json) ?? Array.Empty<string>();
     }
 
     /// <summary>
@@ -313,15 +267,8 @@ public class UndocDocument : IDisposable
         if (ptr == IntPtr.Zero)
             return null;
 
-        try
-        {
-            var json = PtrToStringUtf8(ptr);
-            return JsonDocument.Parse(json);
-        }
-        finally
-        {
-            NativeMethods.undoc_free_string(ptr);
-        }
+        var json = CopyAndFreeNativeUtf8String(ptr, NativeMethods.undoc_free_string);
+        return JsonDocument.Parse(json);
     }
 
     /// <summary>
@@ -353,10 +300,25 @@ public class UndocDocument : IDisposable
         var ptr = NativeMethods.undoc_last_error();
         if (ptr == IntPtr.Zero)
             return "Unknown error";
-        return Marshal.PtrToStringAnsi(ptr) ?? "Unknown error";
+        return PtrToStringUtf8(ptr);
     }
 
-    private static string PtrToStringUtf8(IntPtr ptr)
+    internal static string CopyAndFreeNativeUtf8String(IntPtr ptr, Action<IntPtr> free)
+    {
+        if (ptr == IntPtr.Zero)
+            return string.Empty;
+
+        try
+        {
+            return PtrToStringUtf8(ptr);
+        }
+        finally
+        {
+            free(ptr);
+        }
+    }
+
+    internal static string PtrToStringUtf8(IntPtr ptr)
     {
         if (ptr == IntPtr.Zero)
             return string.Empty;
@@ -380,12 +342,21 @@ public class UndocDocument : IDisposable
             throw new ObjectDisposedException(nameof(UndocDocument));
     }
 
+    /// <summary>
+    /// Release the native document handle.
+    /// </summary>
     public void Dispose()
     {
         Dispose(true);
         GC.SuppressFinalize(this);
     }
 
+    /// <summary>
+    /// Release managed and unmanaged resources associated with this document.
+    /// </summary>
+    /// <param name="disposing">
+    /// True when called from <see cref="Dispose()"/>; false when called from the finalizer.
+    /// </param>
     protected virtual void Dispose(bool disposing)
     {
         if (!_disposed)
@@ -399,6 +370,9 @@ public class UndocDocument : IDisposable
         }
     }
 
+    /// <summary>
+    /// Finalizer for releasing the native document handle if <see cref="Dispose()"/> was not called.
+    /// </summary>
     ~UndocDocument()
     {
         Dispose(false);

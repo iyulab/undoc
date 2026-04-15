@@ -1,10 +1,10 @@
+using System.IO.Compression;
+using System.Runtime.InteropServices;
+using System.Text;
 using Xunit;
 
 namespace Undoc.Tests;
 
-/// <summary>
-/// Basic tests that don't require native library or test files.
-/// </summary>
 public class BasicTests
 {
     [Fact]
@@ -15,161 +15,272 @@ public class BasicTests
     }
 }
 
-/// <summary>
-/// Tests that require the native library.
-/// These are skipped in CI where only the managed assembly is available.
-/// </summary>
+public class Utf8InteropTests
+{
+    [Fact]
+    public void CopyAndFreeNativeUtf8String_CopiesUtf8BeforeFree()
+    {
+        var ptr = Marshal.StringToCoTaskMemUTF8("Привет из UTF-8");
+        var freed = false;
+
+        var value = UndocDocument.CopyAndFreeNativeUtf8String(ptr, p =>
+        {
+            Assert.Equal(ptr, p);
+            Marshal.FreeCoTaskMem(p);
+            freed = true;
+        });
+
+        Assert.True(freed);
+        Assert.Equal("Привет из UTF-8", value);
+    }
+
+    [Fact]
+    public void PtrToStringUtf8_DecodesUnicodeContent()
+    {
+        var ptr = Marshal.StringToCoTaskMemUTF8("Здравствуйте");
+
+        try
+        {
+            Assert.Equal("Здравствуйте", UndocDocument.PtrToStringUtf8(ptr));
+        }
+        finally
+        {
+            Marshal.FreeCoTaskMem(ptr);
+        }
+    }
+}
+
 public class NativeLibraryTests
 {
-    [Fact(Skip = "Requires native library")]
-    public void Version_ReturnsNonEmptyString()
+    [Fact]
+    public void Version_LoadsFromShippedRuntimePath()
     {
+        var stagedLibrary = NativeTestSupport.EnsureNativeLibraryPrepared();
+
         var version = UndocDocument.Version;
+
+        Assert.Equal(stagedLibrary, NativeTestSupport.StagedLibraryPath);
+        Assert.StartsWith(Path.Combine(AppContext.BaseDirectory, "runtimes"), stagedLibrary);
+        Assert.False(File.Exists(Path.Combine(AppContext.BaseDirectory, NativeTestSupport.NativeLibraryFileName)));
         Assert.NotNull(version);
         Assert.NotEmpty(version);
     }
 
-    [Fact(Skip = "Requires native library")]
-    public void Version_HasSemverFormat()
+    [Fact]
+    public void ParseBytes_GeneratedDocx_PreservesUtf8Text()
     {
-        var version = UndocDocument.Version;
-        var parts = version.Split('.');
-        Assert.True(parts.Length >= 2, "Version should have at least major.minor");
+        NativeTestSupport.EnsureNativeLibraryPrepared();
+
+        using var doc = UndocDocument.ParseBytes(
+            NativeTestSupport.CreateMinimalDocxBytes("Привет из C#"));
+
+        Assert.Contains("Привет из C#", doc.ToMarkdown());
+        Assert.Contains("Привет из C#", doc.ToText());
     }
 
-    [Fact(Skip = "Requires native library")]
-    public void ParseFile_NonexistentFile_ThrowsFileNotFoundException()
+    [Fact]
+    public void CandidatePaths_Include_Windows_Runtime_Native_UndocDll()
     {
-        Assert.Throws<FileNotFoundException>(() =>
-            UndocDocument.ParseFile("nonexistent.docx"));
+        var paths = NativeMethods.BuildCandidatePaths(
+            baseDir: "/base",
+            assemblyDir: "/assembly",
+            runtimeId: "win-x64",
+            fileNames: new[] { "undoc_native.dll", "undoc.dll" });
+
+        Assert.Contains(Path.Combine("/base", "runtimes", "win-x64", "native", "undoc.dll"), paths);
+        Assert.Contains(Path.Combine("/assembly", "runtimes", "win-x64", "native", "undoc.dll"), paths);
     }
 }
 
-/// <summary>
-/// Integration tests requiring actual Office files.
-/// These tests are skipped in CI where test files are not available.
-/// </summary>
-public class IntegrationTests
+public class NativeLibraryResolverTests
 {
-    private static readonly string TestFilesDir = Path.Combine(
-        AppDomain.CurrentDomain.BaseDirectory,
-        "..", "..", "..", "..", "..", "..", "test-files");
-
-    private static string? GetTestFile(string filename)
+    [Fact]
+    public void CandidatePaths_PreferShippedRuntimeDirectoryOverLooseWindowsCopies()
     {
-        var path = Path.Combine(TestFilesDir, filename);
-        return File.Exists(path) ? path : null;
+        using var sandbox = new TemporaryDirectory();
+        var baseDir = Path.Combine(sandbox.Path, "base");
+        var assemblyDir = Path.Combine(sandbox.Path, "assembly");
+        Directory.CreateDirectory(baseDir);
+        Directory.CreateDirectory(assemblyDir);
+
+        var shippedRuntimePath = Path.Combine(baseDir, "runtimes", "win-x64", "native", "undoc.dll");
+        var assemblyRuntimePath = Path.Combine(assemblyDir, "runtimes", "win-x64", "native", "undoc.dll");
+        var looseBasePath = Path.Combine(baseDir, "undoc_native.dll");
+        var looseAssemblyPath = Path.Combine(assemblyDir, "undoc.dll");
+
+        CreatePlaceholderFile(shippedRuntimePath);
+        CreatePlaceholderFile(assemblyRuntimePath);
+        CreatePlaceholderFile(looseBasePath);
+        CreatePlaceholderFile(looseAssemblyPath);
+
+        var candidates = NativeMethods.GetCandidatePaths(
+            assemblyDir,
+            baseDir,
+            "win-x64",
+            new[] { "undoc_native.dll", "undoc.dll" });
+
+        Assert.Collection(
+            candidates,
+            candidate => Assert.Equal(shippedRuntimePath, candidate),
+            candidate => Assert.Equal(assemblyRuntimePath, candidate),
+            candidate => Assert.Equal(looseBasePath, candidate),
+            candidate => Assert.Equal(looseAssemblyPath, candidate));
     }
 
-    [Fact(Skip = "Requires native library and test files")]
-    public void ParseFile_ValidDocx_ReturnsDocument()
+    private static void CreatePlaceholderFile(string path)
     {
-        var path = GetTestFile("file-sample_1MB.docx");
-        if (path == null) return;
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.WriteAllText(path, "placeholder");
+    }
+}
 
-        using var doc = UndocDocument.ParseFile(path);
-        Assert.NotNull(doc);
-        Assert.True(doc.SectionCount >= 0);
+internal static class NativeTestSupport
+{
+    private static readonly object Sync = new();
+    private static bool _prepared;
+    private static string? _stagedLibraryPath;
+
+    public static string EnsureNativeLibraryPrepared()
+    {
+        lock (Sync)
+        {
+            if (_prepared)
+                return _stagedLibraryPath!;
+
+            var builtLibrary = Path.Combine(RepoRoot, "target", "release", NativeLibraryFileName);
+            Assert.True(
+                File.Exists(builtLibrary),
+                $"Expected native library at {builtLibrary}. Run `cargo build --release --features ffi` first.");
+
+            var runtimeId = NativeMethods.GetRuntimeIdentifierForCurrentPlatform();
+            Assert.False(string.IsNullOrEmpty(runtimeId), "Native test runtime identifier should resolve on supported test platforms.");
+
+            DeleteIfExists(Path.Combine(AppContext.BaseDirectory, NativeLibraryFileName));
+
+            var destination = Path.Combine(
+                AppContext.BaseDirectory,
+                "runtimes",
+                runtimeId!,
+                "native",
+                NativeLibraryFileName);
+            Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+            File.Copy(builtLibrary, destination, overwrite: true);
+            _stagedLibraryPath = destination;
+            _prepared = true;
+            return destination;
+        }
     }
 
-    [Fact(Skip = "Requires native library and test files")]
-    public void ToMarkdown_ReturnsValidMarkdown()
+    public static string StagedLibraryPath => _stagedLibraryPath ?? string.Empty;
+
+    public static byte[] CreateMinimalDocxBytes(string text)
     {
-        var path = GetTestFile("file-sample_1MB.docx");
-        if (path == null) return;
+        using var stream = new MemoryStream();
+        using (var zip = new ZipArchive(stream, ZipArchiveMode.Create, leaveOpen: true))
+        {
+            WriteEntry(
+                zip,
+                "[Content_Types].xml",
+                """
+                <?xml version="1.0" encoding="UTF-8"?>
+                <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+                  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+                  <Default Extension="xml" ContentType="application/xml"/>
+                  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+                </Types>
+                """);
+            WriteEntry(
+                zip,
+                "_rels/.rels",
+                """
+                <?xml version="1.0" encoding="UTF-8"?>
+                <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+                  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+                </Relationships>
+                """);
+            WriteEntry(
+                zip,
+                "word/_rels/document.xml.rels",
+                """
+                <?xml version="1.0" encoding="UTF-8"?>
+                <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+                </Relationships>
+                """);
+            WriteEntry(
+                zip,
+                "word/document.xml",
+                $$"""
+                <?xml version="1.0" encoding="UTF-8"?>
+                <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+                  <w:body>
+                    <w:p>
+                      <w:r><w:t>{{text}}</w:t></w:r>
+                    </w:p>
+                  </w:body>
+                </w:document>
+                """);
+        }
 
-        using var doc = UndocDocument.ParseFile(path);
-        var markdown = doc.ToMarkdown();
-
-        Assert.NotNull(markdown);
-        Assert.NotEmpty(markdown);
+        return stream.ToArray();
     }
 
-    [Fact(Skip = "Requires native library and test files")]
-    public void ToMarkdown_WithFrontmatter_ContainsFrontmatter()
+    private static void WriteEntry(ZipArchive zip, string path, string content)
     {
-        var path = GetTestFile("file-sample_1MB.docx");
-        if (path == null) return;
-
-        using var doc = UndocDocument.ParseFile(path);
-        var options = new MarkdownOptions { IncludeFrontmatter = true };
-        var markdown = doc.ToMarkdown(options);
-
-        Assert.Contains("---", markdown);
+        var entry = zip.CreateEntry(path, CompressionLevel.NoCompression);
+        using var writer = new StreamWriter(entry.Open(), new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        writer.Write(content);
     }
 
-    [Fact(Skip = "Requires native library and test files")]
-    public void ToText_ReturnsValidText()
+    private static void DeleteIfExists(string path)
     {
-        var path = GetTestFile("file-sample_1MB.docx");
-        if (path == null) return;
-
-        using var doc = UndocDocument.ParseFile(path);
-        var text = doc.ToText();
-
-        Assert.NotNull(text);
-        Assert.NotEmpty(text);
+        if (File.Exists(path))
+            File.Delete(path);
     }
 
-    [Fact(Skip = "Requires native library and test files")]
-    public void ToJson_ReturnsValidJson()
+    private static string RepoRoot =>
+        Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", ".."));
+
+    public static string NativeLibraryFileName =>
+        RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "undoc.dll" :
+        RuntimeInformation.IsOSPlatform(OSPlatform.OSX) ? "libundoc.dylib" :
+        "libundoc.so";
+
+    public static string RuntimeIdentifier =>
+        NativeMethods.GetRuntimeIdentifier() ??
+        throw new PlatformNotSupportedException("No shipped native runtime asset is configured for this platform.");
+
+    private static string NativeRuntimeDirectory =>
+        Path.Combine(AppContext.BaseDirectory, "runtimes", RuntimeIdentifier, "native");
+
+    private static string NativeLibraryDestination =>
+        Path.Combine(NativeRuntimeDirectory, NativeLibraryFileName);
+
+    private static void DeleteLooseCopies()
     {
-        var path = GetTestFile("file-sample_1MB.docx");
-        if (path == null) return;
+        foreach (var fileName in RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
+                     ? new[] { "undoc_native.dll", "undoc.dll" }
+                     : new[] { NativeLibraryFileName })
+        {
+            var loosePath = Path.Combine(AppContext.BaseDirectory, fileName);
+            if (File.Exists(loosePath))
+                File.Delete(loosePath);
+        }
+    }
+}
 
-        using var doc = UndocDocument.ParseFile(path);
-        var json = doc.ToJson();
-
-        Assert.NotNull(json);
-        Assert.StartsWith("{", json);
+internal sealed class TemporaryDirectory : IDisposable
+{
+    public TemporaryDirectory()
+    {
+        Path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"undoc-csharp-tests-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(Path);
     }
 
-    [Fact(Skip = "Requires native library and test files")]
-    public void ParseBytes_ValidData_ReturnsDocument()
+    public string Path { get; }
+
+    public void Dispose()
     {
-        var path = GetTestFile("file-sample_1MB.docx");
-        if (path == null) return;
-
-        var data = File.ReadAllBytes(path);
-        using var doc = UndocDocument.ParseBytes(data);
-
-        Assert.NotNull(doc);
-        var markdown = doc.ToMarkdown();
-        Assert.NotEmpty(markdown);
-    }
-
-    [Fact(Skip = "Requires native library and test files")]
-    public void GetResourceIds_ReturnsArray()
-    {
-        var path = GetTestFile("file-sample_1MB.docx");
-        if (path == null) return;
-
-        using var doc = UndocDocument.ParseFile(path);
-        var ids = doc.GetResourceIds();
-
-        Assert.NotNull(ids);
-    }
-
-    [Fact(Skip = "Requires native library and test files")]
-    public void Dispose_CanBeCalledMultipleTimes()
-    {
-        var path = GetTestFile("file-sample_1MB.docx");
-        if (path == null) return;
-
-        var doc = UndocDocument.ParseFile(path);
-        doc.Dispose();
-        doc.Dispose(); // Should not throw
-    }
-
-    [Fact(Skip = "Requires native library and test files")]
-    public void AfterDispose_ThrowsObjectDisposedException()
-    {
-        var path = GetTestFile("file-sample_1MB.docx");
-        if (path == null) return;
-
-        var doc = UndocDocument.ParseFile(path);
-        doc.Dispose();
-
-        Assert.Throws<ObjectDisposedException>(() => doc.ToMarkdown());
+        if (Directory.Exists(Path))
+            Directory.Delete(Path, recursive: true);
     }
 }
