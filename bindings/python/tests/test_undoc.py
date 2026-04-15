@@ -2,7 +2,11 @@
 
 import ctypes
 import io
+import os
+import platform
 import pytest
+import subprocess
+import sys
 import zipfile
 from pathlib import Path
 
@@ -13,6 +17,26 @@ from undoc import Undoc, UndocError, parse_file, parse_bytes, version
 
 # Get test files directory
 TEST_FILES_DIR = Path(__file__).parent.parent.parent.parent / "test-files"
+
+
+def _native_library_filename() -> str:
+    system = platform.system()
+    if system == "Windows":
+        return "undoc.dll"
+    if system == "Darwin":
+        return "libundoc.dylib"
+    return "libundoc.so"
+
+
+if os.environ.get("UNDOC_REQUIRE_NATIVE") == "1" and not LIBRARY_AVAILABLE:
+    configured_path = os.environ.get("UNDOC_LIB_PATH")
+    configured_suffix = (
+        f" (UNDOC_LIB_PATH={configured_path})" if configured_path else ""
+    )
+    raise RuntimeError(
+        "UNDOC_REQUIRE_NATIVE=1 but undoc native bindings failed to load"
+        f"{configured_suffix}: {NATIVE_IMPORT_ERROR}"
+    ) from NATIVE_IMPORT_ERROR
 
 
 def create_minimal_docx_bytes(text: str = "Привет из Python") -> bytes:
@@ -52,6 +76,39 @@ def create_minimal_docx_bytes(text: str = "Привет из Python") -> bytes:
         )
         zf.writestr("word/document.xml", document_xml)
     return buf.getvalue()
+
+
+class TestNativeVerificationHarness:
+    def test_strict_native_mode_fails_closed_on_invalid_library_path(self, tmp_path):
+        bad_library = tmp_path / _native_library_filename()
+        bad_library.write_text("not a real shared library", encoding="utf-8")
+
+        env = os.environ.copy()
+        env["UNDOC_REQUIRE_NATIVE"] = "1"
+        env["UNDOC_LIB_PATH"] = str(bad_library)
+        env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1] / "src")
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                str(Path(__file__)),
+                "-k",
+                "test_version_returns_string",
+                "-q",
+            ],
+            cwd=Path(__file__).resolve().parents[3],
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+        )
+
+        assert result.returncode != 0
+        combined_output = result.stdout + result.stderr
+        assert "UNDOC_REQUIRE_NATIVE=1" in combined_output
+        assert str(bad_library) in combined_output
 
 
 class FakeStringLibrary:

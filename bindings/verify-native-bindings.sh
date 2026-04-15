@@ -18,7 +18,7 @@ echo "[lane4] ensuring pytest is available"
 "${venv_dir}/bin/pip" install pytest >/dev/null
 
 echo "[lane4] running python native-backed regressions"
-"${venv_dir}/bin/python" -m pytest bindings/python/tests/test_undoc.py -vv
+UNDOC_REQUIRE_NATIVE=1 "${venv_dir}/bin/python" -m pytest bindings/python/tests/test_undoc.py -vv
 
 echo "[lane4] running csharp native-backed regressions"
 dotnet test bindings/csharp/Undoc.Tests/Undoc.Tests.csproj -c Release
