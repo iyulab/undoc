@@ -21,12 +21,29 @@ class UndocError(Exception):
     pass
 
 
+def _decode_utf8_ptr(ptr: Optional[int]) -> str:
+    """Copy a null-terminated UTF-8 string from a native pointer."""
+    if not ptr:
+        return ""
+    return ctypes.string_at(ptr).decode("utf-8")
+
+
+def _copy_and_free_utf8_ptr(lib, ptr: Optional[int]) -> str:
+    """Copy a Rust-owned UTF-8 string, then free the original allocation."""
+    if not ptr:
+        return ""
+    try:
+        return _decode_utf8_ptr(ptr)
+    finally:
+        lib.undoc_free_string(ptr)
+
+
 def _get_last_error() -> str:
     """Get the last error message from the native library."""
     lib = get_library()
     error = lib.undoc_last_error()
     if error:
-        return error.decode("utf-8")
+        return _decode_utf8_ptr(error)
     return "Unknown error"
 
 
@@ -34,7 +51,7 @@ def version() -> str:
     """Get the undoc library version."""
     lib = get_library()
     ver = lib.undoc_version()
-    return ver.decode("utf-8") if ver else "unknown"
+    return _decode_utf8_ptr(ver) if ver else "unknown"
 
 
 def parse_file(path: Union[str, Path]) -> "Undoc":
@@ -144,7 +161,7 @@ class Undoc:
         if not result:
             raise UndocError(f"Failed to convert to markdown: {_get_last_error()}")
 
-        return result.decode("utf-8")
+        return _copy_and_free_utf8_ptr(self._lib, result)
 
     def to_text(self) -> str:
         """Convert document to plain text.
@@ -159,7 +176,7 @@ class Undoc:
         if not result:
             raise UndocError(f"Failed to convert to text: {_get_last_error()}")
 
-        return result.decode("utf-8")
+        return _copy_and_free_utf8_ptr(self._lib, result)
 
     def to_json(self, compact: bool = False) -> str:
         """Convert document to JSON.
@@ -178,7 +195,7 @@ class Undoc:
         if not result:
             raise UndocError(f"Failed to convert to JSON: {_get_last_error()}")
 
-        return result.decode("utf-8")
+        return _copy_and_free_utf8_ptr(self._lib, result)
 
     def plain_text(self) -> str:
         """Get plain text content (faster than to_text for simple extraction).
@@ -193,7 +210,7 @@ class Undoc:
         if not result:
             raise UndocError(f"Failed to get plain text: {_get_last_error()}")
 
-        return result.decode("utf-8")
+        return _copy_and_free_utf8_ptr(self._lib, result)
 
     @property
     def section_count(self) -> int:
@@ -216,7 +233,7 @@ class Undoc:
         """Get the document title, if set."""
         result = self._lib.undoc_get_title(self._handle)
         if result:
-            return result.decode("utf-8")
+            return _copy_and_free_utf8_ptr(self._lib, result)
         return None
 
     @property
@@ -224,7 +241,7 @@ class Undoc:
         """Get the document author, if set."""
         result = self._lib.undoc_get_author(self._handle)
         if result:
-            return result.decode("utf-8")
+            return _copy_and_free_utf8_ptr(self._lib, result)
         return None
 
     def get_resource_ids(self) -> List[str]:
@@ -237,7 +254,7 @@ class Undoc:
         if not result:
             return []
 
-        ids = json.loads(result.decode("utf-8"))
+        ids = json.loads(_copy_and_free_utf8_ptr(self._lib, result))
         return ids
 
     def get_resource_info(self, resource_id: str) -> Optional[Dict]:
@@ -255,7 +272,7 @@ class Undoc:
         if not result:
             return None
 
-        return json.loads(result.decode("utf-8"))
+        return json.loads(_copy_and_free_utf8_ptr(self._lib, result))
 
     def get_resource_data(self, resource_id: str) -> Optional[bytes]:
         """Get binary data for a resource.

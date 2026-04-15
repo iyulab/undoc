@@ -1,4 +1,7 @@
 using System;
+using System.ComponentModel;
+using System.Diagnostics;
+using System.IO;
 using System.Reflection;
 using System.Runtime.InteropServices;
 
@@ -23,6 +26,12 @@ internal static class NativeMethods
         if (libraryName != LibraryName)
             return IntPtr.Zero;
 
+        foreach (var candidatePath in GetCandidatePaths(assembly))
+        {
+            if (NativeLibrary.TryLoad(candidatePath, out var handle))
+                return handle;
+        }
+
         // Try platform-specific names
         string[] namesToTry;
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
@@ -43,6 +52,108 @@ internal static class NativeMethods
         }
 
         return IntPtr.Zero;
+    }
+
+    private static string[] GetCandidatePaths(Assembly assembly)
+    {
+        var assemblyDir = Path.GetDirectoryName(assembly.Location);
+        var baseDir = AppContext.BaseDirectory;
+        var runtimeId = GetRuntimeIdentifier();
+        var fileNames = GetLibraryFileNames();
+
+        var candidates = new List<string>();
+        foreach (var fileName in fileNames)
+        {
+            if (!string.IsNullOrEmpty(baseDir))
+            {
+                candidates.Add(Path.Combine(baseDir, fileName));
+                if (runtimeId != null)
+                    candidates.Add(Path.Combine(baseDir, "runtimes", runtimeId, "native", fileName));
+            }
+
+            if (!string.IsNullOrEmpty(assemblyDir))
+            {
+                candidates.Add(Path.Combine(assemblyDir, fileName));
+                if (runtimeId != null)
+                    candidates.Add(Path.Combine(assemblyDir, "runtimes", runtimeId, "native", fileName));
+            }
+        }
+
+        return candidates.Distinct().Where(File.Exists).ToArray();
+    }
+
+    private static string[] GetLibraryFileNames()
+    {
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            return new[] { "undoc_native.dll", "undoc.dll" };
+
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+            return new[] { "libundoc.dylib" };
+
+        return new[] { "libundoc.so" };
+    }
+
+    private static string? GetRuntimeIdentifier()
+    {
+        return RuntimeInformation.OSArchitecture switch
+        {
+            Architecture.X64 when RuntimeInformation.IsOSPlatform(OSPlatform.Windows) => "win-x64",
+            Architecture.X64 when RuntimeInformation.IsOSPlatform(OSPlatform.OSX) => "osx-x64",
+            Architecture.Arm64 when RuntimeInformation.IsOSPlatform(OSPlatform.OSX) => "osx-arm64",
+            Architecture.X64 when RuntimeInformation.IsOSPlatform(OSPlatform.Linux) =>
+                IsMuslLinux() ? "linux-musl-x64" : "linux-x64",
+            _ => null,
+        };
+    }
+
+    private static bool IsMuslLinux()
+    {
+        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+            return false;
+
+        try
+        {
+            if (File.Exists("/etc/os-release"))
+            {
+                var osRelease = File.ReadAllText("/etc/os-release");
+                if (osRelease.Contains("alpine", StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+        }
+        catch (IOException)
+        {
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
+
+        try
+        {
+            using var process = Process.Start(new ProcessStartInfo
+            {
+                FileName = "ldd",
+                ArgumentList = { "--version" },
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+            });
+
+            if (process is null)
+                return false;
+
+            var output = process.StandardOutput.ReadToEnd() + process.StandardError.ReadToEnd();
+            process.WaitForExit(5000);
+
+            return output.Contains("musl", StringComparison.OrdinalIgnoreCase);
+        }
+        catch (InvalidOperationException)
+        {
+            return false;
+        }
+        catch (Win32Exception)
+        {
+            return false;
+        }
     }
 
     // Flags for markdown rendering

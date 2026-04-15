@@ -118,10 +118,10 @@ _lib = _load_library()
 
 # Define function signatures
 _lib.undoc_version.argtypes = []
-_lib.undoc_version.restype = ctypes.c_char_p
+_lib.undoc_version.restype = ctypes.c_void_p
 
 _lib.undoc_last_error.argtypes = []
-_lib.undoc_last_error.restype = ctypes.c_char_p
+_lib.undoc_last_error.restype = ctypes.c_void_p
 
 _lib.undoc_parse_file.argtypes = [ctypes.c_char_p]
 _lib.undoc_parse_file.restype = ctypes.c_void_p
@@ -133,16 +133,16 @@ _lib.undoc_free_document.argtypes = [ctypes.c_void_p]
 _lib.undoc_free_document.restype = None
 
 _lib.undoc_to_markdown.argtypes = [ctypes.c_void_p, ctypes.c_uint]
-_lib.undoc_to_markdown.restype = ctypes.c_char_p
+_lib.undoc_to_markdown.restype = ctypes.c_void_p
 
 _lib.undoc_to_text.argtypes = [ctypes.c_void_p]
-_lib.undoc_to_text.restype = ctypes.c_char_p
+_lib.undoc_to_text.restype = ctypes.c_void_p
 
 _lib.undoc_to_json.argtypes = [ctypes.c_void_p, ctypes.c_int]
-_lib.undoc_to_json.restype = ctypes.c_char_p
+_lib.undoc_to_json.restype = ctypes.c_void_p
 
 _lib.undoc_plain_text.argtypes = [ctypes.c_void_p]
-_lib.undoc_plain_text.restype = ctypes.c_char_p
+_lib.undoc_plain_text.restype = ctypes.c_void_p
 
 _lib.undoc_section_count.argtypes = [ctypes.c_void_p]
 _lib.undoc_section_count.restype = ctypes.c_int
@@ -151,19 +151,19 @@ _lib.undoc_resource_count.argtypes = [ctypes.c_void_p]
 _lib.undoc_resource_count.restype = ctypes.c_int
 
 _lib.undoc_get_title.argtypes = [ctypes.c_void_p]
-_lib.undoc_get_title.restype = ctypes.c_char_p
+_lib.undoc_get_title.restype = ctypes.c_void_p
 
 _lib.undoc_get_author.argtypes = [ctypes.c_void_p]
-_lib.undoc_get_author.restype = ctypes.c_char_p
+_lib.undoc_get_author.restype = ctypes.c_void_p
 
-_lib.undoc_free_string.argtypes = [ctypes.c_char_p]
+_lib.undoc_free_string.argtypes = [ctypes.c_void_p]
 _lib.undoc_free_string.restype = None
 
 _lib.undoc_get_resource_ids.argtypes = [ctypes.c_void_p]
-_lib.undoc_get_resource_ids.restype = ctypes.c_char_p
+_lib.undoc_get_resource_ids.restype = ctypes.c_void_p
 
 _lib.undoc_get_resource_info.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
-_lib.undoc_get_resource_info.restype = ctypes.c_char_p
+_lib.undoc_get_resource_info.restype = ctypes.c_void_p
 
 _lib.undoc_get_resource_data.argtypes = [
     ctypes.c_void_p,
