@@ -1,10 +1,10 @@
+using System.IO.Compression;
+using System.Runtime.InteropServices;
+using System.Text;
 using Xunit;
 
 namespace Undoc.Tests;
 
-/// <summary>
-/// Basic tests that don't require native library or test files.
-/// </summary>
 public class BasicTests
 {
     [Fact]
@@ -15,161 +15,153 @@ public class BasicTests
     }
 }
 
-/// <summary>
-/// Tests that require the native library.
-/// These are skipped in CI where only the managed assembly is available.
-/// </summary>
+public class Utf8InteropTests
+{
+    [Fact]
+    public void CopyAndFreeNativeUtf8String_CopiesUtf8BeforeFree()
+    {
+        var ptr = Marshal.StringToCoTaskMemUTF8("Привет из UTF-8");
+        var freed = false;
+
+        var value = UndocDocument.CopyAndFreeNativeUtf8String(ptr, p =>
+        {
+            Assert.Equal(ptr, p);
+            Marshal.FreeCoTaskMem(p);
+            freed = true;
+        });
+
+        Assert.True(freed);
+        Assert.Equal("Привет из UTF-8", value);
+    }
+
+    [Fact]
+    public void PtrToStringUtf8_DecodesUnicodeContent()
+    {
+        var ptr = Marshal.StringToCoTaskMemUTF8("Здравствуйте");
+
+        try
+        {
+            Assert.Equal("Здравствуйте", UndocDocument.PtrToStringUtf8(ptr));
+        }
+        finally
+        {
+            Marshal.FreeCoTaskMem(ptr);
+        }
+    }
+}
+
 public class NativeLibraryTests
 {
-    [Fact(Skip = "Requires native library")]
+    [Fact]
     public void Version_ReturnsNonEmptyString()
     {
+        NativeTestSupport.EnsureNativeLibraryPrepared();
+
         var version = UndocDocument.Version;
+
         Assert.NotNull(version);
         Assert.NotEmpty(version);
     }
 
-    [Fact(Skip = "Requires native library")]
-    public void Version_HasSemverFormat()
+    [Fact]
+    public void ParseBytes_GeneratedDocx_PreservesUtf8Text()
     {
-        var version = UndocDocument.Version;
-        var parts = version.Split('.');
-        Assert.True(parts.Length >= 2, "Version should have at least major.minor");
-    }
+        NativeTestSupport.EnsureNativeLibraryPrepared();
 
-    [Fact(Skip = "Requires native library")]
-    public void ParseFile_NonexistentFile_ThrowsFileNotFoundException()
-    {
-        Assert.Throws<FileNotFoundException>(() =>
-            UndocDocument.ParseFile("nonexistent.docx"));
+        using var doc = UndocDocument.ParseBytes(
+            NativeTestSupport.CreateMinimalDocxBytes("Привет из C#"));
+
+        Assert.Contains("Привет из C#", doc.ToMarkdown());
+        Assert.Contains("Привет из C#", doc.ToText());
     }
 }
 
-/// <summary>
-/// Integration tests requiring actual Office files.
-/// These tests are skipped in CI where test files are not available.
-/// </summary>
-public class IntegrationTests
+internal static class NativeTestSupport
 {
-    private static readonly string TestFilesDir = Path.Combine(
-        AppDomain.CurrentDomain.BaseDirectory,
-        "..", "..", "..", "..", "..", "..", "test-files");
+    private static readonly object Sync = new();
+    private static bool _prepared;
 
-    private static string? GetTestFile(string filename)
+    public static void EnsureNativeLibraryPrepared()
     {
-        var path = Path.Combine(TestFilesDir, filename);
-        return File.Exists(path) ? path : null;
+        lock (Sync)
+        {
+            if (_prepared)
+                return;
+
+            var builtLibrary = Path.Combine(RepoRoot, "target", "release", NativeLibraryFileName);
+            Assert.True(
+                File.Exists(builtLibrary),
+                $"Expected native library at {builtLibrary}. Run `cargo build --release --features ffi` first.");
+
+            var destination = Path.Combine(AppContext.BaseDirectory, NativeLibraryFileName);
+            File.Copy(builtLibrary, destination, overwrite: true);
+            _prepared = true;
+        }
     }
 
-    [Fact(Skip = "Requires native library and test files")]
-    public void ParseFile_ValidDocx_ReturnsDocument()
+    public static byte[] CreateMinimalDocxBytes(string text)
     {
-        var path = GetTestFile("file-sample_1MB.docx");
-        if (path == null) return;
+        using var stream = new MemoryStream();
+        using (var zip = new ZipArchive(stream, ZipArchiveMode.Create, leaveOpen: true))
+        {
+            WriteEntry(
+                zip,
+                "[Content_Types].xml",
+                """
+                <?xml version="1.0" encoding="UTF-8"?>
+                <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+                  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+                  <Default Extension="xml" ContentType="application/xml"/>
+                  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+                </Types>
+                """);
+            WriteEntry(
+                zip,
+                "_rels/.rels",
+                """
+                <?xml version="1.0" encoding="UTF-8"?>
+                <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+                  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+                </Relationships>
+                """);
+            WriteEntry(
+                zip,
+                "word/_rels/document.xml.rels",
+                """
+                <?xml version="1.0" encoding="UTF-8"?>
+                <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+                </Relationships>
+                """);
+            WriteEntry(
+                zip,
+                "word/document.xml",
+                $$"""
+                <?xml version="1.0" encoding="UTF-8"?>
+                <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+                  <w:body>
+                    <w:p>
+                      <w:r><w:t>{{text}}</w:t></w:r>
+                    </w:p>
+                  </w:body>
+                </w:document>
+                """);
+        }
 
-        using var doc = UndocDocument.ParseFile(path);
-        Assert.NotNull(doc);
-        Assert.True(doc.SectionCount >= 0);
+        return stream.ToArray();
     }
 
-    [Fact(Skip = "Requires native library and test files")]
-    public void ToMarkdown_ReturnsValidMarkdown()
+    private static void WriteEntry(ZipArchive zip, string path, string content)
     {
-        var path = GetTestFile("file-sample_1MB.docx");
-        if (path == null) return;
-
-        using var doc = UndocDocument.ParseFile(path);
-        var markdown = doc.ToMarkdown();
-
-        Assert.NotNull(markdown);
-        Assert.NotEmpty(markdown);
+        var entry = zip.CreateEntry(path, CompressionLevel.NoCompression);
+        using var writer = new StreamWriter(entry.Open(), new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        writer.Write(content);
     }
 
-    [Fact(Skip = "Requires native library and test files")]
-    public void ToMarkdown_WithFrontmatter_ContainsFrontmatter()
-    {
-        var path = GetTestFile("file-sample_1MB.docx");
-        if (path == null) return;
+    private static string RepoRoot =>
+        Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", ".."));
 
-        using var doc = UndocDocument.ParseFile(path);
-        var options = new MarkdownOptions { IncludeFrontmatter = true };
-        var markdown = doc.ToMarkdown(options);
-
-        Assert.Contains("---", markdown);
-    }
-
-    [Fact(Skip = "Requires native library and test files")]
-    public void ToText_ReturnsValidText()
-    {
-        var path = GetTestFile("file-sample_1MB.docx");
-        if (path == null) return;
-
-        using var doc = UndocDocument.ParseFile(path);
-        var text = doc.ToText();
-
-        Assert.NotNull(text);
-        Assert.NotEmpty(text);
-    }
-
-    [Fact(Skip = "Requires native library and test files")]
-    public void ToJson_ReturnsValidJson()
-    {
-        var path = GetTestFile("file-sample_1MB.docx");
-        if (path == null) return;
-
-        using var doc = UndocDocument.ParseFile(path);
-        var json = doc.ToJson();
-
-        Assert.NotNull(json);
-        Assert.StartsWith("{", json);
-    }
-
-    [Fact(Skip = "Requires native library and test files")]
-    public void ParseBytes_ValidData_ReturnsDocument()
-    {
-        var path = GetTestFile("file-sample_1MB.docx");
-        if (path == null) return;
-
-        var data = File.ReadAllBytes(path);
-        using var doc = UndocDocument.ParseBytes(data);
-
-        Assert.NotNull(doc);
-        var markdown = doc.ToMarkdown();
-        Assert.NotEmpty(markdown);
-    }
-
-    [Fact(Skip = "Requires native library and test files")]
-    public void GetResourceIds_ReturnsArray()
-    {
-        var path = GetTestFile("file-sample_1MB.docx");
-        if (path == null) return;
-
-        using var doc = UndocDocument.ParseFile(path);
-        var ids = doc.GetResourceIds();
-
-        Assert.NotNull(ids);
-    }
-
-    [Fact(Skip = "Requires native library and test files")]
-    public void Dispose_CanBeCalledMultipleTimes()
-    {
-        var path = GetTestFile("file-sample_1MB.docx");
-        if (path == null) return;
-
-        var doc = UndocDocument.ParseFile(path);
-        doc.Dispose();
-        doc.Dispose(); // Should not throw
-    }
-
-    [Fact(Skip = "Requires native library and test files")]
-    public void AfterDispose_ThrowsObjectDisposedException()
-    {
-        var path = GetTestFile("file-sample_1MB.docx");
-        if (path == null) return;
-
-        var doc = UndocDocument.ParseFile(path);
-        doc.Dispose();
-
-        Assert.Throws<ObjectDisposedException>(() => doc.ToMarkdown());
-    }
+    private static string NativeLibraryFileName =>
+        RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "undoc.dll" :
+        RuntimeInformation.IsOSPlatform(OSPlatform.OSX) ? "libundoc.dylib" :
+        "libundoc.so";
 }
