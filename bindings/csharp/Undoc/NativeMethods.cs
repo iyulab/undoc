@@ -72,19 +72,6 @@ internal static class NativeMethods
         string? runtimeId,
         IEnumerable<string> fileNames)
     {
-        return GetCandidatePaths(
-            assemblyDir,
-            baseDir,
-            runtimeId,
-            fileNames.ToArray());
-    }
-
-    internal static string[] GetCandidatePaths(
-        string? assemblyDir,
-        string? baseDir,
-        string? runtimeId,
-        IReadOnlyList<string> fileNames)
-    {
         var candidates = new List<string>();
         foreach (var probeRoot in GetProbeRoots(assemblyDir, baseDir, runtimeId))
         {
@@ -97,22 +84,39 @@ internal static class NativeMethods
         return candidates.Distinct().ToArray();
     }
 
+    internal static string[] GetCandidatePaths(
+        string? assemblyDir,
+        string? baseDir,
+        string? runtimeId,
+        IReadOnlyList<string> fileNames)
+    {
+        return BuildCandidatePaths(baseDir, assemblyDir, runtimeId, fileNames)
+            .Where(File.Exists)
+            .ToArray();
+    }
+
     private static IEnumerable<string> GetProbeRoots(
         string? assemblyDir,
         string? baseDir,
         string? runtimeId)
     {
+        if (!string.IsNullOrEmpty(baseDir) && !string.IsNullOrEmpty(runtimeId))
+        {
+            yield return Path.Combine(baseDir, "runtimes", runtimeId, "native");
+        }
+
+        if (!string.IsNullOrEmpty(assemblyDir) && !string.IsNullOrEmpty(runtimeId))
+        {
+            yield return Path.Combine(assemblyDir, "runtimes", runtimeId, "native");
+        }
+
         if (!string.IsNullOrEmpty(baseDir))
         {
-            if (!string.IsNullOrEmpty(runtimeId))
-                yield return Path.Combine(baseDir, "runtimes", runtimeId, "native");
             yield return baseDir;
         }
 
         if (!string.IsNullOrEmpty(assemblyDir))
         {
-            if (!string.IsNullOrEmpty(runtimeId))
-                yield return Path.Combine(assemblyDir, "runtimes", runtimeId, "native");
             yield return assemblyDir;
         }
     }
