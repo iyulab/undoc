@@ -82,11 +82,18 @@ internal static class NativeMethods
                     candidates.Add(Path.Combine(baseDir, "runtimes", runtimeId, "native", fileName));
             }
 
-            if (!string.IsNullOrEmpty(assemblyDir))
+    internal static string[] GetCandidatePaths(
+        string? assemblyDir,
+        string? baseDir,
+        string? runtimeId,
+        IReadOnlyList<string> fileNames)
+    {
+        var candidates = new List<string>();
+        foreach (var probeRoot in GetProbeRoots(assemblyDir, baseDir, runtimeId))
+        {
+            foreach (var fileName in fileNames)
             {
-                candidates.Add(Path.Combine(assemblyDir, fileName));
-                if (runtimeId != null)
-                    candidates.Add(Path.Combine(assemblyDir, "runtimes", runtimeId, "native", fileName));
+                candidates.Add(Path.Combine(probeRoot, fileName));
             }
         }
 
@@ -108,7 +115,7 @@ internal static class NativeMethods
         return new[] { "libundoc.so" };
     }
 
-    private static string? GetRuntimeIdentifier()
+    internal static string? GetRuntimeIdentifier()
     {
         return RuntimeInformation.OSArchitecture switch
         {

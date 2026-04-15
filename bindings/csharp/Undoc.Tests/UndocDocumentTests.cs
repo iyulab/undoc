@@ -53,7 +53,7 @@ public class Utf8InteropTests
 public class NativeLibraryTests
 {
     [Fact]
-    public void Version_ReturnsNonEmptyString()
+    public void Version_LoadsFromShippedRuntimePath()
     {
         var stagedLibrary = NativeTestSupport.EnsureNativeLibraryPrepared();
 
@@ -89,6 +89,48 @@ public class NativeLibraryTests
 
         Assert.Contains(Path.Combine("/base", "runtimes", "win-x64", "native", "undoc.dll"), paths);
         Assert.Contains(Path.Combine("/assembly", "runtimes", "win-x64", "native", "undoc.dll"), paths);
+    }
+}
+
+public class NativeLibraryResolverTests
+{
+    [Fact]
+    public void CandidatePaths_PreferShippedRuntimeDirectoryOverLooseWindowsCopies()
+    {
+        using var sandbox = new TemporaryDirectory();
+        var baseDir = Path.Combine(sandbox.Path, "base");
+        var assemblyDir = Path.Combine(sandbox.Path, "assembly");
+        Directory.CreateDirectory(baseDir);
+        Directory.CreateDirectory(assemblyDir);
+
+        var shippedRuntimePath = Path.Combine(baseDir, "runtimes", "win-x64", "native", "undoc.dll");
+        var assemblyRuntimePath = Path.Combine(assemblyDir, "runtimes", "win-x64", "native", "undoc.dll");
+        var looseBasePath = Path.Combine(baseDir, "undoc_native.dll");
+        var looseAssemblyPath = Path.Combine(assemblyDir, "undoc.dll");
+
+        CreatePlaceholderFile(shippedRuntimePath);
+        CreatePlaceholderFile(assemblyRuntimePath);
+        CreatePlaceholderFile(looseBasePath);
+        CreatePlaceholderFile(looseAssemblyPath);
+
+        var candidates = NativeMethods.GetCandidatePaths(
+            assemblyDir,
+            baseDir,
+            "win-x64",
+            new[] { "undoc_native.dll", "undoc.dll" });
+
+        Assert.Collection(
+            candidates,
+            candidate => Assert.Equal(shippedRuntimePath, candidate),
+            candidate => Assert.Equal(assemblyRuntimePath, candidate),
+            candidate => Assert.Equal(looseBasePath, candidate),
+            candidate => Assert.Equal(looseAssemblyPath, candidate));
+    }
+
+    private static void CreatePlaceholderFile(string path)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.WriteAllText(path, "placeholder");
     }
 }
 
@@ -202,4 +244,43 @@ internal static class NativeTestSupport
         RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "undoc.dll" :
         RuntimeInformation.IsOSPlatform(OSPlatform.OSX) ? "libundoc.dylib" :
         "libundoc.so";
+
+    public static string RuntimeIdentifier =>
+        NativeMethods.GetRuntimeIdentifier() ??
+        throw new PlatformNotSupportedException("No shipped native runtime asset is configured for this platform.");
+
+    private static string NativeRuntimeDirectory =>
+        Path.Combine(AppContext.BaseDirectory, "runtimes", RuntimeIdentifier, "native");
+
+    private static string NativeLibraryDestination =>
+        Path.Combine(NativeRuntimeDirectory, NativeLibraryFileName);
+
+    private static void DeleteLooseCopies()
+    {
+        foreach (var fileName in RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
+                     ? new[] { "undoc_native.dll", "undoc.dll" }
+                     : new[] { NativeLibraryFileName })
+        {
+            var loosePath = Path.Combine(AppContext.BaseDirectory, fileName);
+            if (File.Exists(loosePath))
+                File.Delete(loosePath);
+        }
+    }
+}
+
+internal sealed class TemporaryDirectory : IDisposable
+{
+    public TemporaryDirectory()
+    {
+        Path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"undoc-csharp-tests-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(Path);
+    }
+
+    public string Path { get; }
+
+    public void Dispose()
+    {
+        if (Directory.Exists(Path))
+            Directory.Delete(Path, recursive: true);
+    }
 }
