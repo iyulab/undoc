@@ -55,8 +55,12 @@ impl DocxParser {
             NumberingMap::default()
         };
 
-        // Parse document relationships
-        let relationships = container.read_required_relationships_for_part("word/document.xml")?;
+        // Parse document relationships when present.
+        //
+        // Text-only DOCX files can omit document.xml.rels entirely, so keep
+        // extraction best-effort and only use relationships for linked assets
+        // such as images, charts, headers/footers, and hyperlinks.
+        let relationships = container.read_optional_relationships_for_part("word/document.xml")?;
 
         // Parse footnotes
         let footnotes = if let Ok(xml) = container.read_xml("word/footnotes.xml") {
@@ -2392,21 +2396,18 @@ mod tests {
     }
 
     #[test]
-    fn test_docx_requires_document_relationships() {
+    fn test_docx_allows_missing_document_relationships_when_unused() {
         let doc_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
   <w:body><w:p><w:r><w:t>Hello</w:t></w:r></w:p></w:body>
 </w:document>"#;
 
         let data = create_minimal_docx_with_document_rels(doc_xml, None);
-        let err = DocxParser::from_bytes(data)
-            .err()
-            .expect("missing document relationships should fail");
+        let mut parser = DocxParser::from_bytes(data)
+            .expect("missing document relationships should be optional");
+        let doc = parser.parse().unwrap();
 
-        match err {
-            Error::MissingComponent(path) => assert_eq!(path, "word/_rels/document.xml.rels"),
-            other => panic!("expected missing document rels error, got {other:?}"),
-        }
+        assert_eq!(doc.plain_text(), "Hello");
     }
 
     #[test]

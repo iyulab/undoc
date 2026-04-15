@@ -830,10 +830,14 @@ impl XlsxParser {
         &self,
         part_path: &str,
     ) -> Result<HashMap<String, (String, String)>> {
-        Ok(self
+        match self
             .container
-            .read_optional_relationships_for_part(part_path)?
-            .into_type_targets_by_id())
+            .read_optional_relationships_for_part(part_path)
+        {
+            Ok(rels) => Ok(rels.into_type_targets_by_id()),
+            Err(Error::XmlParseWithContext { .. }) => Ok(HashMap::new()),
+            Err(err) => Err(err),
+        }
     }
 
     /// Resolve a relative path (e.g., "../drawings/drawing1.xml") against a base directory.
@@ -1538,7 +1542,7 @@ mod tests {
     }
 
     #[test]
-    fn test_xlsx_rejects_malformed_optional_sheet_relationships() {
+    fn test_xlsx_best_effort_on_malformed_optional_sheet_relationships() {
         let data = create_minimal_xlsx(
             Some(
                 r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -1549,14 +1553,10 @@ mod tests {
             Some("<Relationships"),
         );
         let mut parser = XlsxParser::from_bytes(data).unwrap();
-        let err = parser.parse().unwrap_err();
+        let doc = parser.parse().unwrap();
 
-        match err {
-            Error::XmlParseWithContext { location, .. } => {
-                assert_eq!(location, "xl/worksheets/_rels/sheet1.xml.rels")
-            }
-            other => panic!("expected malformed sheet rels error, got {other:?}"),
-        }
+        assert_eq!(doc.sections.len(), 1);
+        assert_eq!(doc.plain_text(), "Hello");
     }
 
     #[test]

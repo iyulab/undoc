@@ -55,10 +55,13 @@ public class NativeLibraryTests
     [Fact]
     public void Version_ReturnsNonEmptyString()
     {
-        NativeTestSupport.EnsureNativeLibraryPrepared();
+        var stagedLibrary = NativeTestSupport.EnsureNativeLibraryPrepared();
 
         var version = UndocDocument.Version;
 
+        Assert.Equal(stagedLibrary, NativeTestSupport.StagedLibraryPath);
+        Assert.StartsWith(Path.Combine(AppContext.BaseDirectory, "runtimes"), stagedLibrary);
+        Assert.False(File.Exists(Path.Combine(AppContext.BaseDirectory, NativeTestSupport.NativeLibraryFileName)));
         Assert.NotNull(version);
         Assert.NotEmpty(version);
     }
@@ -74,30 +77,59 @@ public class NativeLibraryTests
         Assert.Contains("Привет из C#", doc.ToMarkdown());
         Assert.Contains("Привет из C#", doc.ToText());
     }
+
+    [Fact]
+    public void CandidatePaths_Include_Windows_Runtime_Native_UndocDll()
+    {
+        var paths = NativeMethods.BuildCandidatePaths(
+            baseDir: "/base",
+            assemblyDir: "/assembly",
+            runtimeId: "win-x64",
+            fileNames: new[] { "undoc_native.dll", "undoc.dll" });
+
+        Assert.Contains(Path.Combine("/base", "runtimes", "win-x64", "native", "undoc.dll"), paths);
+        Assert.Contains(Path.Combine("/assembly", "runtimes", "win-x64", "native", "undoc.dll"), paths);
+    }
 }
 
 internal static class NativeTestSupport
 {
     private static readonly object Sync = new();
     private static bool _prepared;
+    private static string? _stagedLibraryPath;
 
-    public static void EnsureNativeLibraryPrepared()
+    public static string EnsureNativeLibraryPrepared()
     {
         lock (Sync)
         {
             if (_prepared)
-                return;
+                return _stagedLibraryPath!;
 
             var builtLibrary = Path.Combine(RepoRoot, "target", "release", NativeLibraryFileName);
             Assert.True(
                 File.Exists(builtLibrary),
                 $"Expected native library at {builtLibrary}. Run `cargo build --release --features ffi` first.");
 
-            var destination = Path.Combine(AppContext.BaseDirectory, NativeLibraryFileName);
+            var runtimeId = NativeMethods.GetRuntimeIdentifierForCurrentPlatform();
+            Assert.False(string.IsNullOrEmpty(runtimeId), "Native test runtime identifier should resolve on supported test platforms.");
+
+            DeleteIfExists(Path.Combine(AppContext.BaseDirectory, NativeLibraryFileName));
+
+            var destination = Path.Combine(
+                AppContext.BaseDirectory,
+                "runtimes",
+                runtimeId!,
+                "native",
+                NativeLibraryFileName);
+            Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
             File.Copy(builtLibrary, destination, overwrite: true);
+            _stagedLibraryPath = destination;
             _prepared = true;
+            return destination;
         }
     }
+
+    public static string StagedLibraryPath => _stagedLibraryPath ?? string.Empty;
 
     public static byte[] CreateMinimalDocxBytes(string text)
     {
@@ -157,10 +189,16 @@ internal static class NativeTestSupport
         writer.Write(content);
     }
 
+    private static void DeleteIfExists(string path)
+    {
+        if (File.Exists(path))
+            File.Delete(path);
+    }
+
     private static string RepoRoot =>
         Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", ".."));
 
-    private static string NativeLibraryFileName =>
+    public static string NativeLibraryFileName =>
         RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "undoc.dll" :
         RuntimeInformation.IsOSPlatform(OSPlatform.OSX) ? "libundoc.dylib" :
         "libundoc.so";

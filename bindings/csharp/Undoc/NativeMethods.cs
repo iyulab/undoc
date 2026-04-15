@@ -57,10 +57,21 @@ internal static class NativeMethods
     private static string[] GetCandidatePaths(Assembly assembly)
     {
         var assemblyDir = Path.GetDirectoryName(assembly.Location);
-        var baseDir = AppContext.BaseDirectory;
-        var runtimeId = GetRuntimeIdentifier();
-        var fileNames = GetLibraryFileNames();
+        return BuildCandidatePaths(
+            AppContext.BaseDirectory,
+            assemblyDir,
+            GetRuntimeIdentifier(),
+            GetLibraryFileNames())
+            .Where(File.Exists)
+            .ToArray();
+    }
 
+    internal static string[] BuildCandidatePaths(
+        string? baseDir,
+        string? assemblyDir,
+        string? runtimeId,
+        IEnumerable<string> fileNames)
+    {
         var candidates = new List<string>();
         foreach (var fileName in fileNames)
         {
@@ -79,8 +90,12 @@ internal static class NativeMethods
             }
         }
 
-        return candidates.Distinct().Where(File.Exists).ToArray();
+        return candidates.Distinct().ToArray();
     }
+
+    internal static string? GetRuntimeIdentifierForCurrentPlatform() => GetRuntimeIdentifier();
+
+    internal static string[] GetLibraryFileNamesForCurrentPlatform() => GetLibraryFileNames();
 
     private static string[] GetLibraryFileNames()
     {

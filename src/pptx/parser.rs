@@ -174,10 +174,14 @@ impl PptxParser {
 
     /// Parse relationships for a specific slide/notes file.
     fn parse_slide_relationships(&self, slide_path: &str) -> Result<HashMap<String, String>> {
-        Ok(self
+        match self
             .container
-            .read_optional_relationships_for_part(slide_path)?
-            .into_targets_by_id())
+            .read_optional_relationships_for_part(slide_path)
+        {
+            Ok(rels) => Ok(rels.into_targets_by_id()),
+            Err(Error::XmlParseWithContext { .. }) => Ok(HashMap::new()),
+            Err(err) => Err(err),
+        }
     }
 
     /// Parse metadata from docProps/core.xml.
@@ -1534,11 +1538,19 @@ mod tests {
     }
 
     #[test]
-    fn test_pptx_rejects_malformed_optional_slide_relationships() {
+    fn test_pptx_best_effort_on_malformed_optional_slide_relationships() {
         let slide_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
 <p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
        xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
-  <p:cSld><p:spTree/></p:cSld>
+  <p:cSld>
+    <p:spTree>
+      <p:sp>
+        <p:txBody>
+          <a:p><a:r><a:t>Hello from slide</a:t></a:r></a:p>
+        </p:txBody>
+      </p:sp>
+    </p:spTree>
+  </p:cSld>
 </p:sld>"#;
 
         let data = create_minimal_pptx_with_relationships(
@@ -1552,14 +1564,10 @@ mod tests {
             Some("<Relationships"),
         );
         let mut parser = PptxParser::from_bytes(data).unwrap();
-        let err = parser.parse().unwrap_err();
+        let doc = parser.parse().unwrap();
 
-        match err {
-            Error::XmlParseWithContext { location, .. } => {
-                assert_eq!(location, "ppt/slides/_rels/slide1.xml.rels")
-            }
-            other => panic!("expected malformed slide rels error, got {other:?}"),
-        }
+        assert_eq!(doc.sections.len(), 1);
+        assert_eq!(doc.plain_text(), "Hello from slide");
     }
 
     #[test]

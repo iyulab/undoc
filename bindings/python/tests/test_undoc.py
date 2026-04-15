@@ -6,14 +6,9 @@ import pytest
 import zipfile
 from pathlib import Path
 
-# Check if library is available
-try:
-    import undoc.undoc as undoc_module
-    from undoc import Undoc, UndocError, parse_file, parse_bytes, version
-
-    LIBRARY_AVAILABLE = True
-except OSError:
-    LIBRARY_AVAILABLE = False
+# Import eagerly so native-backed verification fails hard when the shared library cannot load.
+import undoc.undoc as undoc_module
+from undoc import Undoc, UndocError, parse_file, parse_bytes, version
 
 
 # Get test files directory
@@ -99,7 +94,6 @@ class FakeStringLibrary:
         return self._alloc('{"filename":"Пример.png"}')
 
 
-@pytest.mark.skipif(not LIBRARY_AVAILABLE, reason="Native library not available")
 class TestVersion:
     def test_version_returns_string(self):
         v = version()
@@ -113,7 +107,6 @@ class TestVersion:
         assert len(parts) >= 2
 
 
-@pytest.mark.skipif(not LIBRARY_AVAILABLE, reason="Native library not available")
 class TestParseFile:
     def test_parse_nonexistent_file(self):
         with pytest.raises(FileNotFoundError):
@@ -147,7 +140,6 @@ class TestParseFile:
         assert doc.section_count >= 0
 
 
-@pytest.mark.skipif(not LIBRARY_AVAILABLE, reason="Native library not available")
 class TestConversion:
     @pytest.fixture
     def sample_docx(self):
@@ -186,7 +178,6 @@ class TestConversion:
         assert isinstance(text, str)
 
 
-@pytest.mark.skipif(not LIBRARY_AVAILABLE, reason="Native library not available")
 class TestMetadata:
     @pytest.fixture
     def sample_docx(self):
@@ -214,7 +205,6 @@ class TestMetadata:
         assert author is None or isinstance(author, str)
 
 
-@pytest.mark.skipif(not LIBRARY_AVAILABLE, reason="Native library not available")
 class TestContextManager:
     @pytest.mark.skipif(
         not (TEST_FILES_DIR / "file-sample_1MB.docx").exists(),
@@ -228,7 +218,6 @@ class TestContextManager:
         # (we can't easily test this, but at least it shouldn't crash)
 
 
-@pytest.mark.skipif(not LIBRARY_AVAILABLE, reason="Native library not available")
 class TestParseBytes:
     @pytest.mark.skipif(
         not (TEST_FILES_DIR / "file-sample_1MB.docx").exists(),
@@ -246,7 +235,6 @@ class TestParseBytes:
         assert len(md) > 0
 
 
-@pytest.mark.skipif(not LIBRARY_AVAILABLE, reason="Native library not available")
 class TestResources:
     @pytest.fixture
     def docx_with_images(self):
@@ -286,7 +274,6 @@ class TestResources:
         assert data is None
 
 
-@pytest.mark.skipif(not LIBRARY_AVAILABLE, reason="Native library not available")
 class TestFfiOwnershipAndUtf8:
     def test_rust_owned_strings_are_copied_and_freed(self, monkeypatch):
         fake_lib = FakeStringLibrary()
