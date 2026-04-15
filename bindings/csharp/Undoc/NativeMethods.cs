@@ -57,9 +57,9 @@ internal static class NativeMethods
     private static string[] GetCandidatePaths(Assembly assembly)
     {
         var assemblyDir = Path.GetDirectoryName(assembly.Location);
-        return BuildCandidatePaths(
-            AppContext.BaseDirectory,
+        return GetCandidatePaths(
             assemblyDir,
+            AppContext.BaseDirectory,
             GetRuntimeIdentifier(),
             GetLibraryFileNames())
             .Where(File.Exists)
@@ -72,15 +72,12 @@ internal static class NativeMethods
         string? runtimeId,
         IEnumerable<string> fileNames)
     {
-        var candidates = new List<string>();
-        foreach (var fileName in fileNames)
-        {
-            if (!string.IsNullOrEmpty(baseDir))
-            {
-                candidates.Add(Path.Combine(baseDir, fileName));
-                if (runtimeId != null)
-                    candidates.Add(Path.Combine(baseDir, "runtimes", runtimeId, "native", fileName));
-            }
+        return GetCandidatePaths(
+            assemblyDir,
+            baseDir,
+            runtimeId,
+            fileNames.ToArray());
+    }
 
     internal static string[] GetCandidatePaths(
         string? assemblyDir,
@@ -98,6 +95,26 @@ internal static class NativeMethods
         }
 
         return candidates.Distinct().ToArray();
+    }
+
+    private static IEnumerable<string> GetProbeRoots(
+        string? assemblyDir,
+        string? baseDir,
+        string? runtimeId)
+    {
+        if (!string.IsNullOrEmpty(baseDir))
+        {
+            if (!string.IsNullOrEmpty(runtimeId))
+                yield return Path.Combine(baseDir, "runtimes", runtimeId, "native");
+            yield return baseDir;
+        }
+
+        if (!string.IsNullOrEmpty(assemblyDir))
+        {
+            if (!string.IsNullOrEmpty(runtimeId))
+                yield return Path.Combine(assemblyDir, "runtimes", runtimeId, "native");
+            yield return assemblyDir;
+        }
     }
 
     internal static string? GetRuntimeIdentifierForCurrentPlatform() => GetRuntimeIdentifier();

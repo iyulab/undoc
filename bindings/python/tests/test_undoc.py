@@ -10,9 +10,23 @@ import sys
 import zipfile
 from pathlib import Path
 
-# Import eagerly so native-backed verification fails hard when the shared library cannot load.
-import undoc.undoc as undoc_module
-from undoc import Undoc, UndocError, parse_file, parse_bytes, version
+# Import eagerly so native-backed verification can fail hard when requested.
+NATIVE_IMPORT_ERROR = None
+
+try:
+    import undoc.undoc as undoc_module
+    from undoc import Undoc, UndocError, parse_file, parse_bytes, version
+
+    LIBRARY_AVAILABLE = True
+except OSError as exc:
+    undoc_module = None
+    Undoc = None
+    UndocError = Exception
+    parse_file = None
+    parse_bytes = None
+    version = None
+    LIBRARY_AVAILABLE = False
+    NATIVE_IMPORT_ERROR = exc
 
 
 # Get test files directory
