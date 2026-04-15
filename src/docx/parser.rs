@@ -56,9 +56,7 @@ impl DocxParser {
         };
 
         // Parse document relationships
-        let relationships = container
-            .read_relationships("word/document.xml")
-            .unwrap_or_default();
+        let relationships = container.read_required_relationships_for_part("word/document.xml")?;
 
         // Parse footnotes
         let footnotes = if let Ok(xml) = container.read_xml("word/footnotes.xml") {
@@ -2297,6 +2295,20 @@ mod tests {
 
     /// Helper to create a minimal DOCX in memory with given document.xml content.
     fn create_minimal_docx(document_xml: &str) -> Vec<u8> {
+        create_minimal_docx_with_document_rels(
+            document_xml,
+            Some(
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+</Relationships>"#,
+            ),
+        )
+    }
+
+    fn create_minimal_docx_with_document_rels(
+        document_xml: &str,
+        document_rels_xml: Option<&str>,
+    ) -> Vec<u8> {
         use std::io::{Cursor, Write};
         let buf = Cursor::new(Vec::new());
         let mut zip = zip::ZipWriter::new(buf);
@@ -2319,15 +2331,12 @@ mod tests {
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
 </Relationships>"#).unwrap();
 
-        // word/_rels/document.xml.rels
-        zip.start_file("word/_rels/document.xml.rels", options)
-            .unwrap();
-        zip.write_all(
-            br#"<?xml version="1.0" encoding="UTF-8"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-</Relationships>"#,
-        )
-        .unwrap();
+        if let Some(document_rels_xml) = document_rels_xml {
+            // word/_rels/document.xml.rels
+            zip.start_file("word/_rels/document.xml.rels", options)
+                .unwrap();
+            zip.write_all(document_rels_xml.as_bytes()).unwrap();
+        }
 
         // word/document.xml
         zip.start_file("word/document.xml", options).unwrap();
@@ -2380,6 +2389,44 @@ mod tests {
             "Should contain text box content, got: {}",
             text
         );
+    }
+
+    #[test]
+    fn test_docx_requires_document_relationships() {
+        let doc_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body><w:p><w:r><w:t>Hello</w:t></w:r></w:p></w:body>
+</w:document>"#;
+
+        let data = create_minimal_docx_with_document_rels(doc_xml, None);
+        let err = DocxParser::from_bytes(data)
+            .err()
+            .expect("missing document relationships should fail");
+
+        match err {
+            Error::MissingComponent(path) => assert_eq!(path, "word/_rels/document.xml.rels"),
+            other => panic!("expected missing document rels error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_docx_rejects_malformed_document_relationships() {
+        let doc_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body><w:p><w:r><w:t>Hello</w:t></w:r></w:p></w:body>
+</w:document>"#;
+
+        let data = create_minimal_docx_with_document_rels(doc_xml, Some("<Relationships"));
+        let err = DocxParser::from_bytes(data)
+            .err()
+            .expect("malformed document relationships should fail");
+
+        match err {
+            Error::XmlParseWithContext { location, .. } => {
+                assert_eq!(location, "word/_rels/document.xml.rels")
+            }
+            other => panic!("expected malformed document rels error, got {other:?}"),
+        }
     }
 
     #[test]

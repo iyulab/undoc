@@ -8,6 +8,12 @@ use std::fs::File;
 use std::io::{BufReader, Cursor, Read, Seek};
 use std::path::Path;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RelationshipPolicy {
+    Required,
+    Optional,
+}
+
 /// A relationship entry from a .rels file.
 #[derive(Debug, Clone)]
 pub struct Relationship {
@@ -56,6 +62,22 @@ impl Relationships {
             .or_default()
             .push(rel.clone());
         self.by_id.insert(rel.id.clone(), rel);
+    }
+
+    /// Consume the collection into an ID → target map.
+    pub fn into_targets_by_id(self) -> HashMap<String, String> {
+        self.by_id
+            .into_iter()
+            .map(|(id, rel)| (id, rel.target))
+            .collect()
+    }
+
+    /// Consume the collection into an ID → (type, target) map.
+    pub fn into_type_targets_by_id(self) -> HashMap<String, (String, String)> {
+        self.by_id
+            .into_iter()
+            .map(|(id, rel)| (id, (rel.rel_type, rel.target)))
+            .collect()
     }
 }
 
@@ -168,6 +190,17 @@ fn decode_utf16_be(bytes: &[u8]) -> Result<String> {
 }
 
 impl OoxmlContainer {
+    fn rels_path_for_part(part_path: &str) -> String {
+        if part_path.is_empty() || part_path == "/" {
+            "_rels/.rels".to_string()
+        } else {
+            let path = Path::new(part_path);
+            let parent = path.parent().unwrap_or(Path::new(""));
+            let filename = path.file_name().unwrap_or_default().to_string_lossy();
+            format!("{}/_rels/{}.rels", parent.display(), filename)
+        }
+    }
+
     /// Open an OOXML container from a file path.
     ///
     /// # Example
@@ -259,23 +292,43 @@ impl OoxmlContainer {
     }
 
     /// Read and parse relationships from a .rels file.
+    ///
+    /// Legacy helper: treats missing relationship parts as optional.
     pub fn read_relationships(&self, part_path: &str) -> Result<Relationships> {
-        // Build the rels path
-        let rels_path = if part_path.is_empty() || part_path == "/" {
-            "_rels/.rels".to_string()
-        } else {
-            let path = Path::new(part_path);
-            let parent = path.parent().unwrap_or(Path::new(""));
-            let filename = path.file_name().unwrap_or_default().to_string_lossy();
-            format!("{}/_rels/{}.rels", parent.display(), filename)
+        self.read_optional_relationships_for_part(part_path)
+    }
+
+    /// Read relationships for a required OOXML part.
+    pub fn read_required_relationships_for_part(&self, part_path: &str) -> Result<Relationships> {
+        let rels_path = Self::rels_path_for_part(part_path);
+        self.read_relationships_at_path(&rels_path, RelationshipPolicy::Required)
+    }
+
+    /// Read relationships for an optional OOXML part.
+    pub fn read_optional_relationships_for_part(&self, part_path: &str) -> Result<Relationships> {
+        let rels_path = Self::rels_path_for_part(part_path);
+        self.read_relationships_at_path(&rels_path, RelationshipPolicy::Optional)
+    }
+
+    fn read_relationships_at_path(
+        &self,
+        rels_path: &str,
+        policy: RelationshipPolicy,
+    ) -> Result<Relationships> {
+        let content = match self.read_xml(rels_path) {
+            Ok(content) => content,
+            Err(Error::MissingComponent(_)) if policy == RelationshipPolicy::Optional => {
+                return Ok(Relationships::new());
+            }
+            Err(err) => return Err(err),
         };
 
-        self.parse_relationships(&rels_path)
+        parse_relationships_xml(&content, rels_path)
     }
 
     /// Read package-level relationships (_rels/.rels).
     pub fn read_package_relationships(&self) -> Result<Relationships> {
-        self.parse_relationships("_rels/.rels")
+        self.read_relationships_at_path("_rels/.rels", RelationshipPolicy::Required)
     }
 
     /// Parse core metadata from docProps/core.xml.
@@ -395,63 +448,6 @@ impl OoxmlContainer {
         }
     }
 
-    /// Parse a relationships file.
-    fn parse_relationships(&self, rels_path: &str) -> Result<Relationships> {
-        let content = match self.read_xml(rels_path) {
-            Ok(c) => c,
-            Err(_) => return Ok(Relationships::new()),
-        };
-
-        // Handle empty content
-        if content.trim().is_empty() {
-            return Ok(Relationships::new());
-        }
-
-        let mut rels = Relationships::new();
-        let mut reader = quick_xml::Reader::from_str(&content);
-        reader.config_mut().trim_text(true);
-
-        let mut buf = Vec::new();
-        loop {
-            match reader.read_event_into(&mut buf) {
-                Ok(quick_xml::events::Event::Empty(e)) if e.name().as_ref() == b"Relationship" => {
-                    let mut id = String::new();
-                    let mut rel_type = String::new();
-                    let mut target = String::new();
-                    let mut external = false;
-
-                    for attr in e.attributes().flatten() {
-                        match attr.key.as_ref() {
-                            b"Id" => id = String::from_utf8_lossy(&attr.value).to_string(),
-                            b"Type" => rel_type = String::from_utf8_lossy(&attr.value).to_string(),
-                            b"Target" => target = String::from_utf8_lossy(&attr.value).to_string(),
-                            b"TargetMode" => {
-                                external = String::from_utf8_lossy(&attr.value).to_lowercase()
-                                    == "external"
-                            }
-                            _ => {}
-                        }
-                    }
-
-                    if !id.is_empty() {
-                        rels.add(Relationship {
-                            id,
-                            rel_type,
-                            target,
-                            external,
-                        });
-                    }
-                }
-                Ok(quick_xml::events::Event::Eof) => break,
-                Err(e) => return Err(Error::XmlParse(e.to_string())),
-                _ => {}
-            }
-            buf.clear();
-        }
-
-        Ok(rels)
-    }
-
     /// Resolve a relative path from a base path.
     pub fn resolve_path(base: &str, relative: &str) -> String {
         if let Some(stripped) = relative.strip_prefix('/') {
@@ -476,6 +472,87 @@ impl OoxmlContainer {
 
         result.to_string_lossy().replace('\\', "/")
     }
+}
+
+fn parse_relationship_element(
+    e: &quick_xml::events::BytesStart<'_>,
+    location: &str,
+) -> Result<Relationship> {
+    let mut id = String::new();
+    let mut rel_type = String::new();
+    let mut target = String::new();
+    let mut external = false;
+
+    for attr in e.attributes().flatten() {
+        match attr.key.as_ref() {
+            b"Id" => id = String::from_utf8_lossy(attr.value.as_ref()).to_string(),
+            b"Type" => rel_type = String::from_utf8_lossy(attr.value.as_ref()).to_string(),
+            b"Target" => target = String::from_utf8_lossy(attr.value.as_ref()).to_string(),
+            b"TargetMode" => {
+                external =
+                    String::from_utf8_lossy(attr.value.as_ref()).eq_ignore_ascii_case("external")
+            }
+            _ => {}
+        }
+    }
+
+    let mut missing = Vec::new();
+    if id.is_empty() {
+        missing.push("Id");
+    }
+    if rel_type.is_empty() {
+        missing.push("Type");
+    }
+    if target.is_empty() {
+        missing.push("Target");
+    }
+
+    if !missing.is_empty() {
+        return Err(Error::xml_parse_with_context(
+            format!(
+                "Relationship element missing required attribute(s): {}",
+                missing.join(", ")
+            ),
+            location,
+        ));
+    }
+
+    Ok(Relationship {
+        id,
+        rel_type,
+        target,
+        external,
+    })
+}
+
+pub(crate) fn parse_relationships_xml(content: &str, location: &str) -> Result<Relationships> {
+    if content.trim().is_empty() {
+        return Err(Error::xml_parse_with_context(
+            "relationship file is empty",
+            location,
+        ));
+    }
+
+    let mut rels = Relationships::new();
+    let mut reader = quick_xml::Reader::from_str(content);
+    reader.config_mut().trim_text(true);
+
+    let mut buf = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(quick_xml::events::Event::Empty(e)) | Ok(quick_xml::events::Event::Start(e))
+                if e.name().as_ref() == b"Relationship" =>
+            {
+                rels.add(parse_relationship_element(&e, location)?);
+            }
+            Ok(quick_xml::events::Event::Eof) => break,
+            Err(e) => return Err(Error::xml_parse_with_context(e.to_string(), location)),
+            _ => {}
+        }
+        buf.clear();
+    }
+
+    Ok(rels)
 }
 
 impl std::fmt::Debug for OoxmlContainer {
@@ -529,6 +606,102 @@ mod tests {
         assert!(rels.get("rId1").is_some());
         assert!(rels.get("rId3").is_none());
         assert_eq!(rels.get_by_type("http://test/type1").len(), 2);
+    }
+
+    #[test]
+    fn test_relationship_projection_helpers_preserve_targets_and_types() {
+        let mut rels = Relationships::new();
+        rels.add(Relationship {
+            id: "rId1".to_string(),
+            rel_type: "urn:test:type".to_string(),
+            target: "../media/image1.png".to_string(),
+            external: false,
+        });
+
+        let target_only = rels.clone().into_targets_by_id();
+        assert_eq!(
+            target_only.get("rId1"),
+            Some(&"../media/image1.png".to_string())
+        );
+
+        let typed = rels.into_type_targets_by_id();
+        assert_eq!(
+            typed.get("rId1"),
+            Some(&(
+                "urn:test:type".to_string(),
+                "../media/image1.png".to_string()
+            ))
+        );
+    }
+
+    fn create_container_with_files(files: &[(&str, &str)]) -> OoxmlContainer {
+        use std::io::{Cursor, Write};
+
+        let buf = Cursor::new(Vec::new());
+        let mut zip = zip::ZipWriter::new(buf);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+
+        for (path, contents) in files {
+            zip.start_file(*path, options).unwrap();
+            zip.write_all(contents.as_bytes()).unwrap();
+        }
+
+        OoxmlContainer::from_bytes(zip.finish().unwrap().into_inner()).unwrap()
+    }
+
+    #[test]
+    fn test_parse_relationships_preserves_target_mode_and_start_forms() {
+        let rels = parse_relationships_xml(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="urn:test:inline" Target="item1.xml"></Relationship>
+  <Relationship Id="rId2" Type="urn:test:external" Target="https://example.com" TargetMode="External"/>
+</Relationships>"#,
+            "test.rels",
+        )
+        .unwrap();
+
+        assert_eq!(rels.by_id.len(), 2);
+        assert_eq!(rels.by_id["rId1"].target, "item1.xml");
+        assert!(!rels.by_id["rId1"].external);
+        assert_eq!(rels.by_id["rId2"].target, "https://example.com");
+        assert!(rels.by_id["rId2"].external);
+    }
+
+    #[test]
+    fn test_optional_relationships_allow_missing_but_not_malformed_content() {
+        let missing = create_container_with_files(&[]);
+        let rels = missing
+            .read_optional_relationships_for_part("ppt/slides/slide1.xml")
+            .unwrap();
+        assert!(rels.by_id.is_empty());
+
+        let malformed =
+            create_container_with_files(&[("ppt/slides/_rels/slide1.xml.rels", "<Relationships")]);
+        let err = malformed
+            .read_optional_relationships_for_part("ppt/slides/slide1.xml")
+            .unwrap_err();
+
+        match err {
+            Error::XmlParseWithContext { location, .. } => {
+                assert_eq!(location, "ppt/slides/_rels/slide1.xml.rels")
+            }
+            other => panic!("expected malformed optional rels error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_required_relationships_error_when_missing() {
+        let container = create_container_with_files(&[]);
+        let err = container
+            .read_required_relationships_for_part("word/document.xml")
+            .unwrap_err();
+
+        match err {
+            Error::MissingComponent(path) => assert_eq!(path, "word/_rels/document.xml.rels"),
+            other => panic!("expected missing required rels error, got {other:?}"),
+        }
     }
 
     #[test]
@@ -649,7 +822,7 @@ mod tests {
                             content.trim().is_empty()
                         );
                         // Print first 100 chars to verify encoding
-                        if content.len() > 0 {
+                        if !content.is_empty() {
                             let preview = &content[..content.len().min(100)];
                             println!("  Preview: {}", preview.replace('\n', "\\n"));
                         }

@@ -55,48 +55,9 @@ impl PptxParser {
 
     /// Parse presentation relationships.
     fn parse_presentation_rels(container: &OoxmlContainer) -> Result<HashMap<String, String>> {
-        let mut rels = HashMap::new();
-
-        if let Ok(xml) = container.read_xml("ppt/_rels/presentation.xml.rels") {
-            let mut reader = quick_xml::Reader::from_str(&xml);
-            reader.config_mut().trim_text(true);
-
-            let mut buf = Vec::new();
-
-            loop {
-                match reader.read_event_into(&mut buf) {
-                    Ok(quick_xml::events::Event::Empty(e))
-                    | Ok(quick_xml::events::Event::Start(e)) => {
-                        if e.name().as_ref() == b"Relationship" {
-                            let mut id = String::new();
-                            let mut target = String::new();
-
-                            for attr in e.attributes().flatten() {
-                                match attr.key.as_ref() {
-                                    b"Id" => {
-                                        id = String::from_utf8_lossy(&attr.value).to_string();
-                                    }
-                                    b"Target" => {
-                                        target = String::from_utf8_lossy(&attr.value).to_string();
-                                    }
-                                    _ => {}
-                                }
-                            }
-
-                            if !id.is_empty() && !target.is_empty() {
-                                rels.insert(id, target);
-                            }
-                        }
-                    }
-                    Ok(quick_xml::events::Event::Eof) => break,
-                    Err(e) => return Err(Error::XmlParse(e.to_string())),
-                    _ => {}
-                }
-                buf.clear();
-            }
-        }
-
-        Ok(rels)
+        Ok(container
+            .read_required_relationships_for_part("ppt/presentation.xml")?
+            .into_targets_by_id())
     }
 
     /// Parse presentation.xml for slide info.
@@ -213,59 +174,10 @@ impl PptxParser {
 
     /// Parse relationships for a specific slide/notes file.
     fn parse_slide_relationships(&self, slide_path: &str) -> Result<HashMap<String, String>> {
-        let mut rels = HashMap::new();
-
-        // Convert slide path to its rels path
-        // ppt/slides/slide1.xml -> ppt/slides/_rels/slide1.xml.rels
-        let rels_path = if let Some(last_slash) = slide_path.rfind('/') {
-            let dir = &slide_path[..last_slash];
-            let file = &slide_path[last_slash + 1..];
-            format!("{}/_rels/{}.rels", dir, file)
-        } else {
-            format!("_rels/{}.rels", slide_path)
-        };
-
-        if let Ok(xml) = self.container.read_xml(&rels_path) {
-            let mut reader = quick_xml::Reader::from_str(&xml);
-            reader.config_mut().trim_text(true);
-
-            let mut buf = Vec::new();
-
-            loop {
-                match reader.read_event_into(&mut buf) {
-                    Ok(quick_xml::events::Event::Empty(e))
-                    | Ok(quick_xml::events::Event::Start(e)) => {
-                        if e.name().as_ref() == b"Relationship" {
-                            let mut id = String::new();
-                            let mut target = String::new();
-
-                            for attr in e.attributes().flatten() {
-                                match attr.key.as_ref() {
-                                    b"Id" => {
-                                        id = String::from_utf8_lossy(&attr.value).to_string();
-                                    }
-                                    b"Target" => {
-                                        target = String::from_utf8_lossy(&attr.value).to_string();
-                                    }
-                                    _ => {}
-                                }
-                            }
-
-                            // Store all relationships (consumers filter by type as needed)
-                            if !id.is_empty() && !target.is_empty() {
-                                rels.insert(id, target);
-                            }
-                        }
-                    }
-                    Ok(quick_xml::events::Event::Eof) => break,
-                    Err(_) => break,
-                    _ => {}
-                }
-                buf.clear();
-            }
-        }
-
-        Ok(rels)
+        Ok(self
+            .container
+            .read_optional_relationships_for_part(slide_path)?
+            .into_targets_by_id())
     }
 
     /// Parse metadata from docProps/core.xml.
@@ -1483,6 +1395,27 @@ mod tests {
 
     /// Helper to create a minimal PPTX in memory with given slide XML content.
     fn create_minimal_pptx(slide_xml: &str) -> Vec<u8> {
+        create_minimal_pptx_with_relationships(
+            slide_xml,
+            Some(
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide1.xml"/>
+</Relationships>"#,
+            ),
+            Some(
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+</Relationships>"#,
+            ),
+        )
+    }
+
+    fn create_minimal_pptx_with_relationships(
+        slide_xml: &str,
+        presentation_rels_xml: Option<&str>,
+        slide_rels_xml: Option<&str>,
+    ) -> Vec<u8> {
         use std::io::{Cursor, Write};
         let buf = Cursor::new(Vec::new());
         let mut zip = zip::ZipWriter::new(buf);
@@ -1506,13 +1439,12 @@ mod tests {
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="ppt/presentation.xml"/>
 </Relationships>"#).unwrap();
 
-        // ppt/_rels/presentation.xml.rels
-        zip.start_file("ppt/_rels/presentation.xml.rels", options)
-            .unwrap();
-        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide1.xml"/>
-</Relationships>"#).unwrap();
+        if let Some(presentation_rels_xml) = presentation_rels_xml {
+            // ppt/_rels/presentation.xml.rels
+            zip.start_file("ppt/_rels/presentation.xml.rels", options)
+                .unwrap();
+            zip.write_all(presentation_rels_xml.as_bytes()).unwrap();
+        }
 
         // ppt/presentation.xml
         zip.start_file("ppt/presentation.xml", options).unwrap();
@@ -1527,21 +1459,107 @@ mod tests {
         )
         .unwrap();
 
-        // ppt/slides/_rels/slide1.xml.rels
-        zip.start_file("ppt/slides/_rels/slide1.xml.rels", options)
-            .unwrap();
-        zip.write_all(
-            br#"<?xml version="1.0" encoding="UTF-8"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-</Relationships>"#,
-        )
-        .unwrap();
+        if let Some(slide_rels_xml) = slide_rels_xml {
+            // ppt/slides/_rels/slide1.xml.rels
+            zip.start_file("ppt/slides/_rels/slide1.xml.rels", options)
+                .unwrap();
+            zip.write_all(slide_rels_xml.as_bytes()).unwrap();
+        }
 
         // ppt/slides/slide1.xml
         zip.start_file("ppt/slides/slide1.xml", options).unwrap();
         zip.write_all(slide_xml.as_bytes()).unwrap();
 
         zip.finish().unwrap().into_inner()
+    }
+
+    #[test]
+    fn test_pptx_requires_presentation_relationships() {
+        let slide_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+       xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"/>"#;
+
+        let data = create_minimal_pptx_with_relationships(slide_xml, None, None);
+        let err = PptxParser::from_bytes(data)
+            .err()
+            .expect("missing presentation relationships should fail");
+
+        match err {
+            Error::MissingComponent(path) => assert_eq!(path, "ppt/_rels/presentation.xml.rels"),
+            other => panic!("expected missing presentation rels error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_pptx_rejects_malformed_presentation_relationships() {
+        let slide_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+       xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"/>"#;
+
+        let data = create_minimal_pptx_with_relationships(slide_xml, Some("<Relationships"), None);
+        let err = PptxParser::from_bytes(data)
+            .err()
+            .expect("malformed presentation relationships should fail");
+
+        match err {
+            Error::XmlParseWithContext { location, .. } => {
+                assert_eq!(location, "ppt/_rels/presentation.xml.rels")
+            }
+            other => panic!("expected malformed presentation rels error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_pptx_allows_missing_optional_slide_relationships() {
+        let slide_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+       xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
+  <p:cSld><p:spTree/></p:cSld>
+</p:sld>"#;
+
+        let data = create_minimal_pptx_with_relationships(
+            slide_xml,
+            Some(
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide1.xml"></Relationship>
+</Relationships>"#,
+            ),
+            None,
+        );
+        let mut parser = PptxParser::from_bytes(data).unwrap();
+        let doc = parser.parse().unwrap();
+
+        assert_eq!(doc.sections.len(), 1);
+    }
+
+    #[test]
+    fn test_pptx_rejects_malformed_optional_slide_relationships() {
+        let slide_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+       xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
+  <p:cSld><p:spTree/></p:cSld>
+</p:sld>"#;
+
+        let data = create_minimal_pptx_with_relationships(
+            slide_xml,
+            Some(
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide1.xml"/>
+</Relationships>"#,
+            ),
+            Some("<Relationships"),
+        );
+        let mut parser = PptxParser::from_bytes(data).unwrap();
+        let err = parser.parse().unwrap_err();
+
+        match err {
+            Error::XmlParseWithContext { location, .. } => {
+                assert_eq!(location, "ppt/slides/_rels/slide1.xml.rels")
+            }
+            other => panic!("expected malformed slide rels error, got {other:?}"),
+        }
     }
 
     #[test]
