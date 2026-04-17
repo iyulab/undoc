@@ -2,6 +2,12 @@
 
 use crate::error::{Error, Result};
 
+fn decode_shared_text_lossless(e: &quick_xml::events::BytesText<'_>) -> String {
+    e.unescape()
+        .map(|text| text.into_owned())
+        .unwrap_or_else(|_| String::from_utf8_lossy(e.as_ref()).into_owned())
+}
+
 /// Shared strings table.
 #[derive(Debug, Clone, Default)]
 pub struct SharedStrings {
@@ -37,7 +43,7 @@ impl SharedStrings {
                 },
                 Ok(quick_xml::events::Event::Text(e)) => {
                     if in_t {
-                        let text = e.unescape().unwrap_or_default();
+                        let text = decode_shared_text_lossless(&e);
                         current_text.push_str(&text);
                     }
                 }
@@ -115,5 +121,16 @@ mod tests {
         assert_eq!(ss.len(), 1);
         // Rich text runs are concatenated as-is
         assert_eq!(ss.get(0), Some("HelloWorld"));
+    }
+
+    #[test]
+    fn test_malformed_shared_string_preserves_raw_entity_text() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+    <si><t>Hello &bogus; World</t></si>
+</sst>"#;
+
+        let ss = SharedStrings::parse(xml).unwrap();
+        assert_eq!(ss.get(0), Some("Hello &bogus; World"));
     }
 }

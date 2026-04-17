@@ -343,10 +343,10 @@ impl DocxParser {
                 }
                 Ok(quick_xml::events::Event::Text(ref e)) => {
                     if in_paragraph {
-                        let text = e.unescape().unwrap_or_default();
+                        let text = decode_xml_text_lossless(e);
                         paragraph_xml.push_str(&escape_xml(&text));
                     } else if table_depth > 0 {
-                        let text = e.unescape().unwrap_or_default();
+                        let text = decode_xml_text_lossless(e);
                         table_xml.push_str(&escape_xml(&text));
                     }
                 }
@@ -804,7 +804,7 @@ impl DocxParser {
                         && mc_fallback_depth == 0
                         && txbx_content_depth == 0
                     {
-                        let text = e.unescape().unwrap_or_default().to_string();
+                        let text = decode_xml_text_lossless(e);
                         if !text.is_empty() {
                             let current_revision = if in_del {
                                 RevisionType::Deleted
@@ -935,7 +935,7 @@ impl DocxParser {
                 }
                 Ok(quick_xml::events::Event::Text(ref e)) => {
                     if in_txbx_para {
-                        let text = e.unescape().unwrap_or_default();
+                        let text = decode_xml_text_lossless(e);
                         txbx_para_xml.push_str(&escape_xml(&text));
                     }
                 }
@@ -1255,14 +1255,14 @@ impl DocxParser {
                 Ok(quick_xml::events::Event::Text(ref e)) => {
                     // If we're inside a nested table, just collect XML
                     if nested_table_depth > 0 {
-                        let text = e.unescape().unwrap_or_default();
+                        let text = decode_xml_text_lossless(e);
                         nested_table_xml.push_str(&escape_xml(&text));
                         continue;
                     }
 
                     // Only extract text from w:t elements, skip w:instrText (field codes)
                     if in_run && in_text && !in_instr_text {
-                        let text = e.unescape().unwrap_or_default().to_string();
+                        let text = decode_xml_text_lossless(e);
                         if !text.is_empty() {
                             if let Some(ref mut para) = current_paragraph {
                                 let run = TextRun {
@@ -1472,9 +1472,7 @@ fn parse_notes_xml(xml: &str, note_tag: &[u8]) -> HashMap<String, String> {
             }
             Ok(quick_xml::events::Event::Text(ref e)) => {
                 if in_note && in_text {
-                    if let Ok(text) = e.unescape() {
-                        current_text.push_str(&text);
-                    }
+                    current_text.push_str(&decode_xml_text_lossless(e));
                 }
             }
             Ok(quick_xml::events::Event::End(ref e)) => {
@@ -1531,9 +1529,7 @@ fn parse_header_footer_xml(xml: &str) -> Vec<Paragraph> {
             },
             Ok(quick_xml::events::Event::Text(ref e)) => {
                 if in_paragraph && in_text {
-                    if let Ok(text) = e.unescape() {
-                        current_text.push_str(&text);
-                    }
+                    current_text.push_str(&decode_xml_text_lossless(e));
                 }
             }
             Ok(quick_xml::events::Event::End(ref e)) => match e.name().as_ref() {
@@ -1570,6 +1566,12 @@ fn get_bool_attr(e: &quick_xml::events::BytesStart, key: &[u8]) -> Option<bool> 
         }
     }
     None
+}
+
+fn decode_xml_text_lossless(e: &quick_xml::events::BytesText<'_>) -> String {
+    e.unescape()
+        .map(|text| text.into_owned())
+        .unwrap_or_else(|_| String::from_utf8_lossy(e.as_ref()).into_owned())
 }
 
 /// Escape XML special characters.
@@ -2104,6 +2106,19 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_notes_xml_preserves_raw_malformed_entity() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+        <w:footnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+            <w:footnote w:id="2">
+                <w:p><w:r><w:t>Footnote &bogus; text</w:t></w:r></w:p>
+            </w:footnote>
+        </w:footnotes>"#;
+
+        let notes = parse_notes_xml(xml, b"w:footnote");
+        assert_eq!(notes.get("2").unwrap(), "Footnote &bogus; text");
+    }
+
+    #[test]
     fn test_footnote_reference_in_paragraph() {
         // Test that w:footnoteReference inserts [^N] marker
         let xml = r#"<w:p>
@@ -2284,6 +2299,18 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_header_footer_xml_preserves_raw_malformed_entity() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+        <w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+            <w:p><w:r><w:t>Footer &bogus; text</w:t></w:r></w:p>
+        </w:ftr>"#;
+
+        let paragraphs = parse_header_footer_xml(xml);
+        assert_eq!(paragraphs.len(), 1);
+        assert_eq!(paragraphs[0].plain_text(), "Footer &bogus; text");
+    }
+
+    #[test]
     fn test_parse_header_footer_xml_empty() {
         let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
         <w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
@@ -2347,6 +2374,16 @@ mod tests {
         zip.write_all(document_xml.as_bytes()).unwrap();
 
         zip.finish().unwrap().into_inner()
+    }
+
+    fn empty_test_parser() -> DocxParser {
+        DocxParser::from_bytes(create_minimal_docx(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body><w:p/></w:body>
+</w:document>"#,
+        ))
+        .unwrap()
     }
 
     #[test]
@@ -2428,6 +2465,74 @@ mod tests {
             }
             other => panic!("expected malformed document rels error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_docx_body_malformed_entity_preserves_raw_text() {
+        let doc_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body><w:p><w:r><w:t>Hello &bogus; body</w:t></w:r></w:p></w:body>
+</w:document>"#;
+
+        let data = create_minimal_docx(doc_xml);
+        let mut parser = DocxParser::from_bytes(data).unwrap();
+        let doc = parser.parse().unwrap();
+
+        assert_eq!(doc.plain_text(), "Hello &bogus; body");
+    }
+
+    #[test]
+    fn test_docx_textbox_malformed_entity_preserves_raw_text() {
+        let doc_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+            xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
+  <w:body>
+    <w:p>
+      <w:r>
+        <w:drawing>
+          <wps:wsp>
+            <wps:txbx>
+              <w:txbxContent>
+                <w:p><w:r><w:t>Box &bogus; text</w:t></w:r></w:p>
+              </w:txbxContent>
+            </wps:txbx>
+          </wps:wsp>
+        </w:drawing>
+      </w:r>
+    </w:p>
+  </w:body>
+</w:document>"#;
+
+        let data = create_minimal_docx(doc_xml);
+        let mut parser = DocxParser::from_bytes(data).unwrap();
+        let doc = parser.parse().unwrap();
+
+        assert!(doc.plain_text().contains("Box &bogus; text"));
+    }
+
+    #[test]
+    fn test_docx_nested_table_malformed_entity_preserves_raw_text() {
+        let parser = empty_test_parser();
+        let xml = r#"<w:tbl xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:tr>
+    <w:tc>
+      <w:tbl>
+        <w:tr>
+          <w:tc>
+            <w:p><w:r><w:t>Inner &bogus; table</w:t></w:r></w:p>
+          </w:tc>
+        </w:tr>
+      </w:tbl>
+    </w:tc>
+  </w:tr>
+</w:tbl>"#;
+
+        let table = parser.parse_table(xml).unwrap();
+
+        assert_eq!(
+            table.rows[0].cells[0].nested_tables[0].rows[0].cells[0].plain_text(),
+            "Inner &bogus; table"
+        );
     }
 
     #[test]

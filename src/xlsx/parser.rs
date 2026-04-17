@@ -28,6 +28,12 @@ struct BuildSheetCellContext<'a> {
     is_header: bool,
 }
 
+fn decode_spreadsheet_text_lossless(e: &quick_xml::events::BytesText<'_>) -> String {
+    e.unescape()
+        .map(|text| text.into_owned())
+        .unwrap_or_else(|_| String::from_utf8_lossy(e.as_ref()).into_owned())
+}
+
 /// Parser for XLSX (Excel) workbooks.
 pub struct XlsxParser {
     container: OoxmlContainer,
@@ -172,9 +178,8 @@ impl XlsxParser {
                     let comment_map =
                         Self::find_and_parse_comments(&self.container, &sheet_rels, sheet_dir);
 
-                    if let Ok(table) = self.parse_sheet(&xml, &hyperlink_map, &comment_map) {
-                        section.add_block(Block::Table(table));
-                    }
+                    let table = self.parse_sheet(&xml, &hyperlink_map, &comment_map)?;
+                    section.add_block(Block::Table(table));
 
                     // Parse drawing images linked to this sheet
                     let images = self.parse_sheet_drawing_images(&sheet_path)?;
@@ -365,7 +370,7 @@ impl XlsxParser {
                                 comment_map,
                                 is_header: is_first_row,
                             },
-                        );
+                        )?;
 
                         if let Some(ref mut row) = current_row {
                             Self::push_cell_with_row_local_spacing(
@@ -382,7 +387,7 @@ impl XlsxParser {
                 },
                 Ok(quick_xml::events::Event::Text(ref e)) => {
                     if in_value {
-                        let text = e.unescape().unwrap_or_default();
+                        let text = decode_spreadsheet_text_lossless(e);
                         current_cell_value.push_str(&text);
                     }
                 }
@@ -406,7 +411,7 @@ impl XlsxParser {
                                 comment_map,
                                 is_header: is_first_row,
                             },
-                        );
+                        )?;
 
                         if let Some(ref mut row) = current_row {
                             Self::push_cell_with_row_local_spacing(
@@ -470,9 +475,9 @@ impl XlsxParser {
         current_cell_style: Option<usize>,
         current_cell_ref: Option<&str>,
         context: BuildSheetCellContext<'_>,
-    ) -> Cell {
+    ) -> Result<Cell> {
         let value =
-            self.resolve_cell_value(current_cell_value, current_cell_type, current_cell_style);
+            self.resolve_cell_value(current_cell_value, current_cell_type, current_cell_style)?;
 
         let (col_span, row_span) = current_cell_ref
             .and_then(|r| context.merge_map.get(r))
@@ -496,7 +501,7 @@ impl XlsxParser {
             runs.push(comment_run);
         }
 
-        Cell {
+        Ok(Cell {
             content: vec![Paragraph {
                 runs,
                 ..Default::default()
@@ -508,7 +513,7 @@ impl XlsxParser {
             vertical_alignment: Default::default(),
             is_header: context.is_header,
             background: None,
-        }
+        })
     }
 
     fn push_cell_with_row_local_spacing(
@@ -539,31 +544,36 @@ impl XlsxParser {
         value: &str,
         cell_type: Option<&str>,
         style_index: Option<usize>,
-    ) -> String {
+    ) -> Result<String> {
         match cell_type {
             Some("s") => {
                 // Shared string index
                 if let Ok(idx) = value.parse::<usize>() {
-                    self.shared_strings.get(idx).unwrap_or("").to_string()
+                    self.shared_strings
+                        .get(idx)
+                        .map(str::to_string)
+                        .ok_or_else(|| {
+                            Error::InvalidData(format!("shared string index out of range: {idx}"))
+                        })
                 } else {
-                    value.to_string()
+                    Ok(value.to_string())
                 }
             }
             Some("b") => {
                 // Boolean
                 if value == "1" {
-                    "TRUE".to_string()
+                    Ok("TRUE".to_string())
                 } else {
-                    "FALSE".to_string()
+                    Ok("FALSE".to_string())
                 }
             }
             Some("e") => {
                 // Error
-                format!("#ERROR:{}", value)
+                Ok(format!("#ERROR:{}", value))
             }
             Some("str") | Some("inlineStr") => {
                 // Inline string
-                value.to_string()
+                Ok(value.to_string())
             }
             _ => {
                 // Number or general - check for date format
@@ -573,13 +583,13 @@ impl XlsxParser {
                             // Try to parse as date
                             if let Ok(serial) = value.parse::<f64>() {
                                 if let Some(date_str) = Styles::serial_to_date(serial) {
-                                    return date_str;
+                                    return Ok(date_str);
                                 }
                             }
                         }
                     }
                 }
-                value.to_string()
+                Ok(value.to_string())
             }
         }
     }
@@ -709,7 +719,7 @@ impl XlsxParser {
                 }
                 Ok(quick_xml::events::Event::Text(ref e)) => {
                     if in_t {
-                        let text = e.unescape().unwrap_or_default();
+                        let text = decode_spreadsheet_text_lossless(e);
                         if !current_text.is_empty() {
                             current_text.push(' ');
                         }
@@ -830,14 +840,9 @@ impl XlsxParser {
         &self,
         part_path: &str,
     ) -> Result<HashMap<String, (String, String)>> {
-        match self
-            .container
+        self.container
             .read_optional_relationships_for_part(part_path)
-        {
-            Ok(rels) => Ok(rels.into_type_targets_by_id()),
-            Err(Error::XmlParseWithContext { .. }) => Ok(HashMap::new()),
-            Err(err) => Err(err),
-        }
+            .map(|rels| rels.into_type_targets_by_id())
     }
 
     /// Resolve a relative path (e.g., "../drawings/drawing1.xml") against a base directory.
@@ -1409,6 +1414,27 @@ mod tests {
         workbook_rels_xml: Option<&str>,
         sheet_rels_xml: Option<&str>,
     ) -> Vec<u8> {
+        create_minimal_xlsx_with_parts(
+            workbook_rels_xml,
+            sheet_rels_xml,
+            None,
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    <row r="1">
+      <c r="A1" t="inlineStr"><is><t>Hello</t></is></c>
+    </row>
+  </sheetData>
+</worksheet>"#,
+        )
+    }
+
+    fn create_minimal_xlsx_with_parts(
+        workbook_rels_xml: Option<&str>,
+        sheet_rels_xml: Option<&str>,
+        shared_strings_xml: Option<&str>,
+        sheet_xml: &str,
+    ) -> Vec<u8> {
         use std::io::{Cursor, Write};
 
         let buf = Cursor::new(Vec::new());
@@ -1424,6 +1450,7 @@ mod tests {
   <Default Extension="xml" ContentType="application/xml"/>
   <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
   <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>
 </Types>"#,
         )
         .unwrap();
@@ -1461,18 +1488,13 @@ mod tests {
             zip.write_all(sheet_rels_xml.as_bytes()).unwrap();
         }
 
+        if let Some(shared_strings_xml) = shared_strings_xml {
+            zip.start_file("xl/sharedStrings.xml", options).unwrap();
+            zip.write_all(shared_strings_xml.as_bytes()).unwrap();
+        }
+
         zip.start_file("xl/worksheets/sheet1.xml", options).unwrap();
-        zip.write_all(
-            br#"<?xml version="1.0" encoding="UTF-8"?>
-<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
-  <sheetData>
-    <row r="1">
-      <c r="A1" t="inlineStr"><is><t>Hello</t></is></c>
-    </row>
-  </sheetData>
-</worksheet>"#,
-        )
-        .unwrap();
+        zip.write_all(sheet_xml.as_bytes()).unwrap();
 
         zip.finish().unwrap().into_inner()
     }
@@ -1542,7 +1564,7 @@ mod tests {
     }
 
     #[test]
-    fn test_xlsx_best_effort_on_malformed_optional_sheet_relationships() {
+    fn test_xlsx_rejects_malformed_optional_sheet_relationships() {
         let data = create_minimal_xlsx(
             Some(
                 r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -1553,10 +1575,54 @@ mod tests {
             Some("<Relationships"),
         );
         let mut parser = XlsxParser::from_bytes(data).unwrap();
-        let doc = parser.parse().unwrap();
+        let err = parser
+            .parse()
+            .expect_err("malformed optional sheet relationships should fail");
 
-        assert_eq!(doc.sections.len(), 1);
-        assert_eq!(doc.plain_text(), "Hello");
+        match err {
+            Error::XmlParseWithContext { location, .. } => {
+                assert_eq!(location, "xl/worksheets/_rels/sheet1.xml.rels")
+            }
+            other => panic!("expected malformed optional sheet rels error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_xlsx_out_of_range_shared_string_index_is_error() {
+        let data = create_minimal_xlsx_with_parts(
+            Some(
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+</Relationships>"#,
+            ),
+            None,
+            Some(
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <si><t>Only entry</t></si>
+</sst>"#,
+            ),
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    <row r="1">
+      <c r="A1" t="s"><v>3</v></c>
+    </row>
+  </sheetData>
+</worksheet>"#,
+        );
+        let mut parser = XlsxParser::from_bytes(data).unwrap();
+        let err = parser
+            .parse()
+            .expect_err("out-of-range shared string index should fail");
+
+        match err {
+            Error::InvalidData(message) => {
+                assert!(message.contains("shared string index out of range: 3"))
+            }
+            other => panic!("expected invalid shared string error, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1875,6 +1941,22 @@ mod tests {
         assert_eq!(comments.len(), 1);
         assert!(comments.contains_key("A1"));
         assert_eq!(comments.get("A1").unwrap(), "Lowercase ref");
+    }
+
+    #[test]
+    fn test_parse_comments_xml_malformed_entity_preserves_raw_text() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+            <comments xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+                <authors><author>Author</author></authors>
+                <commentList>
+                    <comment ref="A1" authorId="0">
+                        <text><r><t>Bad &bogus; comment</t></r></text>
+                    </comment>
+                </commentList>
+            </comments>"#;
+
+        let comments = XlsxParser::parse_comments_xml(xml);
+        assert_eq!(comments.get("A1").unwrap(), "Bad &bogus; comment");
     }
 
     #[test]
