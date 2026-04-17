@@ -368,7 +368,19 @@ impl Paragraph {
 
     /// Get the plain text content.
     pub fn plain_text(&self) -> String {
-        self.runs.iter().map(|r| r.text.as_str()).collect()
+        let mut text = String::new();
+
+        for run in &self.runs {
+            text.push_str(&run.text);
+            if run.line_break {
+                text.push('\n');
+            }
+            if run.page_break {
+                text.push_str("\n---\n");
+            }
+        }
+
+        text
     }
 
     /// Check if this paragraph is empty.
@@ -539,6 +551,31 @@ mod tests {
         let heading = Paragraph::heading(HeadingLevel::H1, "Title");
         assert!(heading.is_heading());
         assert_eq!(heading.heading.level(), 1);
+    }
+
+    #[test]
+    fn test_paragraph_plain_text_preserves_run_breaks() {
+        let para = Paragraph {
+            runs: vec![
+                TextRun {
+                    text: "First line".to_string(),
+                    line_break: true,
+                    ..Default::default()
+                },
+                TextRun {
+                    text: "Second line".to_string(),
+                    page_break: true,
+                    ..Default::default()
+                },
+                TextRun::plain("Third line"),
+            ],
+            ..Default::default()
+        };
+
+        assert_eq!(
+            para.plain_text(),
+            "First line\nSecond line\n---\nThird line"
+        );
     }
 
     #[test]

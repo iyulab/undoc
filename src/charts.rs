@@ -22,7 +22,7 @@ pub struct ChartSeries {
     /// Series name (legend label)
     pub name: String,
     /// Data values
-    pub values: Vec<f64>,
+    pub values: Vec<Option<f64>>,
 }
 
 impl ChartData {
@@ -43,9 +43,12 @@ impl ChartData {
         for (i, category) in self.categories.iter().enumerate() {
             let mut cells = vec![Cell::with_text(category)];
             for series in &self.series {
-                let value = series.values.get(i).copied().unwrap_or(0.0);
-                // Format number: remove trailing zeros
-                let formatted = format_number(value);
+                let formatted = series
+                    .values
+                    .get(i)
+                    .and_then(|value| *value)
+                    .map(format_number)
+                    .unwrap_or_default();
                 cells.push(Cell::with_text(&formatted));
             }
             table.add_row(Row {
@@ -66,19 +69,13 @@ impl ChartData {
 
 /// Format a number, removing unnecessary trailing zeros
 fn format_number(n: f64) -> String {
-    if n.fract() == 0.0 {
-        format!("{:.0}", n)
-    } else {
-        // Remove trailing zeros
-        let s = format!("{:.6}", n);
-        s.trim_end_matches('0').trim_end_matches('.').to_string()
-    }
+    n.to_string()
 }
 
 /// Parse chart XML to extract data
 pub fn parse_chart_xml(xml: &str) -> Result<ChartData> {
     let mut reader = quick_xml::Reader::from_str(xml);
-    reader.config_mut().trim_text(true);
+    reader.config_mut().trim_text(false);
 
     let mut chart_data = ChartData {
         title: None,
@@ -89,18 +86,19 @@ pub fn parse_chart_xml(xml: &str) -> Result<ChartData> {
     let mut buf = Vec::new();
 
     // State tracking
+    let mut in_title = false;
     let mut in_ser = false;
-    let mut in_tx = false; // Series name
+    let mut in_tx = false; // Series name / title text
     let mut in_cat = false; // Categories
     let mut in_val = false; // Values
-    let mut in_str_cache = false;
-    let mut in_num_cache = false;
     let mut in_pt = false;
-    let mut in_v = false;
+    let mut in_text_node = false;
 
     let mut current_series_name = String::new();
-    let mut current_values: Vec<f64> = Vec::new();
+    let mut current_values: Vec<Option<f64>> = Vec::new();
+    let mut current_title = String::new();
     let mut current_text = String::new();
+    let mut current_point_text = String::new();
     let mut pt_idx: Option<usize> = None;
 
     // Temporary storage for categories (only from first series)
@@ -112,12 +110,16 @@ pub fn parse_chart_xml(xml: &str) -> Result<ChartData> {
             Ok(quick_xml::events::Event::Start(ref e)) => {
                 let local_name = e.name().local_name();
                 match local_name.as_ref() {
+                    b"title" => {
+                        in_title = true;
+                        current_title.clear();
+                    }
                     b"ser" => {
                         in_ser = true;
                         current_series_name.clear();
                         current_values.clear();
                     }
-                    b"tx" if in_ser => {
+                    b"tx" if in_ser || in_title => {
                         in_tx = true;
                     }
                     b"cat" if in_ser => {
@@ -126,14 +128,9 @@ pub fn parse_chart_xml(xml: &str) -> Result<ChartData> {
                     b"val" if in_ser => {
                         in_val = true;
                     }
-                    b"strCache" => {
-                        in_str_cache = true;
-                    }
-                    b"numCache" => {
-                        in_num_cache = true;
-                    }
                     b"pt" => {
                         in_pt = true;
+                        current_point_text.clear();
                         // Get idx attribute
                         for attr in e.attributes().flatten() {
                             if attr.key.local_name().as_ref() == b"idx" {
@@ -145,8 +142,8 @@ pub fn parse_chart_xml(xml: &str) -> Result<ChartData> {
                             }
                         }
                     }
-                    b"v" if in_pt => {
-                        in_v = true;
+                    b"v" | b"t" => {
+                        in_text_node = true;
                         current_text.clear();
                     }
                     _ => {}
@@ -155,6 +152,13 @@ pub fn parse_chart_xml(xml: &str) -> Result<ChartData> {
             Ok(quick_xml::events::Event::End(ref e)) => {
                 let local_name = e.name().local_name();
                 match local_name.as_ref() {
+                    b"title" => {
+                        let title = current_title.trim();
+                        if !title.is_empty() {
+                            chart_data.title = Some(title.to_string());
+                        }
+                        in_title = false;
+                    }
                     b"ser" => {
                         // Save series if we have data
                         if !current_series_name.is_empty() || !current_values.is_empty() {
@@ -187,47 +191,52 @@ pub fn parse_chart_xml(xml: &str) -> Result<ChartData> {
                     b"val" => {
                         in_val = false;
                     }
-                    b"strCache" => {
-                        in_str_cache = false;
-                    }
-                    b"numCache" => {
-                        in_num_cache = false;
-                    }
                     b"pt" => {
-                        in_pt = false;
-                        pt_idx = None;
-                    }
-                    b"v" => {
-                        if in_v {
-                            // Process the value based on context
-                            if in_tx && in_str_cache {
-                                // Series name
-                                current_series_name = current_text.trim().to_string();
-                            } else if in_cat && in_str_cache {
-                                // Category label
-                                temp_categories.push(current_text.trim().to_string());
-                            } else if in_val && in_num_cache {
-                                // Numeric value
-                                if let Ok(val) = current_text.trim().parse::<f64>() {
-                                    // Ensure vector is large enough
-                                    if let Some(idx) = pt_idx {
-                                        while current_values.len() <= idx {
-                                            current_values.push(0.0);
-                                        }
-                                        current_values[idx] = val;
-                                    } else {
-                                        current_values.push(val);
-                                    }
+                        let point_text = current_point_text.trim();
+
+                        if in_title && !point_text.is_empty() {
+                            current_title.push_str(point_text);
+                        } else if in_ser && in_tx && !point_text.is_empty() {
+                            current_series_name.push_str(point_text);
+                        } else if in_cat && !point_text.is_empty() {
+                            temp_categories.push(point_text.to_string());
+                        } else if in_val && !point_text.is_empty() {
+                            let val = point_text.parse::<f64>().map_err(|_| {
+                                Error::InvalidData(format!(
+                                    "invalid chart numeric value: {point_text}"
+                                ))
+                            })?;
+                            if let Some(idx) = pt_idx {
+                                while current_values.len() <= idx {
+                                    current_values.push(None);
                                 }
+                                current_values[idx] = Some(val);
+                            } else {
+                                current_values.push(Some(val));
                             }
                         }
-                        in_v = false;
+
+                        in_pt = false;
+                        pt_idx = None;
+                        current_point_text.clear();
+                    }
+                    b"v" | b"t" => {
+                        if in_text_node {
+                            if in_pt {
+                                current_point_text.push_str(&current_text);
+                            } else if in_title {
+                                current_title.push_str(&current_text);
+                            } else if in_ser && in_tx {
+                                current_series_name.push_str(&current_text);
+                            }
+                        }
+                        in_text_node = false;
                     }
                     _ => {}
                 }
             }
             Ok(quick_xml::events::Event::Text(ref e)) => {
-                if in_v {
+                if in_text_node {
                     if let Ok(text) = e.unescape() {
                         current_text.push_str(&text);
                     }
@@ -314,9 +323,9 @@ mod tests {
         assert_eq!(chart_data.categories, vec!["Q1", "Q2"]);
         assert_eq!(chart_data.series.len(), 2);
         assert_eq!(chart_data.series[0].name, "2010");
-        assert_eq!(chart_data.series[0].values, vec![100.0, 150.0]);
+        assert_eq!(chart_data.series[0].values, vec![Some(100.0), Some(150.0)]);
         assert_eq!(chart_data.series[1].name, "2011");
-        assert_eq!(chart_data.series[1].values, vec![120.0, 180.0]);
+        assert_eq!(chart_data.series[1].values, vec![Some(120.0), Some(180.0)]);
     }
 
     #[test]
@@ -327,11 +336,11 @@ mod tests {
             series: vec![
                 ChartSeries {
                     name: "2010".to_string(),
-                    values: vec![100.0, 150.0],
+                    values: vec![Some(100.0), Some(150.0)],
                 },
                 ChartSeries {
                     name: "2011".to_string(),
-                    values: vec![120.0, 180.0],
+                    values: vec![Some(120.0), Some(180.0)],
                 },
             ],
         };
@@ -353,10 +362,149 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_chart_title_from_rich_text() {
+        let xml = r#"<?xml version="1.0"?>
+<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"
+              xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+  <c:chart>
+    <c:title>
+      <c:tx>
+        <c:rich>
+          <a:p>
+            <a:r><a:t>Revenue</a:t></a:r>
+            <a:r><a:t> Growth</a:t></a:r>
+          </a:p>
+        </c:rich>
+      </c:tx>
+    </c:title>
+    <c:plotArea>
+      <c:barChart>
+        <c:ser>
+          <c:tx>
+            <c:strRef>
+              <c:strCache>
+                <c:pt idx="0"><c:v>2024</c:v></c:pt>
+              </c:strCache>
+            </c:strRef>
+          </c:tx>
+          <c:cat>
+            <c:strRef>
+              <c:strCache>
+                <c:pt idx="0"><c:v>Q1</c:v></c:pt>
+              </c:strCache>
+            </c:strRef>
+          </c:cat>
+          <c:val>
+            <c:numRef>
+              <c:numCache>
+                <c:pt idx="0"><c:v>42</c:v></c:pt>
+              </c:numCache>
+            </c:numRef>
+          </c:val>
+        </c:ser>
+      </c:barChart>
+    </c:plotArea>
+  </c:chart>
+</c:chartSpace>"#;
+
+        let chart_data = parse_chart_xml(xml).unwrap();
+
+        assert_eq!(chart_data.title.as_deref(), Some("Revenue Growth"));
+    }
+
+    #[test]
+    fn test_chart_to_table_keeps_missing_values_blank() {
+        let xml = r#"<?xml version="1.0"?>
+<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart">
+  <c:chart>
+    <c:plotArea>
+      <c:lineChart>
+        <c:ser>
+          <c:tx>
+            <c:strRef>
+              <c:strCache>
+                <c:pt idx="0"><c:v>Series A</c:v></c:pt>
+              </c:strCache>
+            </c:strRef>
+          </c:tx>
+          <c:cat>
+            <c:strRef>
+              <c:strCache>
+                <c:pt idx="0"><c:v>Q1</c:v></c:pt>
+                <c:pt idx="1"><c:v>Q2</c:v></c:pt>
+                <c:pt idx="2"><c:v>Q3</c:v></c:pt>
+              </c:strCache>
+            </c:strRef>
+          </c:cat>
+          <c:val>
+            <c:numRef>
+              <c:numCache>
+                <c:pt idx="0"><c:v>100</c:v></c:pt>
+                <c:pt idx="2"><c:v>150</c:v></c:pt>
+              </c:numCache>
+            </c:numRef>
+          </c:val>
+        </c:ser>
+      </c:lineChart>
+    </c:plotArea>
+  </c:chart>
+</c:chartSpace>"#;
+
+        let chart_data = parse_chart_xml(xml).unwrap();
+        let table = chart_data.to_table();
+
+        assert_eq!(table.rows[2].cells[0].plain_text(), "Q2");
+        assert_eq!(table.rows[2].cells[1].plain_text(), "");
+    }
+
+    #[test]
+    fn test_parse_chart_invalid_numeric_value_errors() {
+        let xml = r#"<?xml version="1.0"?>
+<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart">
+  <c:chart>
+    <c:plotArea>
+      <c:lineChart>
+        <c:ser>
+          <c:tx>
+            <c:strRef>
+              <c:strCache>
+                <c:pt idx="0"><c:v>Series A</c:v></c:pt>
+              </c:strCache>
+            </c:strRef>
+          </c:tx>
+          <c:cat>
+            <c:strRef>
+              <c:strCache>
+                <c:pt idx="0"><c:v>Q1</c:v></c:pt>
+              </c:strCache>
+            </c:strRef>
+          </c:cat>
+          <c:val>
+            <c:numRef>
+              <c:numCache>
+                <c:pt idx="0"><c:v>not-a-number</c:v></c:pt>
+              </c:numCache>
+            </c:numRef>
+          </c:val>
+        </c:ser>
+      </c:lineChart>
+    </c:plotArea>
+  </c:chart>
+</c:chartSpace>"#;
+
+        let err = parse_chart_xml(xml).unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidData(message) if message == "invalid chart numeric value: not-a-number"
+        ));
+    }
+
+    #[test]
     fn test_format_number() {
         assert_eq!(format_number(100.0), "100");
         assert_eq!(format_number(8.3), "8.3");
         assert_eq!(format_number(8.300000), "8.3");
         assert_eq!(format_number(12.345678), "12.345678");
+        assert_eq!(format_number(12.3456789), "12.3456789");
     }
 }
