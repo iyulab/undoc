@@ -360,7 +360,8 @@ pub unsafe extern "C" fn undoc_to_json(doc: *const UndocDocument, format: c_int)
 /// # Safety
 ///
 /// - `doc` must be a valid document handle.
-/// - Returns null on error.
+/// - Returns null on error; use `undoc_last_error` to get the error message.
+/// - A valid document with no text returns a non-null, empty (`""`) string.
 /// - The returned string must be freed with `undoc_free_string`.
 #[no_mangle]
 pub unsafe extern "C" fn undoc_plain_text(doc: *const UndocDocument) -> *mut c_char {
@@ -524,6 +525,7 @@ pub unsafe extern "C" fn undoc_free_string(s: *mut c_char) {
 ///
 /// - `doc` must be a valid document handle.
 /// - Returns null on error. Use `undoc_last_error` to get the error message.
+/// - A valid document with no resources returns a non-null `"[]"` string.
 /// - The returned string must be freed with `undoc_free_string`.
 ///
 /// # Returns

@@ -237,9 +237,7 @@ pub fn parse_chart_xml(xml: &str) -> Result<ChartData> {
             }
             Ok(quick_xml::events::Event::Text(ref e)) => {
                 if in_text_node {
-                    if let Ok(text) = e.unescape() {
-                        current_text.push_str(&text);
-                    }
+                    current_text.push_str(&decode_chart_text_lossless(e));
                 }
             }
             Ok(quick_xml::events::Event::Eof) => break,
@@ -250,6 +248,12 @@ pub fn parse_chart_xml(xml: &str) -> Result<ChartData> {
     }
 
     Ok(chart_data)
+}
+
+fn decode_chart_text_lossless(e: &quick_xml::events::BytesText<'_>) -> String {
+    e.unescape()
+        .map(|text| text.into_owned())
+        .unwrap_or_else(|_| String::from_utf8_lossy(e.as_ref()).into_owned())
 }
 
 #[cfg(test)]
@@ -455,6 +459,55 @@ mod tests {
 
         assert_eq!(table.rows[2].cells[0].plain_text(), "Q2");
         assert_eq!(table.rows[2].cells[1].plain_text(), "");
+    }
+
+    #[test]
+    fn test_parse_chart_title_preserves_raw_malformed_entity() {
+        let xml = r#"<?xml version="1.0"?>
+<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"
+              xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+  <c:chart>
+    <c:title>
+      <c:tx>
+        <c:rich>
+          <a:p>
+            <a:r><a:t>Bad &bogus; title</a:t></a:r>
+          </a:p>
+        </c:rich>
+      </c:tx>
+    </c:title>
+    <c:plotArea>
+      <c:barChart>
+        <c:ser>
+          <c:tx>
+            <c:strRef>
+              <c:strCache>
+                <c:pt idx="0"><c:v>S</c:v></c:pt>
+              </c:strCache>
+            </c:strRef>
+          </c:tx>
+          <c:cat>
+            <c:strRef>
+              <c:strCache>
+                <c:pt idx="0"><c:v>Q1</c:v></c:pt>
+              </c:strCache>
+            </c:strRef>
+          </c:cat>
+          <c:val>
+            <c:numRef>
+              <c:numCache>
+                <c:pt idx="0"><c:v>1</c:v></c:pt>
+              </c:numCache>
+            </c:numRef>
+          </c:val>
+        </c:ser>
+      </c:barChart>
+    </c:plotArea>
+  </c:chart>
+</c:chartSpace>"#;
+
+        let chart_data = parse_chart_xml(xml).unwrap();
+        assert_eq!(chart_data.title.as_deref(), Some("Bad &bogus; title"));
     }
 
     #[test]
