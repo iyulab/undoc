@@ -723,12 +723,13 @@ pub unsafe extern "C" fn undoc_free_bytes(data: *mut u8, len: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::Document;
     use std::ffi::CString;
     use std::path::Path;
 
     #[test]
     fn test_version() {
-        let version = unsafe { undoc_version() };
+        let version = undoc_version();
         assert!(!version.is_null());
         let version_str = unsafe { CStr::from_ptr(version) }.to_str().unwrap();
         assert!(!version_str.is_empty());
@@ -739,7 +740,7 @@ mod tests {
         let doc = unsafe { undoc_parse_file(ptr::null()) };
         assert!(doc.is_null());
 
-        let error = unsafe { undoc_last_error() };
+        let error = undoc_last_error();
         assert!(!error.is_null());
     }
 
@@ -749,7 +750,7 @@ mod tests {
         let doc = unsafe { undoc_parse_file(path.as_ptr()) };
         assert!(doc.is_null());
 
-        let error = unsafe { undoc_last_error() };
+        let error = undoc_last_error();
         assert!(!error.is_null());
     }
 
@@ -803,6 +804,40 @@ mod tests {
 
         let res_count = unsafe { undoc_resource_count(ptr::null()) };
         assert_eq!(res_count, -1);
+    }
+
+    #[test]
+    fn test_plain_text_empty_document_returns_non_null_empty_string() {
+        let doc = Box::into_raw(Box::new(UndocDocument {
+            inner: Document::new(),
+        }));
+
+        let text = unsafe { undoc_plain_text(doc) };
+        assert!(!text.is_null());
+        let text_str = unsafe { CStr::from_ptr(text) }.to_str().unwrap();
+        assert_eq!(text_str, "");
+
+        unsafe {
+            undoc_free_string(text);
+            undoc_free_document(doc);
+        }
+    }
+
+    #[test]
+    fn test_get_resource_ids_empty_document_returns_non_null_empty_json() {
+        let doc = Box::into_raw(Box::new(UndocDocument {
+            inner: Document::new(),
+        }));
+
+        let ids = unsafe { undoc_get_resource_ids(doc) };
+        assert!(!ids.is_null());
+        let ids_str = unsafe { CStr::from_ptr(ids) }.to_str().unwrap();
+        assert_eq!(ids_str, "[]");
+
+        unsafe {
+            undoc_free_string(ids);
+            undoc_free_document(doc);
+        }
     }
 
     #[test]

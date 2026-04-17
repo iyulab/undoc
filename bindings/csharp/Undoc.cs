@@ -252,7 +252,7 @@ namespace Iyulab.Undoc
                 var ptr = UndocNative.undoc_plain_text(_handle);
                 if (ptr == IntPtr.Zero)
                 {
-                    return "";
+                    throw new UndocException(GetLastError());
                 }
                 try
                 {
@@ -424,7 +424,7 @@ namespace Iyulab.Undoc
             {
                 return "Unknown error";
             }
-            return Marshal.PtrToStringAnsi(ptr) ?? "Unknown error";
+            return Marshal.PtrToStringUTF8(ptr) ?? "Unknown error";
         }
 
         private void ThrowIfDisposed()

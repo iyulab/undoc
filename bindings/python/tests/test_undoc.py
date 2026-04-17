@@ -152,6 +152,9 @@ class FakeStringLibrary:
     def undoc_to_markdown(self, _handle, _flags):
         return self._alloc("Привет из Markdown")
 
+    def undoc_plain_text(self, _handle):
+        return self._alloc("")
+
     def undoc_get_title(self, _handle):
         return self._alloc("Заголовок")
 
@@ -388,6 +391,39 @@ class TestFfiOwnershipAndUtf8:
         assert resource_ids == ["rId1"]
         assert info == {"filename": "Пример.png"}
         assert fake_lib.freed == expected_freed
+
+    def test_plain_text_preserves_valid_empty_string(self, monkeypatch):
+        fake_lib = FakeStringLibrary()
+        monkeypatch.setattr(undoc_module, "get_library", lambda: fake_lib)
+
+        doc = undoc_module.Undoc(123)
+        text = doc.plain_text()
+
+        assert text == ""
+        assert fake_lib.freed == [ctypes.addressof(fake_lib._buffers[-1])]
+
+    def test_get_resource_ids_preserves_valid_empty_list(self, monkeypatch):
+        fake_lib = FakeStringLibrary()
+        fake_lib.undoc_get_resource_ids = lambda _handle: fake_lib._alloc("[]")
+        monkeypatch.setattr(undoc_module, "get_library", lambda: fake_lib)
+
+        doc = undoc_module.Undoc(123)
+        resource_ids = doc.get_resource_ids()
+
+        assert resource_ids == []
+        assert fake_lib.freed == [ctypes.addressof(fake_lib._buffers[-1])]
+
+    def test_get_resource_ids_raises_on_native_null(self, monkeypatch):
+        fake_lib = FakeStringLibrary()
+        fake_lib.undoc_get_resource_ids = lambda _handle: 0
+        monkeypatch.setattr(undoc_module, "get_library", lambda: fake_lib)
+
+        doc = undoc_module.Undoc(123)
+
+        with pytest.raises(
+            undoc_module.UndocError, match="Failed to get resource IDs: Ошибка native"
+        ):
+            doc.get_resource_ids()
 
     def test_parse_bytes_generated_docx_preserves_unicode(self):
         doc = parse_bytes(create_minimal_docx_bytes())
