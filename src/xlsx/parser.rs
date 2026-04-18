@@ -98,51 +98,56 @@ impl XlsxParser {
     fn parse_workbook(container: &OoxmlContainer) -> Result<Vec<SheetInfo>> {
         let mut sheets = Vec::new();
 
-        if let Ok(xml) = container.read_xml("xl/workbook.xml") {
-            let mut reader = quick_xml::Reader::from_str(&xml);
-            reader.config_mut().trim_text(true);
+        match container.read_xml("xl/workbook.xml") {
+            Ok(xml) => {
+                let mut reader = quick_xml::Reader::from_str(&xml);
+                reader.config_mut().trim_text(true);
 
-            let mut buf = Vec::new();
+                let mut buf = Vec::new();
 
-            loop {
-                match reader.read_event_into(&mut buf) {
-                    Ok(quick_xml::events::Event::Empty(e))
-                    | Ok(quick_xml::events::Event::Start(e)) => {
-                        if e.name().as_ref() == b"sheet" {
-                            let mut name = String::new();
-                            let mut sheet_id = String::new();
-                            let mut rel_id = String::new();
+                loop {
+                    match reader.read_event_into(&mut buf) {
+                        Ok(quick_xml::events::Event::Empty(e))
+                        | Ok(quick_xml::events::Event::Start(e)) => {
+                            if e.name().as_ref() == b"sheet" {
+                                let mut name = String::new();
+                                let mut sheet_id = String::new();
+                                let mut rel_id = String::new();
 
-                            for attr in e.attributes().flatten() {
-                                match attr.key.as_ref() {
-                                    b"name" => {
-                                        name = String::from_utf8_lossy(&attr.value).to_string();
+                                for attr in e.attributes().flatten() {
+                                    match attr.key.as_ref() {
+                                        b"name" => {
+                                            name = String::from_utf8_lossy(&attr.value).to_string();
+                                        }
+                                        b"sheetId" => {
+                                            sheet_id =
+                                                String::from_utf8_lossy(&attr.value).to_string();
+                                        }
+                                        b"r:id" => {
+                                            rel_id = String::from_utf8_lossy(&attr.value).to_string();
+                                        }
+                                        _ => {}
                                     }
-                                    b"sheetId" => {
-                                        sheet_id = String::from_utf8_lossy(&attr.value).to_string();
-                                    }
-                                    b"r:id" => {
-                                        rel_id = String::from_utf8_lossy(&attr.value).to_string();
-                                    }
-                                    _ => {}
+                                }
+
+                                if !name.is_empty() {
+                                    sheets.push(SheetInfo {
+                                        name,
+                                        sheet_id,
+                                        rel_id,
+                                    });
                                 }
                             }
-
-                            if !name.is_empty() {
-                                sheets.push(SheetInfo {
-                                    name,
-                                    sheet_id,
-                                    rel_id,
-                                });
-                            }
                         }
+                        Ok(quick_xml::events::Event::Eof) => break,
+                        Err(e) => return Err(Error::XmlParse(e.to_string())),
+                        _ => {}
                     }
-                    Ok(quick_xml::events::Event::Eof) => break,
-                    Err(e) => return Err(Error::XmlParse(e.to_string())),
-                    _ => {}
+                    buf.clear();
                 }
-                buf.clear();
             }
+            Err(Error::MissingComponent(_)) => {}
+            Err(err) => return Err(err),
         }
 
         Ok(sheets)
@@ -1544,6 +1549,50 @@ mod tests {
             }
             other => panic!("expected malformed workbook rels error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_xlsx_non_utf8_workbook_is_error() {
+        use std::io::{Cursor, Write};
+        use zip::write::SimpleFileOptions;
+
+        let buf = Cursor::new(Vec::new());
+        let mut zip = zip::ZipWriter::new(buf);
+        let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+
+        zip.start_file("[Content_Types].xml", options).unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+</Types>"#).unwrap();
+
+        zip.start_file("_rels/.rels", options).unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>"#).unwrap();
+
+        zip.start_file("xl/_rels/workbook.xml.rels", options).unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+</Relationships>"#).unwrap();
+
+        zip.start_file("xl/workbook.xml", options).unwrap();
+        zip.write_all(b"<?xml version=\"1.0\"?><workbook>Caf\xe9</workbook>")
+            .unwrap();
+
+        let data = zip.finish().unwrap().into_inner();
+        let err = match XlsxParser::from_bytes(data) {
+            Ok(_) => panic!("non-UTF-8 workbook must surface Error::Encoding"),
+            Err(err) => err,
+        };
+
+        assert!(
+            matches!(err, Error::Encoding(_)),
+            "expected Error::Encoding, got {err:?}"
+        );
     }
 
     #[test]
