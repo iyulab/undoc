@@ -10,6 +10,12 @@ use crate::model::{
 use std::collections::HashMap;
 use std::path::Path;
 
+fn decode_pptx_text_lossless(e: &quick_xml::events::BytesText<'_>) -> String {
+    e.unescape()
+        .map(|text| text.into_owned())
+        .unwrap_or_else(|_| String::from_utf8_lossy(e.as_ref()).into_owned())
+}
+
 /// Slide info from presentation.xml.
 #[derive(Debug, Clone)]
 struct SlideInfo {
@@ -634,8 +640,7 @@ impl PptxParser {
                 }
                 Ok(quick_xml::events::Event::Text(ref e)) => {
                     if in_text {
-                        let text = e.unescape().unwrap_or_default();
-                        current_text.push_str(&text);
+                        current_text.push_str(&decode_pptx_text_lossless(e));
                     }
                 }
                 Ok(quick_xml::events::Event::End(ref e)) => {
@@ -1559,6 +1564,30 @@ mod tests {
             ),
             other => panic!("expected InvalidData, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_pptx_slide_table_preserves_raw_malformed_entity() {
+        let slide_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+       xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
+  <p:cSld><p:spTree>
+    <p:graphicFrame><a:graphic><a:graphicData>
+      <a:tbl>
+        <a:tr><a:tc><a:txBody><a:p><a:r><a:t>Cell &bogus; text</a:t></a:r></a:p></a:txBody></a:tc></a:tr>
+      </a:tbl>
+    </a:graphicData></a:graphic></p:graphicFrame>
+  </p:spTree></p:cSld>
+</p:sld>"#;
+
+        let data = create_minimal_pptx(slide_xml);
+        let mut parser = PptxParser::from_bytes(data).unwrap();
+        let doc = parser.parse().unwrap();
+        assert!(
+            doc.plain_text().contains("Cell &bogus; text"),
+            "expected raw malformed entity preserved in slide table, got: {}",
+            doc.plain_text()
+        );
     }
 
     #[test]
