@@ -419,7 +419,10 @@ impl Paragraph {
             let should_merge = merged.last().is_some_and(|last: &TextRun| {
                 // Same style and same hyperlink (both None or both Some with same URL)
                 // Don't merge if the previous run has a line break (preserve the break)
-                last.style == run.style && last.hyperlink == run.hyperlink && !last.line_break
+                last.style == run.style
+                    && last.hyperlink == run.hyperlink
+                    && !last.line_break
+                    && !last.page_break
             });
 
             if should_merge {
@@ -434,6 +437,9 @@ impl Paragraph {
                     // Preserve line_break from the merged run
                     if run.line_break {
                         last.line_break = true;
+                    }
+                    if run.page_break {
+                        last.page_break = true;
                     }
                 }
             } else {
@@ -735,5 +741,47 @@ mod tests {
 
         assert_eq!(para.runs.len(), 1);
         assert_eq!(para.runs[0].text, "Hello World"); // Original space preserved
+    }
+
+    #[test]
+    fn test_merge_adjacent_runs_preserves_page_break() {
+        let mut para = Paragraph {
+            runs: vec![
+                TextRun::plain("Before"),
+                TextRun {
+                    text: "After".to_string(),
+                    page_break: true,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        para.merge_adjacent_runs();
+
+        assert!(
+            para.runs.iter().any(|r| r.page_break),
+            "page_break lost after merge: runs = {:?}",
+            para.runs
+        );
+    }
+
+    #[test]
+    fn test_merge_adjacent_runs_blocks_on_last_page_break() {
+        let mut para = Paragraph {
+            runs: vec![
+                TextRun {
+                    text: "Before".to_string(),
+                    page_break: true,
+                    ..Default::default()
+                },
+                TextRun::plain("After"),
+            ],
+            ..Default::default()
+        };
+        para.merge_adjacent_runs();
+
+        assert_eq!(para.runs.len(), 2, "must not merge across a page_break");
+        assert!(para.runs[0].page_break);
+        assert!(!para.runs[1].page_break);
     }
 }
