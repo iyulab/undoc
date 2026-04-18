@@ -468,10 +468,7 @@ impl PptxParser {
                             tables.push(table);
                         }
                     }
-                    Err(_) => {
-                        // Chart parsing failed, skip this chart
-                        // In Phase 2, we would add a warning here
-                    }
+                    Err(e) => return Err(e),
                 }
             }
         }
@@ -1470,6 +1467,98 @@ mod tests {
         zip.write_all(slide_xml.as_bytes()).unwrap();
 
         zip.finish().unwrap().into_inner()
+    }
+
+    #[test]
+    fn test_pptx_chart_invalid_numeric_value_propagates_error() {
+        use std::io::{Cursor, Write};
+        use zip::write::SimpleFileOptions;
+
+        let chart_xml = r#"<?xml version="1.0"?>
+<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart">
+  <c:chart><c:plotArea><c:lineChart>
+    <c:ser>
+      <c:tx><c:strRef><c:strCache><c:pt idx="0"><c:v>S</c:v></c:pt></c:strCache></c:strRef></c:tx>
+      <c:cat><c:strRef><c:strCache><c:pt idx="0"><c:v>Q1</c:v></c:pt></c:strCache></c:strRef></c:cat>
+      <c:val><c:numRef><c:numCache><c:pt idx="0"><c:v>not-a-number</c:v></c:pt></c:numCache></c:numRef></c:val>
+    </c:ser>
+  </c:lineChart></c:plotArea></c:chart>
+</c:chartSpace>"#;
+
+        let slide_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+       xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
+       xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+       xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart">
+  <p:cSld><p:spTree>
+    <p:graphicFrame><a:graphic><a:graphicData>
+      <c:chart r:id="rIdChart"/>
+    </a:graphicData></a:graphic></p:graphicFrame>
+  </p:spTree></p:cSld>
+</p:sld>"#;
+
+        let slide_rels = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rIdChart" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart" Target="../charts/chart1.xml"/>
+</Relationships>"#;
+
+        let presentation_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
+                xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <p:sldIdLst><p:sldId id="256" r:id="rIdSlide"/></p:sldIdLst>
+</p:presentation>"#;
+
+        let presentation_rels = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rIdSlide" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide1.xml"/>
+</Relationships>"#;
+
+        let buf = Cursor::new(Vec::new());
+        let mut zip = zip::ZipWriter::new(buf);
+        let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+
+        zip.start_file("[Content_Types].xml", options).unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>
+</Types>"#).unwrap();
+
+        zip.start_file("_rels/.rels", options).unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="ppt/presentation.xml"/>
+</Relationships>"#).unwrap();
+
+        zip.start_file("ppt/presentation.xml", options).unwrap();
+        zip.write_all(presentation_xml.as_bytes()).unwrap();
+
+        zip.start_file("ppt/_rels/presentation.xml.rels", options).unwrap();
+        zip.write_all(presentation_rels.as_bytes()).unwrap();
+
+        zip.start_file("ppt/slides/slide1.xml", options).unwrap();
+        zip.write_all(slide_xml.as_bytes()).unwrap();
+
+        zip.start_file("ppt/slides/_rels/slide1.xml.rels", options).unwrap();
+        zip.write_all(slide_rels.as_bytes()).unwrap();
+
+        zip.start_file("ppt/charts/chart1.xml", options).unwrap();
+        zip.write_all(chart_xml.as_bytes()).unwrap();
+
+        let data = zip.finish().unwrap().into_inner();
+        let mut parser = PptxParser::from_bytes(data).unwrap();
+        let err = parser
+            .parse()
+            .expect_err("invalid chart numeric value must surface");
+
+        match err {
+            Error::InvalidData(msg) => assert!(
+                msg.contains("invalid chart numeric value"),
+                "unexpected msg: {msg}"
+            ),
+            other => panic!("expected InvalidData, got {other:?}"),
+        }
     }
 
     #[test]
