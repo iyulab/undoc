@@ -190,9 +190,7 @@ impl DocxParser {
                                 tables.push(table);
                             }
                         }
-                        Err(_) => {
-                            // Chart parsing failed, skip
-                        }
+                        Err(e) => return Err(e),
                     }
                 }
             }
@@ -2635,5 +2633,82 @@ mod tests {
             text.contains("Second text box paragraph"),
             "Should contain second text box paragraph"
         );
+    }
+
+    #[test]
+    fn test_docx_chart_invalid_numeric_value_propagates_error() {
+        use std::io::{Cursor, Write};
+        use zip::write::SimpleFileOptions;
+
+        let chart_xml = r#"<?xml version="1.0"?>
+<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart">
+  <c:chart><c:plotArea><c:lineChart>
+    <c:ser>
+      <c:tx><c:strRef><c:strCache><c:pt idx="0"><c:v>S</c:v></c:pt></c:strCache></c:strRef></c:tx>
+      <c:cat><c:strRef><c:strCache><c:pt idx="0"><c:v>Q1</c:v></c:pt></c:strCache></c:strRef></c:cat>
+      <c:val><c:numRef><c:numCache><c:pt idx="0"><c:v>not-a-number</c:v></c:pt></c:numCache></c:numRef></c:val>
+    </c:ser>
+  </c:lineChart></c:plotArea></c:chart>
+</c:chartSpace>"#;
+
+        let document_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+            xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+            xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+            xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart">
+  <w:body>
+    <w:p><w:r><w:drawing>
+      <a:graphic><a:graphicData>
+        <c:chart r:id="rIdChart"/>
+      </a:graphicData></a:graphic>
+    </w:drawing></w:r></w:p>
+  </w:body>
+</w:document>"#;
+
+        let document_rels = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rIdChart" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart" Target="charts/chart1.xml"/>
+</Relationships>"#;
+
+        let buf = Cursor::new(Vec::new());
+        let mut zip = zip::ZipWriter::new(buf);
+        let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+
+        zip.start_file("[Content_Types].xml", options).unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>"#).unwrap();
+
+        zip.start_file("_rels/.rels", options).unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>"#).unwrap();
+
+        zip.start_file("word/document.xml", options).unwrap();
+        zip.write_all(document_xml.as_bytes()).unwrap();
+
+        zip.start_file("word/_rels/document.xml.rels", options).unwrap();
+        zip.write_all(document_rels.as_bytes()).unwrap();
+
+        zip.start_file("word/charts/chart1.xml", options).unwrap();
+        zip.write_all(chart_xml.as_bytes()).unwrap();
+
+        let data = zip.finish().unwrap().into_inner();
+        let mut parser = DocxParser::from_bytes(data).unwrap();
+        let err = parser
+            .parse()
+            .expect_err("invalid chart numeric value must surface");
+
+        match err {
+            Error::InvalidData(msg) => assert!(
+                msg.contains("invalid chart numeric value"),
+                "unexpected msg: {msg}"
+            ),
+            other => panic!("expected InvalidData, got {other:?}"),
+        }
     }
 }
