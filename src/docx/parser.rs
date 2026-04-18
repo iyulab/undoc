@@ -793,34 +793,33 @@ impl DocxParser {
                     }
                     _ => {}
                 },
-                Ok(quick_xml::events::Event::Text(ref e)) => {
-                    // Only extract text from w:t elements, skip w:instrText (field codes)
-                    // Also skip text inside mc:Fallback and w:txbxContent (extracted separately)
+                Ok(quick_xml::events::Event::Text(ref e))
                     if in_run
                         && in_text
                         && !in_instr_text
                         && mc_fallback_depth == 0
-                        && txbx_content_depth == 0
-                    {
-                        let text = decode_xml_text_lossless(e);
-                        if !text.is_empty() {
-                            let current_revision = if in_del {
-                                RevisionType::Deleted
-                            } else if in_ins {
-                                RevisionType::Inserted
-                            } else {
-                                RevisionType::None
-                            };
-                            let run = TextRun {
-                                text,
-                                style: current_style.clone(),
-                                hyperlink: current_hyperlink.clone(),
-                                line_break: false,
-                                page_break: false,
-                                revision: current_revision,
-                            };
-                            para.runs.push(run);
-                        }
+                        && txbx_content_depth == 0 =>
+                {
+                    // Only extract text from w:t elements, skip w:instrText (field codes)
+                    // Also skip text inside mc:Fallback and w:txbxContent (extracted separately)
+                    let text = decode_xml_text_lossless(e);
+                    if !text.is_empty() {
+                        let current_revision = if in_del {
+                            RevisionType::Deleted
+                        } else if in_ins {
+                            RevisionType::Inserted
+                        } else {
+                            RevisionType::None
+                        };
+                        let run = TextRun {
+                            text,
+                            style: current_style.clone(),
+                            hyperlink: current_hyperlink.clone(),
+                            line_break: false,
+                            page_break: false,
+                            revision: current_revision,
+                        };
+                        para.runs.push(run);
                     }
                 }
                 Ok(quick_xml::events::Event::End(ref e)) => match e.name().as_ref() {
@@ -916,26 +915,22 @@ impl DocxParser {
                         _ => {}
                     }
                 }
-                Ok(quick_xml::events::Event::Empty(ref e)) => {
-                    if in_txbx_para {
-                        let name = e.name();
-                        txbx_para_xml.push('<');
-                        txbx_para_xml.push_str(&String::from_utf8_lossy(name.as_ref()));
-                        for attr in e.attributes().flatten() {
-                            txbx_para_xml.push_str(&format!(
-                                " {}=\"{}\"",
-                                String::from_utf8_lossy(attr.key.as_ref()),
-                                String::from_utf8_lossy(&attr.value)
-                            ));
-                        }
-                        txbx_para_xml.push_str("/>");
+                Ok(quick_xml::events::Event::Empty(ref e)) if in_txbx_para => {
+                    let name = e.name();
+                    txbx_para_xml.push('<');
+                    txbx_para_xml.push_str(&String::from_utf8_lossy(name.as_ref()));
+                    for attr in e.attributes().flatten() {
+                        txbx_para_xml.push_str(&format!(
+                            " {}=\"{}\"",
+                            String::from_utf8_lossy(attr.key.as_ref()),
+                            String::from_utf8_lossy(&attr.value)
+                        ));
                     }
+                    txbx_para_xml.push_str("/>");
                 }
-                Ok(quick_xml::events::Event::Text(ref e)) => {
-                    if in_txbx_para {
-                        let text = decode_xml_text_lossless(e);
-                        txbx_para_xml.push_str(&escape_xml(&text));
-                    }
+                Ok(quick_xml::events::Event::Text(ref e)) if in_txbx_para => {
+                    let text = decode_xml_text_lossless(e);
+                    txbx_para_xml.push_str(&escape_xml(&text));
                 }
                 Ok(quick_xml::events::Event::End(ref e)) => {
                     let name = e.name();
@@ -986,38 +981,30 @@ impl DocxParser {
 
         loop {
             match reader.read_event_into(&mut buf) {
-                Ok(quick_xml::events::Event::Start(ref e)) => {
-                    if e.name().as_ref() == b"w:numPr" {
-                        in_num_pr = true;
-                    }
+                Ok(quick_xml::events::Event::Start(ref e)) if e.name().as_ref() == b"w:numPr" => {
+                    in_num_pr = true;
                 }
-                Ok(quick_xml::events::Event::Empty(ref e)) => {
-                    if in_num_pr {
-                        match e.name().as_ref() {
-                            b"w:numId" => {
-                                for attr in e.attributes().flatten() {
-                                    if attr.key.as_ref() == b"w:val" {
-                                        num_id =
-                                            Some(String::from_utf8_lossy(&attr.value).to_string());
-                                    }
-                                }
+                Ok(quick_xml::events::Event::Empty(ref e)) if in_num_pr => match e.name().as_ref()
+                {
+                    b"w:numId" => {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.as_ref() == b"w:val" {
+                                num_id = Some(String::from_utf8_lossy(&attr.value).to_string());
                             }
-                            b"w:ilvl" => {
-                                for attr in e.attributes().flatten() {
-                                    if attr.key.as_ref() == b"w:val" {
-                                        let val = String::from_utf8_lossy(&attr.value);
-                                        level = val.parse().unwrap_or(0);
-                                    }
-                                }
-                            }
-                            _ => {}
                         }
                     }
-                }
-                Ok(quick_xml::events::Event::End(ref e)) => {
-                    if e.name().as_ref() == b"w:numPr" {
-                        in_num_pr = false;
+                    b"w:ilvl" => {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.as_ref() == b"w:val" {
+                                let val = String::from_utf8_lossy(&attr.value);
+                                level = val.parse().unwrap_or(0);
+                            }
+                        }
                     }
+                    _ => {}
+                },
+                Ok(quick_xml::events::Event::End(ref e)) if e.name().as_ref() == b"w:numPr" => {
+                    in_num_pr = false;
                 }
                 Ok(quick_xml::events::Event::Eof) => break,
                 _ => {}
@@ -1468,10 +1455,8 @@ fn parse_notes_xml(xml: &str, note_tag: &[u8]) -> HashMap<String, String> {
                     in_text = true;
                 }
             }
-            Ok(quick_xml::events::Event::Text(ref e)) => {
-                if in_note && in_text {
-                    current_text.push_str(&decode_xml_text_lossless(e));
-                }
+            Ok(quick_xml::events::Event::Text(ref e)) if in_note && in_text => {
+                current_text.push_str(&decode_xml_text_lossless(e));
             }
             Ok(quick_xml::events::Event::End(ref e)) => {
                 if e.name().as_ref() == note_tag {
@@ -1525,20 +1510,16 @@ fn parse_header_footer_xml(xml: &str) -> Vec<Paragraph> {
                 }
                 _ => {}
             },
-            Ok(quick_xml::events::Event::Text(ref e)) => {
-                if in_paragraph && in_text {
-                    current_text.push_str(&decode_xml_text_lossless(e));
-                }
+            Ok(quick_xml::events::Event::Text(ref e)) if in_paragraph && in_text => {
+                current_text.push_str(&decode_xml_text_lossless(e));
             }
             Ok(quick_xml::events::Event::End(ref e)) => match e.name().as_ref() {
-                b"w:p" => {
-                    if in_paragraph {
-                        let trimmed = current_text.trim().to_string();
-                        if !trimmed.is_empty() {
-                            paragraphs.push(Paragraph::with_text(trimmed));
-                        }
-                        in_paragraph = false;
+                b"w:p" if in_paragraph => {
+                    let trimmed = current_text.trim().to_string();
+                    if !trimmed.is_empty() {
+                        paragraphs.push(Paragraph::with_text(trimmed));
                     }
+                    in_paragraph = false;
                 }
                 b"w:t" => {
                     in_text = false;

@@ -438,20 +438,14 @@ impl OoxmlContainer {
                         let text = metadata_text_or_raw(&e, "docProps/app.xml")?;
                         match elem.as_str() {
                             "Application" => meta.application = Some(text),
-                            "Pages" => {
-                                if meta.page_count.is_none() {
-                                    meta.page_count = text.trim().parse::<u32>().ok();
-                                }
+                            "Pages" if meta.page_count.is_none() => {
+                                meta.page_count = text.trim().parse::<u32>().ok();
                             }
-                            "Words" => {
-                                if meta.word_count.is_none() {
-                                    meta.word_count = text.trim().parse::<u32>().ok();
-                                }
+                            "Words" if meta.word_count.is_none() => {
+                                meta.word_count = text.trim().parse::<u32>().ok();
                             }
-                            "Slides" => {
-                                if meta.page_count.is_none() {
-                                    meta.page_count = text.trim().parse::<u32>().ok();
-                                }
+                            "Slides" if meta.page_count.is_none() => {
+                                meta.page_count = text.trim().parse::<u32>().ok();
                             }
                             _ => {}
                         }

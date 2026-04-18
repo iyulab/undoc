@@ -642,10 +642,8 @@ impl PptxParser {
                         _ => {}
                     }
                 }
-                Ok(quick_xml::events::Event::Text(ref e)) => {
-                    if in_text {
-                        current_text.push_str(&decode_pptx_text_lossless(e));
-                    }
+                Ok(quick_xml::events::Event::Text(ref e)) if in_text => {
+                    current_text.push_str(&decode_pptx_text_lossless(e));
                 }
                 Ok(quick_xml::events::Event::End(ref e)) => {
                     let local_name = e.name().local_name();
@@ -894,10 +892,8 @@ impl PptxParser {
                         _ => {}
                     }
                 }
-                Ok(quick_xml::events::Event::Text(ref e)) => {
-                    if in_text && !in_table {
-                        current_text.push_str(&decode_pptx_text_lossless(e));
-                    }
+                Ok(quick_xml::events::Event::Text(ref e)) if in_text && !in_table => {
+                    current_text.push_str(&decode_pptx_text_lossless(e));
                 }
                 Ok(quick_xml::events::Event::End(ref e)) => {
                     let local_name = e.name().local_name();
@@ -1090,10 +1086,8 @@ impl PptxParser {
                         _ => {}
                     }
                 }
-                Ok(quick_xml::events::Event::Text(ref e)) => {
-                    if in_text {
-                        current_text.push_str(&decode_pptx_text_lossless(e));
-                    }
+                Ok(quick_xml::events::Event::Text(ref e)) if in_text => {
+                    current_text.push_str(&decode_pptx_text_lossless(e));
                 }
                 Ok(quick_xml::events::Event::End(ref e)) => {
                     let local_name = e.name().local_name();

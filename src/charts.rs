@@ -235,10 +235,8 @@ pub fn parse_chart_xml(xml: &str) -> Result<ChartData> {
                     _ => {}
                 }
             }
-            Ok(quick_xml::events::Event::Text(ref e)) => {
-                if in_text_node {
-                    current_text.push_str(&decode_chart_text_lossless(e));
-                }
+            Ok(quick_xml::events::Event::Text(ref e)) if in_text_node => {
+                current_text.push_str(&decode_chart_text_lossless(e));
             }
             Ok(quick_xml::events::Event::Eof) => break,
             Err(e) => return Err(Error::XmlParse(e.to_string())),

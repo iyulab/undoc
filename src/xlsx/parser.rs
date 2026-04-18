@@ -108,35 +108,35 @@ impl XlsxParser {
                 loop {
                     match reader.read_event_into(&mut buf) {
                         Ok(quick_xml::events::Event::Empty(e))
-                        | Ok(quick_xml::events::Event::Start(e)) => {
-                            if e.name().as_ref() == b"sheet" {
-                                let mut name = String::new();
-                                let mut sheet_id = String::new();
-                                let mut rel_id = String::new();
+                        | Ok(quick_xml::events::Event::Start(e))
+                            if e.name().as_ref() == b"sheet" =>
+                        {
+                            let mut name = String::new();
+                            let mut sheet_id = String::new();
+                            let mut rel_id = String::new();
 
-                                for attr in e.attributes().flatten() {
-                                    match attr.key.as_ref() {
-                                        b"name" => {
-                                            name = String::from_utf8_lossy(&attr.value).to_string();
-                                        }
-                                        b"sheetId" => {
-                                            sheet_id =
-                                                String::from_utf8_lossy(&attr.value).to_string();
-                                        }
-                                        b"r:id" => {
-                                            rel_id = String::from_utf8_lossy(&attr.value).to_string();
-                                        }
-                                        _ => {}
+                            for attr in e.attributes().flatten() {
+                                match attr.key.as_ref() {
+                                    b"name" => {
+                                        name = String::from_utf8_lossy(&attr.value).to_string();
                                     }
+                                    b"sheetId" => {
+                                        sheet_id =
+                                            String::from_utf8_lossy(&attr.value).to_string();
+                                    }
+                                    b"r:id" => {
+                                        rel_id = String::from_utf8_lossy(&attr.value).to_string();
+                                    }
+                                    _ => {}
                                 }
+                            }
 
-                                if !name.is_empty() {
-                                    sheets.push(SheetInfo {
-                                        name,
-                                        sheet_id,
-                                        rel_id,
-                                    });
-                                }
+                            if !name.is_empty() {
+                                sheets.push(SheetInfo {
+                                    name,
+                                    sheet_id,
+                                    rel_id,
+                                });
                             }
                         }
                         Ok(quick_xml::events::Event::Eof) => break,
@@ -223,23 +223,20 @@ impl XlsxParser {
         loop {
             match reader.read_event_into(&mut buf) {
                 Ok(quick_xml::events::Event::Empty(ref e))
-                | Ok(quick_xml::events::Event::Start(ref e)) => {
-                    if e.name().as_ref() == b"mergeCell" {
-                        for attr in e.attributes().flatten() {
-                            if attr.key.as_ref() == b"ref" {
-                                let range = String::from_utf8_lossy(&attr.value);
-                                // Parse range like "A1:C3" or "G11:H11"
-                                if let Some((start, end)) = range.split_once(':') {
-                                    if let (
-                                        Some((start_col, start_row)),
-                                        Some((end_col, end_row)),
-                                    ) = (Self::parse_cell_ref(start), Self::parse_cell_ref(end))
-                                    {
-                                        let col_span = end_col - start_col + 1;
-                                        let row_span = end_row - start_row + 1;
-                                        merge_map
-                                            .insert(start.to_uppercase(), (col_span, row_span));
-                                    }
+                | Ok(quick_xml::events::Event::Start(ref e))
+                    if e.name().as_ref() == b"mergeCell" =>
+                {
+                    for attr in e.attributes().flatten() {
+                        if attr.key.as_ref() == b"ref" {
+                            let range = String::from_utf8_lossy(&attr.value);
+                            // Parse range like "A1:C3" or "G11:H11"
+                            if let Some((start, end)) = range.split_once(':') {
+                                if let (Some((start_col, start_row)), Some((end_col, end_row))) =
+                                    (Self::parse_cell_ref(start), Self::parse_cell_ref(end))
+                                {
+                                    let col_span = end_col - start_col + 1;
+                                    let row_span = end_row - start_row + 1;
+                                    merge_map.insert(start.to_uppercase(), (col_span, row_span));
                                 }
                             }
                         }
@@ -390,11 +387,9 @@ impl XlsxParser {
                     }
                     _ => {}
                 },
-                Ok(quick_xml::events::Event::Text(ref e)) => {
-                    if in_value {
-                        let text = decode_spreadsheet_text_lossless(e);
-                        current_cell_value.push_str(&text);
-                    }
+                Ok(quick_xml::events::Event::Text(ref e)) if in_value => {
+                    let text = decode_spreadsheet_text_lossless(e);
+                    current_cell_value.push_str(&text);
                 }
                 Ok(quick_xml::events::Event::End(ref e)) => match e.name().as_ref() {
                     b"row" => {
@@ -628,10 +623,8 @@ impl XlsxParser {
                 {
                     Self::collect_hyperlink_attrs(e, sheet_rels, &mut hyperlinks);
                 }
-                Ok(quick_xml::events::Event::End(ref e)) => {
-                    if e.name().as_ref() == b"hyperlinks" {
-                        break; // Done with hyperlinks section
-                    }
+                Ok(quick_xml::events::Event::End(ref e)) if e.name().as_ref() == b"hyperlinks" => {
+                    break; // Done with hyperlinks section
                 }
                 Ok(quick_xml::events::Event::Eof) => break,
                 Err(_) => break,
@@ -722,14 +715,12 @@ impl XlsxParser {
                         _ => {}
                     }
                 }
-                Ok(quick_xml::events::Event::Text(ref e)) => {
-                    if in_t {
-                        let text = decode_spreadsheet_text_lossless(e);
-                        if !current_text.is_empty() {
-                            current_text.push(' ');
-                        }
-                        current_text.push_str(&text);
+                Ok(quick_xml::events::Event::Text(ref e)) if in_t => {
+                    let text = decode_spreadsheet_text_lossless(e);
+                    if !current_text.is_empty() {
+                        current_text.push(' ');
                     }
+                    current_text.push_str(&text);
                 }
                 Ok(quick_xml::events::Event::End(ref e)) => {
                     let local = e.name().local_name();

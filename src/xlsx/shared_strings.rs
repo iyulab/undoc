@@ -41,11 +41,9 @@ impl SharedStrings {
                     }
                     _ => {}
                 },
-                Ok(quick_xml::events::Event::Text(e)) => {
-                    if in_t {
-                        let text = decode_shared_text_lossless(&e);
-                        current_text.push_str(&text);
-                    }
+                Ok(quick_xml::events::Event::Text(e)) if in_t => {
+                    let text = decode_shared_text_lossless(&e);
+                    current_text.push_str(&text);
                 }
                 Ok(quick_xml::events::Event::End(e)) => match e.name().as_ref() {
                     b"si" => {
