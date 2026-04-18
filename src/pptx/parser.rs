@@ -70,50 +70,55 @@ impl PptxParser {
     fn parse_presentation(container: &OoxmlContainer) -> Result<Vec<SlideInfo>> {
         let mut slides = Vec::new();
 
-        if let Ok(xml) = container.read_xml("ppt/presentation.xml") {
-            let mut reader = quick_xml::Reader::from_str(&xml);
-            reader.config_mut().trim_text(true);
+        match container.read_xml("ppt/presentation.xml") {
+            Ok(xml) => {
+                let mut reader = quick_xml::Reader::from_str(&xml);
+                reader.config_mut().trim_text(true);
 
-            let mut buf = Vec::new();
+                let mut buf = Vec::new();
 
-            loop {
-                match reader.read_event_into(&mut buf) {
-                    Ok(quick_xml::events::Event::Empty(e))
-                    | Ok(quick_xml::events::Event::Start(e)) => {
-                        // Look for p:sldId elements (slide references)
-                        let name = e.name();
-                        let local_name = name.local_name();
-                        if local_name.as_ref() == b"sldId" {
-                            let mut id = String::new();
-                            let mut rel_id = String::new();
+                loop {
+                    match reader.read_event_into(&mut buf) {
+                        Ok(quick_xml::events::Event::Empty(e))
+                        | Ok(quick_xml::events::Event::Start(e)) => {
+                            // Look for p:sldId elements (slide references)
+                            let name = e.name();
+                            let local_name = name.local_name();
+                            if local_name.as_ref() == b"sldId" {
+                                let mut id = String::new();
+                                let mut rel_id = String::new();
 
-                            for attr in e.attributes().flatten() {
-                                match attr.key.as_ref() {
-                                    b"id" => {
-                                        id = String::from_utf8_lossy(&attr.value).to_string();
+                                for attr in e.attributes().flatten() {
+                                    match attr.key.as_ref() {
+                                        b"id" => {
+                                            id = String::from_utf8_lossy(&attr.value).to_string();
+                                        }
+                                        // r:id attribute
+                                        key if key.ends_with(b"id")
+                                            && key != b"id"
+                                            && key.len() > 2 =>
+                                        {
+                                            rel_id =
+                                                String::from_utf8_lossy(&attr.value).to_string();
+                                        }
+                                        _ => {}
                                     }
-                                    // r:id attribute
-                                    key if key.ends_with(b"id")
-                                        && key != b"id"
-                                        && key.len() > 2 =>
-                                    {
-                                        rel_id = String::from_utf8_lossy(&attr.value).to_string();
-                                    }
-                                    _ => {}
+                                }
+
+                                if !rel_id.is_empty() {
+                                    slides.push(SlideInfo { id, rel_id });
                                 }
                             }
-
-                            if !rel_id.is_empty() {
-                                slides.push(SlideInfo { id, rel_id });
-                            }
                         }
+                        Ok(quick_xml::events::Event::Eof) => break,
+                        Err(e) => return Err(Error::XmlParse(e.to_string())),
+                        _ => {}
                     }
-                    Ok(quick_xml::events::Event::Eof) => break,
-                    Err(e) => return Err(Error::XmlParse(e.to_string())),
-                    _ => {}
+                    buf.clear();
                 }
-                buf.clear();
             }
+            Err(Error::MissingComponent(_)) => {}
+            Err(err) => return Err(err),
         }
 
         Ok(slides)
@@ -1736,6 +1741,50 @@ mod tests {
             }
             other => panic!("expected malformed presentation rels error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_pptx_non_utf8_presentation_is_error() {
+        use std::io::{Cursor, Write};
+        use zip::write::SimpleFileOptions;
+
+        let buf = Cursor::new(Vec::new());
+        let mut zip = zip::ZipWriter::new(buf);
+        let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+
+        zip.start_file("[Content_Types].xml", options).unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>
+</Types>"#).unwrap();
+
+        zip.start_file("_rels/.rels", options).unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="ppt/presentation.xml"/>
+</Relationships>"#).unwrap();
+
+        zip.start_file("ppt/_rels/presentation.xml.rels", options)
+            .unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+</Relationships>"#).unwrap();
+
+        zip.start_file("ppt/presentation.xml", options).unwrap();
+        zip.write_all(b"<?xml version=\"1.0\"?><presentation>Caf\xe9</presentation>")
+            .unwrap();
+
+        let data = zip.finish().unwrap().into_inner();
+        let err = match PptxParser::from_bytes(data) {
+            Ok(_) => panic!("non-UTF-8 presentation must surface Error::Encoding"),
+            Err(err) => err,
+        };
+        assert!(
+            matches!(err, Error::Encoding(_)),
+            "expected Error::Encoding, got {err:?}"
+        );
     }
 
     #[test]
