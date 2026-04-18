@@ -892,8 +892,7 @@ impl PptxParser {
                 }
                 Ok(quick_xml::events::Event::Text(ref e)) => {
                     if in_text && !in_table {
-                        let text = e.unescape().unwrap_or_default();
-                        current_text.push_str(&text);
+                        current_text.push_str(&decode_pptx_text_lossless(e));
                     }
                 }
                 Ok(quick_xml::events::Event::End(ref e)) => {
@@ -1089,8 +1088,7 @@ impl PptxParser {
                 }
                 Ok(quick_xml::events::Event::Text(ref e)) => {
                     if in_text {
-                        let text = e.unescape().unwrap_or_default();
-                        current_text.push_str(&text);
+                        current_text.push_str(&decode_pptx_text_lossless(e));
                     }
                 }
                 Ok(quick_xml::events::Event::End(ref e)) => {
@@ -1586,6 +1584,28 @@ mod tests {
         assert!(
             doc.plain_text().contains("Cell &bogus; text"),
             "expected raw malformed entity preserved in slide table, got: {}",
+            doc.plain_text()
+        );
+    }
+
+    #[test]
+    fn test_pptx_slide_text_preserves_raw_malformed_entity() {
+        let slide_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+       xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
+  <p:cSld><p:spTree>
+    <p:sp><p:txBody>
+      <a:p><a:r><a:t>Slide &bogus; body</a:t></a:r></a:p>
+    </p:txBody></p:sp>
+  </p:spTree></p:cSld>
+</p:sld>"#;
+
+        let data = create_minimal_pptx(slide_xml);
+        let mut parser = PptxParser::from_bytes(data).unwrap();
+        let doc = parser.parse().unwrap();
+        assert!(
+            doc.plain_text().contains("Slide &bogus; body"),
+            "expected raw malformed entity preserved in slide text, got: {}",
             doc.plain_text()
         );
     }
