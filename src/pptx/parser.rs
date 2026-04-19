@@ -1437,19 +1437,25 @@ mod tests {
 </Relationships>"#).unwrap();
 
         zip.start_file("ppt/presentation.xml", options).unwrap();
-        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+        zip.write_all(
+            br#"<?xml version="1.0" encoding="UTF-8"?>
 <p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
                 xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
   <p:sldIdLst>
     <p:sldId id="256" r:id="rId1"/>
   </p:sldIdLst>
-</p:presentation>"#).unwrap();
+</p:presentation>"#,
+        )
+        .unwrap();
 
         zip.start_file("ppt/slides/_rels/slide1.xml.rels", options)
             .unwrap();
-        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+        zip.write_all(
+            br#"<?xml version="1.0" encoding="UTF-8"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-</Relationships>"#).unwrap();
+</Relationships>"#,
+        )
+        .unwrap();
 
         zip.start_file("ppt/slides/slide1.xml", options).unwrap();
         zip.write_all(slide_xml.as_bytes()).unwrap();
@@ -1569,7 +1575,8 @@ mod tests {
 
         let buf = Cursor::new(Vec::new());
         let mut zip = zip::ZipWriter::new(buf);
-        let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        let options =
+            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
 
         zip.start_file("[Content_Types].xml", options).unwrap();
         zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
@@ -1588,13 +1595,15 @@ mod tests {
         zip.start_file("ppt/presentation.xml", options).unwrap();
         zip.write_all(presentation_xml.as_bytes()).unwrap();
 
-        zip.start_file("ppt/_rels/presentation.xml.rels", options).unwrap();
+        zip.start_file("ppt/_rels/presentation.xml.rels", options)
+            .unwrap();
         zip.write_all(presentation_rels.as_bytes()).unwrap();
 
         zip.start_file("ppt/slides/slide1.xml", options).unwrap();
         zip.write_all(slide_xml.as_bytes()).unwrap();
 
-        zip.start_file("ppt/slides/_rels/slide1.xml.rels", options).unwrap();
+        zip.start_file("ppt/slides/_rels/slide1.xml.rels", options)
+            .unwrap();
         zip.write_all(slide_rels.as_bytes()).unwrap();
 
         zip.start_file("ppt/charts/chart1.xml", options).unwrap();
@@ -1650,7 +1659,8 @@ mod tests {
 
         let buf = Cursor::new(Vec::new());
         let mut zip = zip::ZipWriter::new(buf);
-        let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        let options =
+            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
 
         zip.start_file("[Content_Types].xml", options).unwrap();
         zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
@@ -1669,13 +1679,15 @@ mod tests {
         zip.start_file("ppt/presentation.xml", options).unwrap();
         zip.write_all(presentation_xml.as_bytes()).unwrap();
 
-        zip.start_file("ppt/_rels/presentation.xml.rels", options).unwrap();
+        zip.start_file("ppt/_rels/presentation.xml.rels", options)
+            .unwrap();
         zip.write_all(presentation_rels.as_bytes()).unwrap();
 
         zip.start_file("ppt/slides/slide1.xml", options).unwrap();
         zip.write_all(slide_xml.as_bytes()).unwrap();
 
-        zip.start_file("ppt/slides/_rels/slide1.xml.rels", options).unwrap();
+        zip.start_file("ppt/slides/_rels/slide1.xml.rels", options)
+            .unwrap();
         zip.write_all(slide_rels.as_bytes()).unwrap();
 
         let data = zip.finish().unwrap().into_inner();
@@ -1816,7 +1828,8 @@ mod tests {
 
         let buf = Cursor::new(Vec::new());
         let mut zip = zip::ZipWriter::new(buf);
-        let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        let options =
+            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
 
         zip.start_file("[Content_Types].xml", options).unwrap();
         zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
@@ -1834,9 +1847,12 @@ mod tests {
 
         zip.start_file("ppt/_rels/presentation.xml.rels", options)
             .unwrap();
-        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+        zip.write_all(
+            br#"<?xml version="1.0" encoding="UTF-8"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-</Relationships>"#).unwrap();
+</Relationships>"#,
+        )
+        .unwrap();
 
         zip.start_file("ppt/presentation.xml", options).unwrap();
         zip.write_all(b"<?xml version=\"1.0\"?><presentation>Caf\xe9</presentation>")
@@ -1884,19 +1900,25 @@ mod tests {
 </Relationships>"#).unwrap();
 
         zip.start_file("ppt/presentation.xml", options).unwrap();
-        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+        zip.write_all(
+            br#"<?xml version="1.0" encoding="UTF-8"?>
 <p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
                 xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
   <p:sldIdLst>
     <p:sldId id="256" r:id="rId1"/>
   </p:sldIdLst>
-</p:presentation>"#).unwrap();
+</p:presentation>"#,
+        )
+        .unwrap();
 
         zip.start_file("ppt/slides/_rels/slide1.xml.rels", options)
             .unwrap();
-        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+        zip.write_all(
+            br#"<?xml version="1.0" encoding="UTF-8"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-</Relationships>"#).unwrap();
+</Relationships>"#,
+        )
+        .unwrap();
 
         let valid_slide = br#"<?xml version="1.0" encoding="UTF-8"?>
 <p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
@@ -1932,10 +1954,7 @@ mod tests {
     fn test_pptx_non_utf8_optional_parts_surface_encoding_error() {
         // Slide and notes parts with malformed (non-UTF-8/UTF-16) byte content
         // must surface Error::Encoding instead of being silently dropped.
-        for part_path in &[
-            "ppt/slides/slide1.xml",
-            "ppt/notesSlides/notesSlide1.xml",
-        ] {
+        for part_path in &["ppt/slides/slide1.xml", "ppt/notesSlides/notesSlide1.xml"] {
             let data = create_minimal_pptx_with_malformed_part(part_path);
             let mut parser = PptxParser::from_bytes(data).expect("constructor must succeed");
             let err = match parser.parse() {
@@ -2164,8 +2183,8 @@ mod tests {
         {
             let cursor = std::io::Cursor::new(&mut buf);
             let mut zip = zip::ZipWriter::new(cursor);
-            let options =
-                zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
 
             zip.start_file("[Content_Types].xml", options).unwrap();
             zip.write_all(br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -2182,27 +2201,34 @@ mod tests {
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="ppt/presentation.xml"/>
 </Relationships>"#).unwrap();
 
-            zip.start_file("ppt/_rels/presentation.xml.rels", options).unwrap();
+            zip.start_file("ppt/_rels/presentation.xml.rels", options)
+                .unwrap();
             zip.write_all(br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide1.xml"/>
 </Relationships>"#).unwrap();
 
             zip.start_file("ppt/presentation.xml", options).unwrap();
-            zip.write_all(br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+            zip.write_all(
+                br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
   xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
   <p:sldIdLst><p:sldId id="256" r:id="rId1"/></p:sldIdLst>
-</p:presentation>"#).unwrap();
+</p:presentation>"#,
+            )
+            .unwrap();
 
             zip.start_file("ppt/slides/slide1.xml", options).unwrap();
-            zip.write_all(br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+            zip.write_all(
+                br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
        xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
   <p:cSld><p:spTree>
     <p:sp><p:txBody><a:p><a:r><a:t>A &amp; B &bogus; C</a:t></a:r></a:p></p:txBody></p:sp>
   </p:spTree></p:cSld>
-</p:sld>"#).unwrap();
+</p:sld>"#,
+            )
+            .unwrap();
 
             zip.finish().unwrap();
         }

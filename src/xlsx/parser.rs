@@ -113,8 +113,7 @@ impl XlsxParser {
                                         name = String::from_utf8_lossy(&attr.value).to_string();
                                     }
                                     b"sheetId" => {
-                                        sheet_id =
-                                            String::from_utf8_lossy(&attr.value).to_string();
+                                        sheet_id = String::from_utf8_lossy(&attr.value).to_string();
                                     }
                                     b"r:id" => {
                                         rel_id = String::from_utf8_lossy(&attr.value).to_string();
@@ -1549,7 +1548,8 @@ mod tests {
 
         let buf = Cursor::new(Vec::new());
         let mut zip = zip::ZipWriter::new(buf);
-        let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        let options =
+            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
 
         zip.start_file("[Content_Types].xml", options).unwrap();
         zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
@@ -1565,10 +1565,14 @@ mod tests {
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
 </Relationships>"#).unwrap();
 
-        zip.start_file("xl/_rels/workbook.xml.rels", options).unwrap();
-        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+        zip.start_file("xl/_rels/workbook.xml.rels", options)
+            .unwrap();
+        zip.write_all(
+            br#"<?xml version="1.0" encoding="UTF-8"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-</Relationships>"#).unwrap();
+</Relationships>"#,
+        )
+        .unwrap();
 
         zip.start_file("xl/workbook.xml", options).unwrap();
         zip.write_all(b"<?xml version=\"1.0\"?><workbook>Caf\xe9</workbook>")
@@ -1592,7 +1596,8 @@ mod tests {
 
         let buf = Cursor::new(Vec::new());
         let mut zip = zip::ZipWriter::new(buf);
-        let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        let options =
+            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
 
         zip.start_file("[Content_Types].xml", options).unwrap();
         zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
@@ -1610,16 +1615,21 @@ mod tests {
 
         zip.start_file("xl/_rels/workbook.xml.rels", options)
             .unwrap();
-        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+        zip.write_all(
+            br#"<?xml version="1.0" encoding="UTF-8"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-</Relationships>"#).unwrap();
+</Relationships>"#,
+        )
+        .unwrap();
 
         zip.start_file("xl/workbook.xml", options).unwrap();
-        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+        zip.write_all(
+            br#"<?xml version="1.0" encoding="UTF-8"?>
 <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
   <sheets/>
-</workbook>"#)
-            .unwrap();
+</workbook>"#,
+        )
+        .unwrap();
 
         zip.start_file(extra_part_path, options).unwrap();
         zip.write_all(b"<?xml version=\"1.0\"?><root>Caf\xe9</root>")
@@ -2088,8 +2098,8 @@ mod tests {
         {
             let cursor = std::io::Cursor::new(&mut buf);
             let mut zip = zip::ZipWriter::new(cursor);
-            let options =
-                zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
 
             zip.start_file("[Content_Types].xml", options).unwrap();
             zip.write_all(br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -2106,26 +2116,33 @@ mod tests {
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
 </Relationships>"#).unwrap();
 
-            zip.start_file("xl/_rels/workbook.xml.rels", options).unwrap();
+            zip.start_file("xl/_rels/workbook.xml.rels", options)
+                .unwrap();
             zip.write_all(br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
 </Relationships>"#).unwrap();
 
             zip.start_file("xl/workbook.xml", options).unwrap();
-            zip.write_all(br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+            zip.write_all(
+                br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
           xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
   <sheets><sheet name="S1" sheetId="1" r:id="rId1"/></sheets>
-</workbook>"#).unwrap();
+</workbook>"#,
+            )
+            .unwrap();
 
             zip.start_file("xl/worksheets/sheet1.xml", options).unwrap();
-            zip.write_all(br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+            zip.write_all(
+                br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
   <sheetData>
     <row r="1"><c r="A1" t="str"><v>A &amp; B &bogus; C</v></c></row>
   </sheetData>
-</worksheet>"#).unwrap();
+</worksheet>"#,
+            )
+            .unwrap();
 
             zip.finish().unwrap();
         }

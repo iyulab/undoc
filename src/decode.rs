@@ -53,10 +53,7 @@ fn lenient_slow_path(input: &str) -> String {
                 out.push_str(&input[i..amp]);
 
                 let window_end = (amp + MAX_ENTITY_LEN).min(bytes.len());
-                match bytes[amp + 1..window_end]
-                    .iter()
-                    .position(|&b| b == b';')
-                {
+                match bytes[amp + 1..window_end].iter().position(|&b| b == b';') {
                     None => {
                         // Stray '&' without a closing ';' in range.
                         out.push('&');
@@ -103,10 +100,7 @@ pub(crate) fn decode_text_lossy(text: &BytesText<'_>) -> String {
 /// Intended for metadata and other paths where invalid UTF-8 must surface as
 /// `Error::XmlParse` with a location context rather than be silently
 /// replaced.
-pub(crate) fn decode_text_strict(
-    text: &BytesText<'_>,
-    location: &str,
-) -> Result<String> {
+pub(crate) fn decode_text_strict(text: &BytesText<'_>, location: &str) -> Result<String> {
     let raw = std::str::from_utf8(text.as_ref())
         .map_err(|err| Error::xml_parse_with_context(err.to_string(), location))?;
     Ok(lenient_unescape(raw).into_owned())
@@ -121,7 +115,10 @@ mod tests {
         let input = "plain text without references";
         let out = lenient_unescape(input);
         assert_eq!(out, "plain text without references");
-        assert!(matches!(out, Cow::Borrowed(_)), "expected Borrowed, got Owned");
+        assert!(
+            matches!(out, Cow::Borrowed(_)),
+            "expected Borrowed, got Owned"
+        );
     }
 
     #[test]
@@ -140,10 +137,7 @@ mod tests {
 
     #[test]
     fn slow_path_mixed_legitimate_and_malformed() {
-        assert_eq!(
-            lenient_unescape("A &amp; B &bogus; C"),
-            "A & B &bogus; C"
-        );
+        assert_eq!(lenient_unescape("A &amp; B &bogus; C"), "A & B &bogus; C");
     }
 
     #[test]
@@ -191,10 +185,7 @@ mod tests {
 
     #[test]
     fn slow_path_numeric_mixed_with_malformed() {
-        assert_eq!(
-            lenient_unescape("&#65;&bogus;&#x42;"),
-            "A&bogus;B"
-        );
+        assert_eq!(lenient_unescape("&#65;&bogus;&#x42;"), "A&bogus;B");
     }
 
     #[test]
