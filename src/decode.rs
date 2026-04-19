@@ -11,7 +11,6 @@ use std::borrow::Cow;
 /// (`&#x10FFFF;` = 10 bytes) with headroom. HTML5 named entities are
 /// intentionally not covered — `quick_xml::escape::unescape` does not
 /// decode them, so they fail per-token and are preserved raw regardless.
-#[allow(dead_code)] // consumed by slow path in Task 3
 const MAX_ENTITY_LEN: usize = 16;
 
 /// Decode XML entity references with graceful handling of malformed tokens.
@@ -32,11 +31,49 @@ pub(crate) fn lenient_unescape(input: &str) -> Cow<'_, str> {
     }
 }
 
-#[allow(dead_code)] // real body lands in Task 3
 fn lenient_slow_path(input: &str) -> String {
-    // Placeholder — real implementation lands in Task 3. Fast path is the
-    // only reachable branch until slow-path tests exist.
-    input.to_string()
+    let bytes = input.as_bytes();
+    let mut out = String::with_capacity(input.len());
+    let mut i = 0;
+
+    while i < bytes.len() {
+        // Find the next '&' from the cursor. ASCII-safe: '&' (0x26) cannot
+        // appear as a UTF-8 continuation byte, so every index is a char
+        // boundary and `&input[..]` slicing is valid.
+        match bytes[i..].iter().position(|&b| b == b'&') {
+            None => {
+                out.push_str(&input[i..]);
+                break;
+            }
+            Some(rel) => {
+                let amp = i + rel;
+                out.push_str(&input[i..amp]);
+
+                let window_end = (amp + MAX_ENTITY_LEN).min(bytes.len());
+                match bytes[amp + 1..window_end]
+                    .iter()
+                    .position(|&b| b == b';')
+                {
+                    None => {
+                        // Stray '&' without a closing ';' in range.
+                        out.push('&');
+                        i = amp + 1;
+                    }
+                    Some(srel) => {
+                        let semi = amp + 1 + srel;
+                        let token = &input[amp..=semi]; // "&...;"
+                        match quick_xml::escape::unescape(token) {
+                            Ok(decoded) => out.push_str(&decoded),
+                            Err(_) => out.push_str(token),
+                        }
+                        i = semi + 1;
+                    }
+                }
+            }
+        }
+    }
+
+    out
 }
 
 #[cfg(test)]
@@ -63,5 +100,59 @@ mod tests {
     fn fast_path_numeric_refs_decode() {
         assert_eq!(lenient_unescape("&#65;&#x41;"), "AA");
         assert_eq!(lenient_unescape("&#128512;"), "\u{1F600}");
+    }
+
+    #[test]
+    fn slow_path_mixed_legitimate_and_malformed() {
+        assert_eq!(
+            lenient_unescape("A &amp; B &bogus; C"),
+            "A & B &bogus; C"
+        );
+    }
+
+    #[test]
+    fn slow_path_multiple_malformed_preserved() {
+        assert_eq!(lenient_unescape("&foo;&bar;"), "&foo;&bar;");
+    }
+
+    #[test]
+    fn slow_path_stray_ampersand_without_semicolon() {
+        assert_eq!(
+            lenient_unescape("R&D and &bogus; tail"),
+            "R&D and &bogus; tail"
+        );
+    }
+
+    #[test]
+    fn slow_path_unterminated_ampersand_bounded() {
+        // No `;` within MAX_ENTITY_LEN bytes after the stray `&`: the `&`
+        // is pushed raw and scanning continues. The trailing `&bogus;`
+        // triggers the slow path (fast-path unescape fails on either
+        // malformed token); both are preserved verbatim, so output equals
+        // input.
+        let padding = "x".repeat(MAX_ENTITY_LEN + 8);
+        let input = format!("&{padding}&bogus;");
+        assert_eq!(lenient_unescape(&input), input);
+    }
+
+    #[test]
+    fn slow_path_numeric_mixed_with_malformed() {
+        assert_eq!(
+            lenient_unescape("&#65;&bogus;&#x42;"),
+            "A&bogus;B"
+        );
+    }
+
+    #[test]
+    fn slow_path_preserves_non_ascii_between_tokens() {
+        assert_eq!(
+            lenient_unescape("한글 &amp; &bogus; 日本語"),
+            "한글 & &bogus; 日本語"
+        );
+    }
+
+    #[test]
+    fn slow_path_empty_entity_reference() {
+        assert_eq!(lenient_unescape("a &; b &bogus;"), "a &; b &bogus;");
     }
 }
