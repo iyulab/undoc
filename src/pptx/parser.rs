@@ -10,12 +10,6 @@ use crate::model::{
 use std::collections::HashMap;
 use std::path::Path;
 
-fn decode_pptx_text_lossless(e: &quick_xml::events::BytesText<'_>) -> String {
-    e.unescape()
-        .map(|text| text.into_owned())
-        .unwrap_or_else(|_| String::from_utf8_lossy(e.as_ref()).into_owned())
-}
-
 /// Slide info from presentation.xml.
 #[derive(Debug, Clone)]
 struct SlideInfo {
@@ -647,7 +641,7 @@ impl PptxParser {
                     }
                 }
                 Ok(quick_xml::events::Event::Text(ref e)) if in_text => {
-                    current_text.push_str(&decode_pptx_text_lossless(e));
+                    current_text.push_str(&crate::decode::decode_text_lossy(e));
                 }
                 Ok(quick_xml::events::Event::End(ref e)) => {
                     let local_name = e.name().local_name();
@@ -897,7 +891,7 @@ impl PptxParser {
                     }
                 }
                 Ok(quick_xml::events::Event::Text(ref e)) if in_text && !in_table => {
-                    current_text.push_str(&decode_pptx_text_lossless(e));
+                    current_text.push_str(&crate::decode::decode_text_lossy(e));
                 }
                 Ok(quick_xml::events::Event::End(ref e)) => {
                     let local_name = e.name().local_name();
@@ -1091,7 +1085,7 @@ impl PptxParser {
                     }
                 }
                 Ok(quick_xml::events::Event::Text(ref e)) if in_text => {
-                    current_text.push_str(&decode_pptx_text_lossless(e));
+                    current_text.push_str(&crate::decode::decode_text_lossy(e));
                 }
                 Ok(quick_xml::events::Event::End(ref e)) => {
                     let local_name = e.name().local_name();
@@ -2160,5 +2154,69 @@ mod tests {
             assert!(h1_count > 0, "Expected at least one H1 heading (title)");
             assert!(found_lorem, "Expected to find 'Lorem ipsum' as H1 title");
         }
+    }
+
+    #[test]
+    fn test_pptx_slide_mixed_entities_preserve_legitimate_and_malformed() {
+        use std::io::Write;
+
+        let mut buf = Vec::new();
+        {
+            let cursor = std::io::Cursor::new(&mut buf);
+            let mut zip = zip::ZipWriter::new(cursor);
+            let options =
+                zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+
+            zip.start_file("[Content_Types].xml", options).unwrap();
+            zip.write_all(br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>
+  <Override PartName="/ppt/slides/slide1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>
+</Types>"#).unwrap();
+
+            zip.start_file("_rels/.rels", options).unwrap();
+            zip.write_all(br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="ppt/presentation.xml"/>
+</Relationships>"#).unwrap();
+
+            zip.start_file("ppt/_rels/presentation.xml.rels", options).unwrap();
+            zip.write_all(br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide1.xml"/>
+</Relationships>"#).unwrap();
+
+            zip.start_file("ppt/presentation.xml", options).unwrap();
+            zip.write_all(br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
+  xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <p:sldIdLst><p:sldId id="256" r:id="rId1"/></p:sldIdLst>
+</p:presentation>"#).unwrap();
+
+            zip.start_file("ppt/slides/slide1.xml", options).unwrap();
+            zip.write_all(br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+       xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
+  <p:cSld><p:spTree>
+    <p:sp><p:txBody><a:p><a:r><a:t>A &amp; B &bogus; C</a:t></a:r></a:p></p:txBody></p:sp>
+  </p:spTree></p:cSld>
+</p:sld>"#).unwrap();
+
+            zip.finish().unwrap();
+        }
+
+        let mut parser = PptxParser::from_bytes(buf).expect("parser opens");
+        let doc = parser.parse().expect("document parses");
+        let text = doc.plain_text();
+        assert!(
+            text.contains("A & B &bogus; C"),
+            "expected legitimate entity decoded and malformed preserved; got {text:?}"
+        );
+        assert!(
+            !text.contains("A &amp; B"),
+            "legitimate entity must not remain escaped; got {text:?}"
+        );
     }
 }
