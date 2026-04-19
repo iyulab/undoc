@@ -72,8 +72,7 @@ impl PptxParser {
 
         loop {
             match reader.read_event_into(&mut buf) {
-                Ok(quick_xml::events::Event::Empty(e))
-                | Ok(quick_xml::events::Event::Start(e)) => {
+                Ok(quick_xml::events::Event::Empty(e)) | Ok(quick_xml::events::Event::Start(e)) => {
                     let name = e.name();
                     let local_name = name.local_name();
                     if local_name.as_ref() == b"sldId" {
@@ -85,10 +84,7 @@ impl PptxParser {
                                 b"id" => {
                                     id = String::from_utf8_lossy(&attr.value).to_string();
                                 }
-                                key if key.ends_with(b"id")
-                                    && key != b"id"
-                                    && key.len() > 2 =>
-                                {
+                                key if key.ends_with(b"id") && key != b"id" && key.len() > 2 => {
                                     rel_id = String::from_utf8_lossy(&attr.value).to_string();
                                 }
                                 _ => {}

@@ -98,8 +98,7 @@ impl XlsxParser {
 
         loop {
             match reader.read_event_into(&mut buf) {
-                Ok(quick_xml::events::Event::Empty(e))
-                | Ok(quick_xml::events::Event::Start(e))
+                Ok(quick_xml::events::Event::Empty(e)) | Ok(quick_xml::events::Event::Start(e))
                     if e.name().as_ref() == b"sheet" =>
                 {
                     let mut name = String::new();

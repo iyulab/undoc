@@ -52,8 +52,8 @@
 //! - `ffi`: C-ABI bindings for foreign language integration
 
 mod charts;
-mod decode;
 pub mod container;
+mod decode;
 pub mod detect;
 pub mod error;
 pub mod model;

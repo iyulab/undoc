@@ -196,8 +196,7 @@ impl NumberingMap {
                 Ok(quick_xml::events::Event::Start(e)) if e.name().as_ref() == b"w:num" => {
                     for attr in e.attributes().flatten() {
                         if attr.key.as_ref() == b"w:numId" {
-                            current_num_id =
-                                Some(String::from_utf8_lossy(&attr.value).to_string());
+                            current_num_id = Some(String::from_utf8_lossy(&attr.value).to_string());
                         }
                     }
                 }
@@ -207,8 +206,7 @@ impl NumberingMap {
                     if let Some(ref num_id) = current_num_id {
                         for attr in e.attributes().flatten() {
                             if attr.key.as_ref() == b"w:val" {
-                                let abstract_id =
-                                    String::from_utf8_lossy(&attr.value).to_string();
+                                let abstract_id = String::from_utf8_lossy(&attr.value).to_string();
                                 self.instances.insert(
                                     num_id.clone(),
                                     NumInstance {
