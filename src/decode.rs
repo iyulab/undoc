@@ -27,7 +27,6 @@ const MAX_ENTITY_LEN: usize = 16;
 /// scans `&...;` tokens linearly and decodes each independently, preserving
 /// undecodable tokens as raw text. See `MAX_ENTITY_LEN` for the lookahead
 /// bound.
-#[allow(dead_code)] // wired into parsers in Task 6 onwards
 pub(crate) fn lenient_unescape(input: &str) -> Cow<'_, str> {
     match quick_xml::escape::unescape(input) {
         Ok(cow) => cow,
@@ -94,7 +93,6 @@ fn lenient_slow_path(input: &str) -> String {
 /// Intended for content text (paragraphs, cells, runs, chart labels) where
 /// invalid UTF-8 bytes should be replaced with U+FFFD rather than surface
 /// as an error.
-#[allow(dead_code)] // wired into parsers in Task 6 onwards
 pub(crate) fn decode_text_lossy(text: &BytesText<'_>) -> String {
     let raw = String::from_utf8_lossy(text.as_ref());
     lenient_unescape(raw.as_ref()).into_owned()

@@ -337,10 +337,10 @@ impl DocxParser {
                 }
                 Ok(quick_xml::events::Event::Text(ref e)) => {
                     if in_paragraph {
-                        let text = decode_xml_text_lossless(e);
+                        let text = crate::decode::decode_text_lossy(e);
                         paragraph_xml.push_str(&escape_xml(&text));
                     } else if table_depth > 0 {
-                        let text = decode_xml_text_lossless(e);
+                        let text = crate::decode::decode_text_lossy(e);
                         table_xml.push_str(&escape_xml(&text));
                     }
                 }
@@ -806,7 +806,7 @@ impl DocxParser {
                 {
                     // Only extract text from w:t elements, skip w:instrText (field codes)
                     // Also skip text inside mc:Fallback and w:txbxContent (extracted separately)
-                    let text = decode_xml_text_lossless(e);
+                    let text = crate::decode::decode_text_lossy(e);
                     if !text.is_empty() {
                         let current_revision = if in_del {
                             RevisionType::Deleted
@@ -933,7 +933,7 @@ impl DocxParser {
                     txbx_para_xml.push_str("/>");
                 }
                 Ok(quick_xml::events::Event::Text(ref e)) if in_txbx_para => {
-                    let text = decode_xml_text_lossless(e);
+                    let text = crate::decode::decode_text_lossy(e);
                     txbx_para_xml.push_str(&escape_xml(&text));
                 }
                 Ok(quick_xml::events::Event::End(ref e)) => {
@@ -1244,14 +1244,14 @@ impl DocxParser {
                 Ok(quick_xml::events::Event::Text(ref e)) => {
                     // If we're inside a nested table, just collect XML
                     if nested_table_depth > 0 {
-                        let text = decode_xml_text_lossless(e);
+                        let text = crate::decode::decode_text_lossy(e);
                         nested_table_xml.push_str(&escape_xml(&text));
                         continue;
                     }
 
                     // Only extract text from w:t elements, skip w:instrText (field codes)
                     if in_run && in_text && !in_instr_text {
-                        let text = decode_xml_text_lossless(e);
+                        let text = crate::decode::decode_text_lossy(e);
                         if !text.is_empty() {
                             if let Some(ref mut para) = current_paragraph {
                                 let run = TextRun {
@@ -1460,7 +1460,7 @@ fn parse_notes_xml(xml: &str, note_tag: &[u8]) -> HashMap<String, String> {
                 }
             }
             Ok(quick_xml::events::Event::Text(ref e)) if in_note && in_text => {
-                current_text.push_str(&decode_xml_text_lossless(e));
+                current_text.push_str(&crate::decode::decode_text_lossy(e));
             }
             Ok(quick_xml::events::Event::End(ref e)) => {
                 if e.name().as_ref() == note_tag {
@@ -1515,7 +1515,7 @@ fn parse_header_footer_xml(xml: &str) -> Vec<Paragraph> {
                 _ => {}
             },
             Ok(quick_xml::events::Event::Text(ref e)) if in_paragraph && in_text => {
-                current_text.push_str(&decode_xml_text_lossless(e));
+                current_text.push_str(&crate::decode::decode_text_lossy(e));
             }
             Ok(quick_xml::events::Event::End(ref e)) => match e.name().as_ref() {
                 b"w:p" if in_paragraph => {
@@ -1549,12 +1549,6 @@ fn get_bool_attr(e: &quick_xml::events::BytesStart, key: &[u8]) -> Option<bool> 
         }
     }
     None
-}
-
-fn decode_xml_text_lossless(e: &quick_xml::events::BytesText<'_>) -> String {
-    e.unescape()
-        .map(|text| text.into_owned())
-        .unwrap_or_else(|_| String::from_utf8_lossy(e.as_ref()).into_owned())
 }
 
 /// Escape XML special characters.
@@ -2817,5 +2811,54 @@ mod tests {
             Error::MissingComponent(path) => assert_eq!(path, "word/charts/chart1.xml"),
             other => panic!("expected MissingComponent, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_docx_body_mixed_entities_preserve_legitimate_and_malformed() {
+        use std::io::Write;
+
+        let mut buf = Vec::new();
+        {
+            let cursor = std::io::Cursor::new(&mut buf);
+            let mut zip = zip::ZipWriter::new(cursor);
+            let options =
+                zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+
+            zip.start_file("[Content_Types].xml", options).unwrap();
+            zip.write_all(br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>"#).unwrap();
+
+            zip.start_file("_rels/.rels", options).unwrap();
+            zip.write_all(br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>"#).unwrap();
+
+            zip.start_file("word/document.xml", options).unwrap();
+            zip.write_all(br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:r><w:t>A &amp; B &bogus; C</w:t></w:r></w:p>
+  </w:body>
+</w:document>"#).unwrap();
+
+            zip.finish().unwrap();
+        }
+
+        let mut parser = DocxParser::from_bytes(buf).expect("parser opens");
+        let doc = parser.parse().expect("document parses");
+        let text = doc.plain_text();
+        assert!(
+            text.contains("A & B &bogus; C"),
+            "expected legitimate entity decoded and malformed preserved; got {text:?}"
+        );
+        assert!(
+            !text.contains("A &amp; B"),
+            "legitimate entity must not remain escaped; got {text:?}"
+        );
     }
 }
