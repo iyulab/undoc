@@ -71,7 +71,7 @@ pub fn to_text(doc: &Document, options: &RenderOptions) -> Result<String> {
     let result = if let Some(ref cleanup) = options.cleanup {
         super::cleanup::clean_text(&output, cleanup)
     } else {
-        output.trim().to_string()
+        output.trim_matches('\n').to_string()
     };
 
     Ok(result)
@@ -114,6 +114,12 @@ fn render_paragraph_text(para: &Paragraph) -> String {
         }
 
         output.push_str(&run.text);
+        if run.line_break {
+            output.push('\n');
+        }
+        if run.page_break {
+            output.push_str("\n---\n");
+        }
     }
 
     output
@@ -251,7 +257,7 @@ fn pad_to_width(s: &str, target_width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Cell, HeadingLevel, Row, Section};
+    use crate::model::{Cell, HeadingLevel, Row, Section, TextRun};
 
     #[test]
     fn test_basic_paragraph() {
@@ -272,6 +278,46 @@ mod tests {
         let text = to_text(&doc, &options).unwrap();
         assert!(text.contains("Test"));
         assert!(text.contains("Content."));
+    }
+
+    #[test]
+    fn test_to_text_preserves_boundary_spaces() {
+        let mut doc = Document::new();
+        let mut section = Section::new(0);
+        section.add_paragraph(Paragraph::with_text("  padded text  "));
+        doc.add_section(section);
+
+        let text = to_text(&doc, &RenderOptions::default()).unwrap();
+        assert_eq!(text, "  padded text  ");
+    }
+
+    #[test]
+    fn test_to_text_preserves_run_line_and_page_breaks() {
+        let mut doc = Document::new();
+        let mut section = Section::new(0);
+        section.add_paragraph(Paragraph {
+            runs: vec![
+                TextRun {
+                    text: "Alpha".to_string(),
+                    line_break: true,
+                    ..Default::default()
+                },
+                TextRun {
+                    text: "Beta".to_string(),
+                    page_break: true,
+                    ..Default::default()
+                },
+                TextRun::plain("Gamma"),
+            ],
+            ..Default::default()
+        });
+        doc.add_section(section);
+
+        let text = to_text(&doc, &RenderOptions::default()).unwrap();
+        assert!(
+            text.contains("Alpha\nBeta\n---\nGamma"),
+            "unexpected text: {text:?}"
+        );
     }
 
     #[test]

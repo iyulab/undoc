@@ -10,6 +10,12 @@ use crate::model::{
 use std::collections::HashMap;
 use std::path::Path;
 
+fn decode_pptx_text_lossless(e: &quick_xml::events::BytesText<'_>) -> String {
+    e.unescape()
+        .map(|text| text.into_owned())
+        .unwrap_or_else(|_| String::from_utf8_lossy(e.as_ref()).into_owned())
+}
+
 /// Slide info from presentation.xml.
 #[derive(Debug, Clone)]
 struct SlideInfo {
@@ -64,50 +70,55 @@ impl PptxParser {
     fn parse_presentation(container: &OoxmlContainer) -> Result<Vec<SlideInfo>> {
         let mut slides = Vec::new();
 
-        if let Ok(xml) = container.read_xml("ppt/presentation.xml") {
-            let mut reader = quick_xml::Reader::from_str(&xml);
-            reader.config_mut().trim_text(true);
+        match container.read_xml("ppt/presentation.xml") {
+            Ok(xml) => {
+                let mut reader = quick_xml::Reader::from_str(&xml);
+                reader.config_mut().trim_text(true);
 
-            let mut buf = Vec::new();
+                let mut buf = Vec::new();
 
-            loop {
-                match reader.read_event_into(&mut buf) {
-                    Ok(quick_xml::events::Event::Empty(e))
-                    | Ok(quick_xml::events::Event::Start(e)) => {
-                        // Look for p:sldId elements (slide references)
-                        let name = e.name();
-                        let local_name = name.local_name();
-                        if local_name.as_ref() == b"sldId" {
-                            let mut id = String::new();
-                            let mut rel_id = String::new();
+                loop {
+                    match reader.read_event_into(&mut buf) {
+                        Ok(quick_xml::events::Event::Empty(e))
+                        | Ok(quick_xml::events::Event::Start(e)) => {
+                            // Look for p:sldId elements (slide references)
+                            let name = e.name();
+                            let local_name = name.local_name();
+                            if local_name.as_ref() == b"sldId" {
+                                let mut id = String::new();
+                                let mut rel_id = String::new();
 
-                            for attr in e.attributes().flatten() {
-                                match attr.key.as_ref() {
-                                    b"id" => {
-                                        id = String::from_utf8_lossy(&attr.value).to_string();
+                                for attr in e.attributes().flatten() {
+                                    match attr.key.as_ref() {
+                                        b"id" => {
+                                            id = String::from_utf8_lossy(&attr.value).to_string();
+                                        }
+                                        // r:id attribute
+                                        key if key.ends_with(b"id")
+                                            && key != b"id"
+                                            && key.len() > 2 =>
+                                        {
+                                            rel_id =
+                                                String::from_utf8_lossy(&attr.value).to_string();
+                                        }
+                                        _ => {}
                                     }
-                                    // r:id attribute
-                                    key if key.ends_with(b"id")
-                                        && key != b"id"
-                                        && key.len() > 2 =>
-                                    {
-                                        rel_id = String::from_utf8_lossy(&attr.value).to_string();
-                                    }
-                                    _ => {}
+                                }
+
+                                if !rel_id.is_empty() {
+                                    slides.push(SlideInfo { id, rel_id });
                                 }
                             }
-
-                            if !rel_id.is_empty() {
-                                slides.push(SlideInfo { id, rel_id });
-                            }
                         }
+                        Ok(quick_xml::events::Event::Eof) => break,
+                        Err(e) => return Err(Error::XmlParse(e.to_string())),
+                        _ => {}
                     }
-                    Ok(quick_xml::events::Event::Eof) => break,
-                    Err(e) => return Err(Error::XmlParse(e.to_string())),
-                    _ => {}
+                    buf.clear();
                 }
-                buf.clear();
             }
+            Err(Error::MissingComponent(_)) => {}
+            Err(err) => return Err(err),
         }
 
         Ok(slides)
@@ -174,14 +185,9 @@ impl PptxParser {
 
     /// Parse relationships for a specific slide/notes file.
     fn parse_slide_relationships(&self, slide_path: &str) -> Result<HashMap<String, String>> {
-        match self
-            .container
+        self.container
             .read_optional_relationships_for_part(slide_path)
-        {
-            Ok(rels) => Ok(rels.into_targets_by_id()),
-            Err(Error::XmlParseWithContext { .. }) => Ok(HashMap::new()),
-            Err(err) => Err(err),
-        }
+            .map(|rels| rels.into_targets_by_id())
     }
 
     /// Parse metadata from docProps/core.xml.
@@ -449,35 +455,31 @@ impl PptxParser {
             };
 
             // Read and parse chart XML
-            if let Ok(chart_xml) = self.container.read_xml(&chart_path) {
-                match charts::parse_chart_xml(&chart_xml) {
-                    Ok(chart_data) => {
-                        if !chart_data.is_empty() {
-                            let mut table = chart_data.to_table();
-                            // Add chart title as caption if available
-                            if let Some(ref title) = chart_data.title {
-                                if !title.is_empty() {
-                                    // Update first header cell to include chart title
-                                    if let Some(first_row) = table.rows.first_mut() {
-                                        if let Some(first_cell) = first_row.cells.first_mut() {
-                                            let original = first_cell.plain_text();
-                                            first_cell.content.clear();
-                                            first_cell.content.push(Paragraph::with_text(format!(
-                                                "{} ({})",
-                                                original, title
-                                            )));
-                                        }
+            let chart_xml = self.container.read_xml(&chart_path)?;
+            match charts::parse_chart_xml(&chart_xml) {
+                Ok(chart_data) => {
+                    if !chart_data.is_empty() {
+                        let mut table = chart_data.to_table();
+                        // Add chart title as caption if available
+                        if let Some(ref title) = chart_data.title {
+                            if !title.is_empty() {
+                                // Update first header cell to include chart title
+                                if let Some(first_row) = table.rows.first_mut() {
+                                    if let Some(first_cell) = first_row.cells.first_mut() {
+                                        let original = first_cell.plain_text();
+                                        first_cell.content.clear();
+                                        first_cell.content.push(Paragraph::with_text(format!(
+                                            "{} ({})",
+                                            original, title
+                                        )));
                                     }
                                 }
                             }
-                            tables.push(table);
                         }
-                    }
-                    Err(_) => {
-                        // Chart parsing failed, skip this chart
-                        // In Phase 2, we would add a warning here
+                        tables.push(table);
                     }
                 }
+                Err(e) => return Err(e),
             }
         }
 
@@ -640,11 +642,8 @@ impl PptxParser {
                         _ => {}
                     }
                 }
-                Ok(quick_xml::events::Event::Text(ref e)) => {
-                    if in_text {
-                        let text = e.unescape().unwrap_or_default();
-                        current_text.push_str(&text);
-                    }
+                Ok(quick_xml::events::Event::Text(ref e)) if in_text => {
+                    current_text.push_str(&decode_pptx_text_lossless(e));
                 }
                 Ok(quick_xml::events::Event::End(ref e)) => {
                     let local_name = e.name().local_name();
@@ -893,11 +892,8 @@ impl PptxParser {
                         _ => {}
                     }
                 }
-                Ok(quick_xml::events::Event::Text(ref e)) => {
-                    if in_text && !in_table {
-                        let text = e.unescape().unwrap_or_default();
-                        current_text.push_str(&text);
-                    }
+                Ok(quick_xml::events::Event::Text(ref e)) if in_text && !in_table => {
+                    current_text.push_str(&decode_pptx_text_lossless(e));
                 }
                 Ok(quick_xml::events::Event::End(ref e)) => {
                     let local_name = e.name().local_name();
@@ -1090,11 +1086,8 @@ impl PptxParser {
                         _ => {}
                     }
                 }
-                Ok(quick_xml::events::Event::Text(ref e)) => {
-                    if in_text {
-                        let text = e.unescape().unwrap_or_default();
-                        current_text.push_str(&text);
-                    }
+                Ok(quick_xml::events::Event::Text(ref e)) if in_text => {
+                    current_text.push_str(&decode_pptx_text_lossless(e));
                 }
                 Ok(quick_xml::events::Event::End(ref e)) => {
                     let local_name = e.name().local_name();
@@ -1415,6 +1408,61 @@ mod tests {
         )
     }
 
+    fn create_minimal_pptx_with_notes(slide_xml: &str, notes_xml: &str) -> Vec<u8> {
+        use std::io::{Cursor, Write};
+        let buf = Cursor::new(Vec::new());
+        let mut zip = zip::ZipWriter::new(buf);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+
+        zip.start_file("[Content_Types].xml", options).unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>
+  <Override PartName="/ppt/slides/slide1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>
+  <Override PartName="/ppt/notesSlides/notesSlide1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.notesSlide+xml"/>
+</Types>"#).unwrap();
+
+        zip.start_file("_rels/.rels", options).unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="ppt/presentation.xml"/>
+</Relationships>"#).unwrap();
+
+        zip.start_file("ppt/_rels/presentation.xml.rels", options)
+            .unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide1.xml"/>
+</Relationships>"#).unwrap();
+
+        zip.start_file("ppt/presentation.xml", options).unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+<p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
+                xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <p:sldIdLst>
+    <p:sldId id="256" r:id="rId1"/>
+  </p:sldIdLst>
+</p:presentation>"#).unwrap();
+
+        zip.start_file("ppt/slides/_rels/slide1.xml.rels", options)
+            .unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+</Relationships>"#).unwrap();
+
+        zip.start_file("ppt/slides/slide1.xml", options).unwrap();
+        zip.write_all(slide_xml.as_bytes()).unwrap();
+
+        zip.start_file("ppt/notesSlides/notesSlide1.xml", options)
+            .unwrap();
+        zip.write_all(notes_xml.as_bytes()).unwrap();
+
+        zip.finish().unwrap().into_inner()
+    }
+
     fn create_minimal_pptx_with_relationships(
         slide_xml: &str,
         presentation_rels_xml: Option<&str>,
@@ -1478,6 +1526,256 @@ mod tests {
     }
 
     #[test]
+    fn test_pptx_chart_invalid_numeric_value_propagates_error() {
+        use std::io::{Cursor, Write};
+        use zip::write::SimpleFileOptions;
+
+        let chart_xml = r#"<?xml version="1.0"?>
+<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart">
+  <c:chart><c:plotArea><c:lineChart>
+    <c:ser>
+      <c:tx><c:strRef><c:strCache><c:pt idx="0"><c:v>S</c:v></c:pt></c:strCache></c:strRef></c:tx>
+      <c:cat><c:strRef><c:strCache><c:pt idx="0"><c:v>Q1</c:v></c:pt></c:strCache></c:strRef></c:cat>
+      <c:val><c:numRef><c:numCache><c:pt idx="0"><c:v>not-a-number</c:v></c:pt></c:numCache></c:numRef></c:val>
+    </c:ser>
+  </c:lineChart></c:plotArea></c:chart>
+</c:chartSpace>"#;
+
+        let slide_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+       xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
+       xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+       xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart">
+  <p:cSld><p:spTree>
+    <p:graphicFrame><a:graphic><a:graphicData>
+      <c:chart r:id="rIdChart"/>
+    </a:graphicData></a:graphic></p:graphicFrame>
+  </p:spTree></p:cSld>
+</p:sld>"#;
+
+        let slide_rels = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rIdChart" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart" Target="../charts/chart1.xml"/>
+</Relationships>"#;
+
+        let presentation_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
+                xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <p:sldIdLst><p:sldId id="256" r:id="rIdSlide"/></p:sldIdLst>
+</p:presentation>"#;
+
+        let presentation_rels = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rIdSlide" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide1.xml"/>
+</Relationships>"#;
+
+        let buf = Cursor::new(Vec::new());
+        let mut zip = zip::ZipWriter::new(buf);
+        let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+
+        zip.start_file("[Content_Types].xml", options).unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>
+</Types>"#).unwrap();
+
+        zip.start_file("_rels/.rels", options).unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="ppt/presentation.xml"/>
+</Relationships>"#).unwrap();
+
+        zip.start_file("ppt/presentation.xml", options).unwrap();
+        zip.write_all(presentation_xml.as_bytes()).unwrap();
+
+        zip.start_file("ppt/_rels/presentation.xml.rels", options).unwrap();
+        zip.write_all(presentation_rels.as_bytes()).unwrap();
+
+        zip.start_file("ppt/slides/slide1.xml", options).unwrap();
+        zip.write_all(slide_xml.as_bytes()).unwrap();
+
+        zip.start_file("ppt/slides/_rels/slide1.xml.rels", options).unwrap();
+        zip.write_all(slide_rels.as_bytes()).unwrap();
+
+        zip.start_file("ppt/charts/chart1.xml", options).unwrap();
+        zip.write_all(chart_xml.as_bytes()).unwrap();
+
+        let data = zip.finish().unwrap().into_inner();
+        let mut parser = PptxParser::from_bytes(data).unwrap();
+        let err = parser
+            .parse()
+            .expect_err("invalid chart numeric value must surface");
+
+        match err {
+            Error::InvalidData(msg) => assert!(
+                msg.contains("invalid chart numeric value"),
+                "unexpected msg: {msg}"
+            ),
+            other => panic!("expected InvalidData, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_pptx_missing_chart_part_propagates_error() {
+        use std::io::{Cursor, Write};
+        use zip::write::SimpleFileOptions;
+
+        let slide_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+       xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
+       xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+       xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart">
+  <p:cSld><p:spTree>
+    <p:graphicFrame><a:graphic><a:graphicData>
+      <c:chart r:id="rIdChart"/>
+    </a:graphicData></a:graphic></p:graphicFrame>
+  </p:spTree></p:cSld>
+</p:sld>"#;
+
+        let slide_rels = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rIdChart" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart" Target="../charts/chart1.xml"/>
+</Relationships>"#;
+
+        let presentation_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
+                xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <p:sldIdLst><p:sldId id="256" r:id="rIdSlide"/></p:sldIdLst>
+</p:presentation>"#;
+
+        let presentation_rels = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rIdSlide" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide1.xml"/>
+</Relationships>"#;
+
+        let buf = Cursor::new(Vec::new());
+        let mut zip = zip::ZipWriter::new(buf);
+        let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+
+        zip.start_file("[Content_Types].xml", options).unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>
+</Types>"#).unwrap();
+
+        zip.start_file("_rels/.rels", options).unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="ppt/presentation.xml"/>
+</Relationships>"#).unwrap();
+
+        zip.start_file("ppt/presentation.xml", options).unwrap();
+        zip.write_all(presentation_xml.as_bytes()).unwrap();
+
+        zip.start_file("ppt/_rels/presentation.xml.rels", options).unwrap();
+        zip.write_all(presentation_rels.as_bytes()).unwrap();
+
+        zip.start_file("ppt/slides/slide1.xml", options).unwrap();
+        zip.write_all(slide_xml.as_bytes()).unwrap();
+
+        zip.start_file("ppt/slides/_rels/slide1.xml.rels", options).unwrap();
+        zip.write_all(slide_rels.as_bytes()).unwrap();
+
+        let data = zip.finish().unwrap().into_inner();
+        let mut parser = PptxParser::from_bytes(data).unwrap();
+        let err = parser
+            .parse()
+            .expect_err("missing referenced chart part must surface");
+
+        match err {
+            Error::MissingComponent(path) => assert_eq!(path, "ppt/charts/chart1.xml"),
+            other => panic!("expected MissingComponent, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_pptx_slide_table_preserves_raw_malformed_entity() {
+        let slide_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+       xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
+  <p:cSld><p:spTree>
+    <p:graphicFrame><a:graphic><a:graphicData>
+      <a:tbl>
+        <a:tr><a:tc><a:txBody><a:p><a:r><a:t>Cell &bogus; text</a:t></a:r></a:p></a:txBody></a:tc></a:tr>
+      </a:tbl>
+    </a:graphicData></a:graphic></p:graphicFrame>
+  </p:spTree></p:cSld>
+</p:sld>"#;
+
+        let data = create_minimal_pptx(slide_xml);
+        let mut parser = PptxParser::from_bytes(data).unwrap();
+        let doc = parser.parse().unwrap();
+        assert!(
+            doc.plain_text().contains("Cell &bogus; text"),
+            "expected raw malformed entity preserved in slide table, got: {}",
+            doc.plain_text()
+        );
+    }
+
+    #[test]
+    fn test_pptx_slide_text_preserves_raw_malformed_entity() {
+        let slide_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+       xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
+  <p:cSld><p:spTree>
+    <p:sp><p:txBody>
+      <a:p><a:r><a:t>Slide &bogus; body</a:t></a:r></a:p>
+    </p:txBody></p:sp>
+  </p:spTree></p:cSld>
+</p:sld>"#;
+
+        let data = create_minimal_pptx(slide_xml);
+        let mut parser = PptxParser::from_bytes(data).unwrap();
+        let doc = parser.parse().unwrap();
+        assert!(
+            doc.plain_text().contains("Slide &bogus; body"),
+            "expected raw malformed entity preserved in slide text, got: {}",
+            doc.plain_text()
+        );
+    }
+
+    #[test]
+    fn test_pptx_notes_preserves_raw_malformed_entity() {
+        let slide_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+       xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
+  <p:cSld><p:spTree/></p:cSld>
+</p:sld>"#;
+
+        let notes_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<p:notes xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+         xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
+  <p:cSld><p:spTree>
+    <p:sp><p:txBody>
+      <a:p><a:r><a:t>Note &bogus; body</a:t></a:r></a:p>
+    </p:txBody></p:sp>
+  </p:spTree></p:cSld>
+</p:notes>"#;
+
+        let data = create_minimal_pptx_with_notes(slide_xml, notes_xml);
+        let mut parser = PptxParser::from_bytes(data).unwrap();
+        let doc = parser.parse().unwrap();
+        let notes = doc.sections[0]
+            .notes
+            .as_ref()
+            .expect("notes should be parsed");
+        let notes_text = notes
+            .iter()
+            .map(Paragraph::plain_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            notes_text.contains("Note &bogus; body"),
+            "expected raw malformed entity preserved in notes, got: {}",
+            notes_text
+        );
+    }
+
+    #[test]
     fn test_pptx_requires_presentation_relationships() {
         let slide_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
 <p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
@@ -1514,6 +1812,50 @@ mod tests {
     }
 
     #[test]
+    fn test_pptx_non_utf8_presentation_is_error() {
+        use std::io::{Cursor, Write};
+        use zip::write::SimpleFileOptions;
+
+        let buf = Cursor::new(Vec::new());
+        let mut zip = zip::ZipWriter::new(buf);
+        let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+
+        zip.start_file("[Content_Types].xml", options).unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>
+</Types>"#).unwrap();
+
+        zip.start_file("_rels/.rels", options).unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="ppt/presentation.xml"/>
+</Relationships>"#).unwrap();
+
+        zip.start_file("ppt/_rels/presentation.xml.rels", options)
+            .unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+</Relationships>"#).unwrap();
+
+        zip.start_file("ppt/presentation.xml", options).unwrap();
+        zip.write_all(b"<?xml version=\"1.0\"?><presentation>Caf\xe9</presentation>")
+            .unwrap();
+
+        let data = zip.finish().unwrap().into_inner();
+        let err = match PptxParser::from_bytes(data) {
+            Ok(_) => panic!("non-UTF-8 presentation must surface Error::Encoding"),
+            Err(err) => err,
+        };
+        assert!(
+            matches!(err, Error::Encoding(_)),
+            "expected Error::Encoding, got {err:?}"
+        );
+    }
+
+    #[test]
     fn test_pptx_allows_missing_optional_slide_relationships() {
         let slide_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
 <p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
@@ -1538,7 +1880,7 @@ mod tests {
     }
 
     #[test]
-    fn test_pptx_best_effort_on_malformed_optional_slide_relationships() {
+    fn test_pptx_rejects_malformed_optional_slide_relationships() {
         let slide_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
 <p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
        xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
@@ -1564,10 +1906,16 @@ mod tests {
             Some("<Relationships"),
         );
         let mut parser = PptxParser::from_bytes(data).unwrap();
-        let doc = parser.parse().unwrap();
+        let err = parser
+            .parse()
+            .expect_err("malformed optional slide relationships should fail");
 
-        assert_eq!(doc.sections.len(), 1);
-        assert_eq!(doc.plain_text(), "Hello from slide");
+        match err {
+            Error::XmlParseWithContext { location, .. } => {
+                assert_eq!(location, "ppt/slides/_rels/slide1.xml.rels")
+            }
+            other => panic!("expected malformed optional slide rels error, got {other:?}"),
+        }
     }
 
     #[test]

@@ -21,30 +21,35 @@ class UndocError(Exception):
     pass
 
 
-def _decode_utf8_ptr(ptr: Optional[int]) -> str:
-    """Copy a null-terminated UTF-8 string from a native pointer."""
+def _decode_utf8_ptr(ptr: int) -> str:
+    """Copy a null-terminated UTF-8 string from a non-null native pointer."""
     if not ptr:
-        return ""
+        raise ValueError("native pointer is null")
     return ctypes.string_at(ptr).decode("utf-8")
 
 
-def _copy_and_free_utf8_ptr(lib, ptr: Optional[int]) -> str:
+def _copy_and_free_utf8_ptr(lib, ptr: int) -> str:
     """Copy a Rust-owned UTF-8 string, then free the original allocation."""
-    if not ptr:
-        return ""
     try:
         return _decode_utf8_ptr(ptr)
     finally:
         lib.undoc_free_string(ptr)
 
 
-def _get_last_error() -> str:
+def _get_last_error(lib=None) -> str:
     """Get the last error message from the native library."""
-    lib = get_library()
+    lib = lib or get_library()
     error = lib.undoc_last_error()
     if error:
         return _decode_utf8_ptr(error)
     return "Unknown error"
+
+
+def _require_result_ptr(lib, ptr: Optional[int], action: str) -> int:
+    """Require a non-null native result pointer for operations that signal failure via NULL."""
+    if ptr:
+        return ptr
+    raise UndocError(f"{action}: {_get_last_error(lib)}")
 
 
 def version() -> str:
@@ -251,9 +256,7 @@ class Undoc:
             List of resource ID strings
         """
         result = self._lib.undoc_get_resource_ids(self._handle)
-        if not result:
-            return []
-
+        result = _require_result_ptr(self._lib, result, "Failed to get resource IDs")
         ids = json.loads(_copy_and_free_utf8_ptr(self._lib, result))
         return ids
 

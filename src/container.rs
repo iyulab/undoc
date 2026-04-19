@@ -150,12 +150,15 @@ pub fn decode_xml_bytes(bytes: &[u8]) -> Result<String> {
             // Try to detect UTF-16 by checking for common XML patterns
             // UTF-16 LE typically has null bytes in odd positions for ASCII
             if bytes.len() >= 4 && bytes[1] == 0 && bytes[3] == 0 {
-                decode_utf16_le(bytes)
+                let content = decode_utf16_le(bytes)?;
+                Ok(fix_xml_encoding_declaration(&content))
             } else if bytes.len() >= 4 && bytes[0] == 0 && bytes[2] == 0 {
-                decode_utf16_be(bytes)
+                let content = decode_utf16_be(bytes)?;
+                Ok(fix_xml_encoding_declaration(&content))
             } else {
-                // Fall back to lossy UTF-8 conversion
-                Ok(String::from_utf8_lossy(bytes).into_owned())
+                Err(Error::Encoding(
+                    "XML part is not valid UTF-8 or UTF-16".to_string(),
+                ))
             }
         }
     }
@@ -163,10 +166,13 @@ pub fn decode_xml_bytes(bytes: &[u8]) -> Result<String> {
 
 /// Decode UTF-16 Little Endian bytes to String.
 fn decode_utf16_le(bytes: &[u8]) -> Result<String> {
-    // Ensure even number of bytes
-    let len = bytes.len() & !1;
+    if !bytes.len().is_multiple_of(2) {
+        return Err(Error::Encoding(
+            "UTF-16 little-endian XML has an odd byte length".to_string(),
+        ));
+    }
 
-    let u16_iter = (0..len)
+    let u16_iter = (0..bytes.len())
         .step_by(2)
         .map(|i| u16::from_le_bytes([bytes[i], bytes[i + 1]]));
 
@@ -177,10 +183,13 @@ fn decode_utf16_le(bytes: &[u8]) -> Result<String> {
 
 /// Decode UTF-16 Big Endian bytes to String.
 fn decode_utf16_be(bytes: &[u8]) -> Result<String> {
-    // Ensure even number of bytes
-    let len = bytes.len() & !1;
+    if !bytes.len().is_multiple_of(2) {
+        return Err(Error::Encoding(
+            "UTF-16 big-endian XML has an odd byte length".to_string(),
+        ));
+    }
 
-    let u16_iter = (0..len)
+    let u16_iter = (0..bytes.len())
         .step_by(2)
         .map(|i| u16::from_be_bytes([bytes[i], bytes[i + 1]]));
 
@@ -337,55 +346,65 @@ impl OoxmlContainer {
     pub fn parse_core_metadata(&self) -> Result<Metadata> {
         let mut meta = Metadata::default();
 
-        if let Ok(xml) = self.read_xml("docProps/core.xml") {
-            let mut reader = quick_xml::Reader::from_str(&xml);
-            reader.config_mut().trim_text(true);
+        match self.read_xml("docProps/core.xml") {
+            Ok(xml) => {
+                let mut reader = quick_xml::Reader::from_str(&xml);
+                reader.config_mut().trim_text(false);
 
-            let mut buf = Vec::new();
-            let mut current_element: Option<String> = None;
+                let mut buf = Vec::new();
+                let mut current_element: Option<String> = None;
 
-            loop {
-                match reader.read_event_into(&mut buf) {
-                    Ok(quick_xml::events::Event::Start(e)) => {
-                        let name = e.name();
-                        current_element =
-                            Some(String::from_utf8_lossy(name.local_name().as_ref()).to_string());
-                    }
-                    Ok(quick_xml::events::Event::Text(e)) => {
-                        if let Some(ref elem) = current_element {
-                            let text = e.unescape().unwrap_or_default().to_string();
-                            match elem.as_str() {
-                                "title" => meta.title = Some(text),
-                                "creator" => meta.author = Some(text),
-                                "subject" => meta.subject = Some(text),
-                                "description" => meta.description = Some(text),
-                                "keywords" => {
-                                    meta.keywords = text
-                                        .split([',', ';'])
-                                        .map(|s| s.trim().to_string())
-                                        .filter(|s| !s.is_empty())
-                                        .collect();
+                loop {
+                    match reader.read_event_into(&mut buf) {
+                        Ok(quick_xml::events::Event::Start(e)) => {
+                            let name = e.name();
+                            current_element = Some(
+                                String::from_utf8_lossy(name.local_name().as_ref()).to_string(),
+                            );
+                        }
+                        Ok(quick_xml::events::Event::Text(e)) => {
+                            if let Some(ref elem) = current_element {
+                                let text = metadata_text_or_raw(&e, "docProps/core.xml")?;
+                                match elem.as_str() {
+                                    "title" => meta.title = Some(text),
+                                    "creator" => meta.author = Some(text),
+                                    "subject" => meta.subject = Some(text),
+                                    "description" => meta.description = Some(text),
+                                    "keywords" => {
+                                        meta.keywords = text
+                                            .split([',', ';'])
+                                            .map(|s| s.trim().to_string())
+                                            .filter(|s| !s.is_empty())
+                                            .collect();
+                                    }
+                                    "created" => meta.created = Some(text),
+                                    "modified" => meta.modified = Some(text),
+                                    "lastModifiedBy" => meta.last_modified_by = Some(text),
+                                    _ => {}
                                 }
-                                "created" => meta.created = Some(text),
-                                "modified" => meta.modified = Some(text),
-                                "lastModifiedBy" => meta.last_modified_by = Some(text),
-                                _ => {}
                             }
                         }
+                        Ok(quick_xml::events::Event::End(_)) => {
+                            current_element = None;
+                        }
+                        Ok(quick_xml::events::Event::Eof) => break,
+                        Err(e) => {
+                            return Err(Error::xml_parse_with_context(
+                                e.to_string(),
+                                "docProps/core.xml",
+                            ))
+                        }
+                        _ => {}
                     }
-                    Ok(quick_xml::events::Event::End(_)) => {
-                        current_element = None;
-                    }
-                    Ok(quick_xml::events::Event::Eof) => break,
-                    Err(_) => break,
-                    _ => {}
+                    buf.clear();
                 }
-                buf.clear();
             }
+            Err(Error::MissingComponent(_)) => {}
+            Err(err) => return Err(err),
         }
 
         // Enrich with app.xml metadata
-        self.parse_app_metadata(&mut meta);
+        self.parse_app_metadata(&mut meta)?;
 
         Ok(meta)
     }
@@ -394,14 +413,15 @@ impl OoxmlContainer {
     ///
     /// Extracts Application, Pages, Words, and Slides properties.
     /// Only sets `page_count` and `word_count` if not already populated.
-    fn parse_app_metadata(&self, meta: &mut Metadata) {
+    fn parse_app_metadata(&self, meta: &mut Metadata) -> Result<()> {
         let xml = match self.read_xml("docProps/app.xml") {
             Ok(xml) => xml,
-            Err(_) => return,
+            Err(Error::MissingComponent(_)) => return Ok(()),
+            Err(err) => return Err(err),
         };
 
         let mut reader = quick_xml::Reader::from_str(&xml);
-        reader.config_mut().trim_text(true);
+        reader.config_mut().trim_text(false);
 
         let mut buf = Vec::new();
         let mut current_element: Option<String> = None;
@@ -415,23 +435,17 @@ impl OoxmlContainer {
                 }
                 Ok(quick_xml::events::Event::Text(e)) => {
                     if let Some(ref elem) = current_element {
-                        let text = e.unescape().unwrap_or_default().to_string();
+                        let text = metadata_text_or_raw(&e, "docProps/app.xml")?;
                         match elem.as_str() {
                             "Application" => meta.application = Some(text),
-                            "Pages" => {
-                                if meta.page_count.is_none() {
-                                    meta.page_count = text.parse::<u32>().ok();
-                                }
+                            "Pages" if meta.page_count.is_none() => {
+                                meta.page_count = text.trim().parse::<u32>().ok();
                             }
-                            "Words" => {
-                                if meta.word_count.is_none() {
-                                    meta.word_count = text.parse::<u32>().ok();
-                                }
+                            "Words" if meta.word_count.is_none() => {
+                                meta.word_count = text.trim().parse::<u32>().ok();
                             }
-                            "Slides" => {
-                                if meta.page_count.is_none() {
-                                    meta.page_count = text.parse::<u32>().ok();
-                                }
+                            "Slides" if meta.page_count.is_none() => {
+                                meta.page_count = text.trim().parse::<u32>().ok();
                             }
                             _ => {}
                         }
@@ -441,11 +455,18 @@ impl OoxmlContainer {
                     current_element = None;
                 }
                 Ok(quick_xml::events::Event::Eof) => break,
-                Err(_) => break,
+                Err(e) => {
+                    return Err(Error::xml_parse_with_context(
+                        e.to_string(),
+                        "docProps/app.xml",
+                    ))
+                }
                 _ => {}
             }
             buf.clear();
         }
+
+        Ok(())
     }
 
     /// Resolve a relative path from a base path.
@@ -471,6 +492,15 @@ impl OoxmlContainer {
         }
 
         result.to_string_lossy().replace('\\', "/")
+    }
+}
+
+fn metadata_text_or_raw(text: &quick_xml::events::BytesText<'_>, location: &str) -> Result<String> {
+    match text.unescape() {
+        Ok(value) => Ok(value.into_owned()),
+        Err(_) => std::str::from_utf8(text.as_ref())
+            .map(|raw| raw.to_string())
+            .map_err(|err| Error::xml_parse_with_context(err.to_string(), location)),
     }
 }
 
@@ -650,6 +680,22 @@ mod tests {
         OoxmlContainer::from_bytes(zip.finish().unwrap().into_inner()).unwrap()
     }
 
+    fn create_container_with_binary_files(files: &[(&str, &[u8])]) -> OoxmlContainer {
+        use std::io::{Cursor, Write};
+
+        let buf = Cursor::new(Vec::new());
+        let mut zip = zip::ZipWriter::new(buf);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+
+        for (path, contents) in files {
+            zip.start_file(*path, options).unwrap();
+            zip.write_all(contents).unwrap();
+        }
+
+        OoxmlContainer::from_bytes(zip.finish().unwrap().into_inner()).unwrap()
+    }
+
     #[test]
     fn test_parse_relationships_preserves_target_mode_and_start_forms() {
         let rels = parse_relationships_xml(
@@ -795,6 +841,54 @@ mod tests {
         let utf8_plain = b"<?xml>";
         let result = decode_xml_bytes(utf8_plain).expect("Should decode UTF-8 without BOM");
         assert_eq!(result, "<?xml>");
+    }
+
+    #[test]
+    fn test_decode_xml_bytes_rejects_invalid_non_utf8_input() {
+        let cp1252_xml = b"<?xml version=\"1.0\"?><root>Caf\xe9 & \x93quotes\x94</root>";
+        let err = decode_xml_bytes(cp1252_xml).unwrap_err();
+
+        assert!(matches!(err, Error::Encoding(_)));
+    }
+
+    #[test]
+    fn test_parse_core_metadata_preserves_whitespace_and_raw_malformed_text() {
+        let container = create_container_with_files(&[(
+            "docProps/core.xml",
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties"
+    xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <dc:title>  Spaced &bogus; Title  </dc:title>
+</cp:coreProperties>"#,
+        )]);
+
+        let meta = container.parse_core_metadata().unwrap();
+        assert_eq!(meta.title.as_deref(), Some("  Spaced &bogus; Title  "));
+    }
+
+    #[test]
+    fn test_parse_app_metadata_preserves_whitespace_and_raw_malformed_text() {
+        let container = create_container_with_files(&[(
+            "docProps/app.xml",
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties">
+  <Application>  App &bogus; Name  </Application>
+</Properties>"#,
+        )]);
+
+        let meta = container.parse_core_metadata().unwrap();
+        assert_eq!(meta.application.as_deref(), Some("  App &bogus; Name  "));
+    }
+
+    #[test]
+    fn test_parse_core_metadata_propagates_invalid_xml_bytes() {
+        let container = create_container_with_binary_files(&[(
+            "docProps/core.xml",
+            b"<?xml version=\"1.0\"?><cp:coreProperties xmlns:cp=\"urn:test\"><cp:title>Caf\xe9</cp:title></cp:coreProperties>",
+        )]);
+
+        let err = container.parse_core_metadata().unwrap_err();
+        assert!(matches!(err, Error::Encoding(_)));
     }
 
     #[test]

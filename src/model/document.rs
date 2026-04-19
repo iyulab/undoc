@@ -216,7 +216,7 @@ impl Document {
             }
             text.push('\n');
         }
-        text.trim().to_string()
+        text.trim_matches('\n').to_string()
     }
 
     /// Convert to JSON string.
@@ -278,6 +278,16 @@ mod tests {
 
         doc.add_section(section);
         assert_eq!(doc.plain_text(), "Hello, World!");
+    }
+
+    #[test]
+    fn test_plain_text_preserves_boundary_spaces() {
+        let mut doc = Document::new();
+        let mut section = Section::new(0);
+        section.add_paragraph(Paragraph::with_text("  padded text  "));
+        doc.add_section(section);
+
+        assert_eq!(doc.plain_text(), "  padded text  ");
     }
 
     #[test]

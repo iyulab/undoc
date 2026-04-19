@@ -172,10 +172,11 @@ public class UndocDocument : IDisposable
     {
         ThrowIfDisposed();
         var ptr = NativeMethods.undoc_plain_text(_handle);
-        if (ptr == IntPtr.Zero)
-            throw new UndocException($"Failed to get plain text: {GetLastError()}");
-
-        return CopyAndFreeNativeUtf8String(ptr, NativeMethods.undoc_free_string);
+        return CopyAndFreeRequiredNativeUtf8String(
+            ptr,
+            "Failed to get plain text",
+            GetLastError,
+            NativeMethods.undoc_free_string);
     }
 
     /// <summary>
@@ -248,11 +249,7 @@ public class UndocDocument : IDisposable
     {
         ThrowIfDisposed();
         var ptr = NativeMethods.undoc_get_resource_ids(_handle);
-        if (ptr == IntPtr.Zero)
-            return Array.Empty<string>();
-
-        var json = CopyAndFreeNativeUtf8String(ptr, NativeMethods.undoc_free_string);
-        return JsonSerializer.Deserialize<string[]>(json) ?? Array.Empty<string>();
+        return ParseResourceIdsFromNativeJson(ptr, GetLastError, NativeMethods.undoc_free_string);
     }
 
     /// <summary>
@@ -316,6 +313,31 @@ public class UndocDocument : IDisposable
         {
             free(ptr);
         }
+    }
+
+    internal static string CopyAndFreeRequiredNativeUtf8String(
+        IntPtr ptr,
+        string operation,
+        Func<string> getLastError,
+        Action<IntPtr> free)
+    {
+        if (ptr == IntPtr.Zero)
+            throw new UndocException($"{operation}: {getLastError()}");
+
+        return CopyAndFreeNativeUtf8String(ptr, free);
+    }
+
+    internal static string[] ParseResourceIdsFromNativeJson(
+        IntPtr ptr,
+        Func<string> getLastError,
+        Action<IntPtr> free)
+    {
+        var json = CopyAndFreeRequiredNativeUtf8String(
+            ptr,
+            "Failed to get resource IDs",
+            getLastError,
+            free);
+        return JsonSerializer.Deserialize<string[]>(json) ?? Array.Empty<string>();
     }
 
     internal static string PtrToStringUtf8(IntPtr ptr)

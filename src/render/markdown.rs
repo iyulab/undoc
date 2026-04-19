@@ -696,6 +696,11 @@ fn render_cell_content(
 
     // Join paragraphs with <br> for markdown table cells
     let text = parts.join("<br>");
+    let text = if options.preserve_line_breaks {
+        text.replace("  \n", "<br>")
+    } else {
+        text
+    };
 
     // Only replace newlines - pipes are already escaped by escape_markdown in render_run
     text.replace('\n', " ")
@@ -831,7 +836,7 @@ fn render_table_html(table: &Table) -> String {
             if cell.row_span > 1 {
                 attrs.push_str(&format!(" rowspan=\"{}\"", cell.row_span));
             }
-            let text = cell.plain_text();
+            let text = escape_html(&cell.plain_text());
             html.push_str(&format!("    <{}{}>{}</{}>\n", tag, attrs, text, tag));
         }
         html.push_str("  </tr>\n");
@@ -839,6 +844,12 @@ fn render_table_html(table: &Table) -> String {
 
     html.push_str("</table>");
     html
+}
+
+fn escape_html(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 #[cfg(test)]
@@ -1239,6 +1250,72 @@ mod tests {
             md_with_breaks.contains("Second line"),
             "Should contain second line: {}",
             md_with_breaks
+        );
+    }
+
+    #[test]
+    fn test_table_cell_line_break_rendering_with_preserve_breaks() {
+        let mut table = Table::new();
+        table.add_row(Row::header(vec![Cell::header("Notes")]));
+        table.add_row(Row {
+            cells: vec![Cell {
+                content: vec![Paragraph {
+                    runs: vec![
+                        TextRun {
+                            text: "First line".to_string(),
+                            line_break: true,
+                            ..Default::default()
+                        },
+                        TextRun::plain("Second line"),
+                    ],
+                    ..Default::default()
+                }],
+                nested_tables: Vec::new(),
+                col_span: 1,
+                row_span: 1,
+                alignment: CellAlignment::Left,
+                vertical_alignment: crate::model::VerticalAlignment::Top,
+                is_header: false,
+                background: None,
+            }],
+            is_header: false,
+            height: None,
+        });
+
+        let options = RenderOptions::new().with_preserve_breaks(true);
+        let md = render_table(&table, &options, &empty_resource_map());
+
+        assert!(
+            md.contains("First line<br>Second line"),
+            "Expected preserved line break in table cell, got: {md}"
+        );
+    }
+
+    #[test]
+    fn test_html_table_fallback_escapes_special_chars() {
+        let mut table = Table::new();
+        table.add_row(Row::header(vec![Cell::header("Header")]));
+        table.add_row(Row {
+            cells: vec![Cell {
+                content: vec![Paragraph::with_text("<unsafe> & value")],
+                nested_tables: Vec::new(),
+                col_span: 2,
+                row_span: 1,
+                alignment: CellAlignment::Left,
+                vertical_alignment: crate::model::VerticalAlignment::Top,
+                is_header: false,
+                background: None,
+            }],
+            is_header: false,
+            height: None,
+        });
+
+        let options = RenderOptions::new().with_table_fallback(crate::render::TableFallback::Html);
+        let md = render_table(&table, &options, &empty_resource_map());
+
+        assert!(
+            md.contains("&lt;unsafe&gt; &amp; value"),
+            "Expected HTML-escaped table cell content, got: {md}"
         );
     }
 

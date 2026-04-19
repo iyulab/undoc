@@ -41,3 +41,4 @@ bindings/csharp/**/obj/
 bindings/csharp/**/runtimes/
 bindings/csharp/artifacts/
 *.nupkg
+.omx/

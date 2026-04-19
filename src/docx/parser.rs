@@ -168,32 +168,30 @@ impl DocxParser {
                 };
 
                 // Read and parse chart XML
-                if let Ok(chart_xml) = self.container.read_xml(&chart_path) {
-                    match charts::parse_chart_xml(&chart_xml) {
-                        Ok(chart_data) => {
-                            if !chart_data.is_empty() {
-                                let mut table = chart_data.to_table();
-                                // Add chart title if available
-                                if let Some(ref title) = chart_data.title {
-                                    if !title.is_empty() {
-                                        if let Some(first_row) = table.rows.first_mut() {
-                                            if let Some(first_cell) = first_row.cells.first_mut() {
-                                                let original = first_cell.plain_text();
-                                                first_cell.content.clear();
-                                                first_cell.content.push(Paragraph::with_text(
-                                                    format!("{} ({})", original, title),
-                                                ));
-                                            }
+                let chart_xml = self.container.read_xml(&chart_path)?;
+                match charts::parse_chart_xml(&chart_xml) {
+                    Ok(chart_data) => {
+                        if !chart_data.is_empty() {
+                            let mut table = chart_data.to_table();
+                            // Add chart title if available
+                            if let Some(ref title) = chart_data.title {
+                                if !title.is_empty() {
+                                    if let Some(first_row) = table.rows.first_mut() {
+                                        if let Some(first_cell) = first_row.cells.first_mut() {
+                                            let original = first_cell.plain_text();
+                                            first_cell.content.clear();
+                                            first_cell.content.push(Paragraph::with_text(format!(
+                                                "{} ({})",
+                                                original, title
+                                            )));
                                         }
                                     }
                                 }
-                                tables.push(table);
                             }
-                        }
-                        Err(_) => {
-                            // Chart parsing failed, skip
+                            tables.push(table);
                         }
                     }
+                    Err(e) => return Err(e),
                 }
             }
         }
@@ -343,10 +341,10 @@ impl DocxParser {
                 }
                 Ok(quick_xml::events::Event::Text(ref e)) => {
                     if in_paragraph {
-                        let text = e.unescape().unwrap_or_default();
+                        let text = decode_xml_text_lossless(e);
                         paragraph_xml.push_str(&escape_xml(&text));
                     } else if table_depth > 0 {
-                        let text = e.unescape().unwrap_or_default();
+                        let text = decode_xml_text_lossless(e);
                         table_xml.push_str(&escape_xml(&text));
                     }
                 }
@@ -795,34 +793,33 @@ impl DocxParser {
                     }
                     _ => {}
                 },
-                Ok(quick_xml::events::Event::Text(ref e)) => {
-                    // Only extract text from w:t elements, skip w:instrText (field codes)
-                    // Also skip text inside mc:Fallback and w:txbxContent (extracted separately)
+                Ok(quick_xml::events::Event::Text(ref e))
                     if in_run
                         && in_text
                         && !in_instr_text
                         && mc_fallback_depth == 0
-                        && txbx_content_depth == 0
-                    {
-                        let text = e.unescape().unwrap_or_default().to_string();
-                        if !text.is_empty() {
-                            let current_revision = if in_del {
-                                RevisionType::Deleted
-                            } else if in_ins {
-                                RevisionType::Inserted
-                            } else {
-                                RevisionType::None
-                            };
-                            let run = TextRun {
-                                text,
-                                style: current_style.clone(),
-                                hyperlink: current_hyperlink.clone(),
-                                line_break: false,
-                                page_break: false,
-                                revision: current_revision,
-                            };
-                            para.runs.push(run);
-                        }
+                        && txbx_content_depth == 0 =>
+                {
+                    // Only extract text from w:t elements, skip w:instrText (field codes)
+                    // Also skip text inside mc:Fallback and w:txbxContent (extracted separately)
+                    let text = decode_xml_text_lossless(e);
+                    if !text.is_empty() {
+                        let current_revision = if in_del {
+                            RevisionType::Deleted
+                        } else if in_ins {
+                            RevisionType::Inserted
+                        } else {
+                            RevisionType::None
+                        };
+                        let run = TextRun {
+                            text,
+                            style: current_style.clone(),
+                            hyperlink: current_hyperlink.clone(),
+                            line_break: false,
+                            page_break: false,
+                            revision: current_revision,
+                        };
+                        para.runs.push(run);
                     }
                 }
                 Ok(quick_xml::events::Event::End(ref e)) => match e.name().as_ref() {
@@ -918,26 +915,22 @@ impl DocxParser {
                         _ => {}
                     }
                 }
-                Ok(quick_xml::events::Event::Empty(ref e)) => {
-                    if in_txbx_para {
-                        let name = e.name();
-                        txbx_para_xml.push('<');
-                        txbx_para_xml.push_str(&String::from_utf8_lossy(name.as_ref()));
-                        for attr in e.attributes().flatten() {
-                            txbx_para_xml.push_str(&format!(
-                                " {}=\"{}\"",
-                                String::from_utf8_lossy(attr.key.as_ref()),
-                                String::from_utf8_lossy(&attr.value)
-                            ));
-                        }
-                        txbx_para_xml.push_str("/>");
+                Ok(quick_xml::events::Event::Empty(ref e)) if in_txbx_para => {
+                    let name = e.name();
+                    txbx_para_xml.push('<');
+                    txbx_para_xml.push_str(&String::from_utf8_lossy(name.as_ref()));
+                    for attr in e.attributes().flatten() {
+                        txbx_para_xml.push_str(&format!(
+                            " {}=\"{}\"",
+                            String::from_utf8_lossy(attr.key.as_ref()),
+                            String::from_utf8_lossy(&attr.value)
+                        ));
                     }
+                    txbx_para_xml.push_str("/>");
                 }
-                Ok(quick_xml::events::Event::Text(ref e)) => {
-                    if in_txbx_para {
-                        let text = e.unescape().unwrap_or_default();
-                        txbx_para_xml.push_str(&escape_xml(&text));
-                    }
+                Ok(quick_xml::events::Event::Text(ref e)) if in_txbx_para => {
+                    let text = decode_xml_text_lossless(e);
+                    txbx_para_xml.push_str(&escape_xml(&text));
                 }
                 Ok(quick_xml::events::Event::End(ref e)) => {
                     let name = e.name();
@@ -988,38 +981,30 @@ impl DocxParser {
 
         loop {
             match reader.read_event_into(&mut buf) {
-                Ok(quick_xml::events::Event::Start(ref e)) => {
-                    if e.name().as_ref() == b"w:numPr" {
-                        in_num_pr = true;
-                    }
+                Ok(quick_xml::events::Event::Start(ref e)) if e.name().as_ref() == b"w:numPr" => {
+                    in_num_pr = true;
                 }
-                Ok(quick_xml::events::Event::Empty(ref e)) => {
-                    if in_num_pr {
-                        match e.name().as_ref() {
-                            b"w:numId" => {
-                                for attr in e.attributes().flatten() {
-                                    if attr.key.as_ref() == b"w:val" {
-                                        num_id =
-                                            Some(String::from_utf8_lossy(&attr.value).to_string());
-                                    }
-                                }
+                Ok(quick_xml::events::Event::Empty(ref e)) if in_num_pr => match e.name().as_ref()
+                {
+                    b"w:numId" => {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.as_ref() == b"w:val" {
+                                num_id = Some(String::from_utf8_lossy(&attr.value).to_string());
                             }
-                            b"w:ilvl" => {
-                                for attr in e.attributes().flatten() {
-                                    if attr.key.as_ref() == b"w:val" {
-                                        let val = String::from_utf8_lossy(&attr.value);
-                                        level = val.parse().unwrap_or(0);
-                                    }
-                                }
-                            }
-                            _ => {}
                         }
                     }
-                }
-                Ok(quick_xml::events::Event::End(ref e)) => {
-                    if e.name().as_ref() == b"w:numPr" {
-                        in_num_pr = false;
+                    b"w:ilvl" => {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.as_ref() == b"w:val" {
+                                let val = String::from_utf8_lossy(&attr.value);
+                                level = val.parse().unwrap_or(0);
+                            }
+                        }
                     }
+                    _ => {}
+                },
+                Ok(quick_xml::events::Event::End(ref e)) if e.name().as_ref() == b"w:numPr" => {
+                    in_num_pr = false;
                 }
                 Ok(quick_xml::events::Event::Eof) => break,
                 _ => {}
@@ -1255,14 +1240,14 @@ impl DocxParser {
                 Ok(quick_xml::events::Event::Text(ref e)) => {
                     // If we're inside a nested table, just collect XML
                     if nested_table_depth > 0 {
-                        let text = e.unescape().unwrap_or_default();
+                        let text = decode_xml_text_lossless(e);
                         nested_table_xml.push_str(&escape_xml(&text));
                         continue;
                     }
 
                     // Only extract text from w:t elements, skip w:instrText (field codes)
                     if in_run && in_text && !in_instr_text {
-                        let text = e.unescape().unwrap_or_default().to_string();
+                        let text = decode_xml_text_lossless(e);
                         if !text.is_empty() {
                             if let Some(ref mut para) = current_paragraph {
                                 let run = TextRun {
@@ -1470,12 +1455,8 @@ fn parse_notes_xml(xml: &str, note_tag: &[u8]) -> HashMap<String, String> {
                     in_text = true;
                 }
             }
-            Ok(quick_xml::events::Event::Text(ref e)) => {
-                if in_note && in_text {
-                    if let Ok(text) = e.unescape() {
-                        current_text.push_str(&text);
-                    }
-                }
+            Ok(quick_xml::events::Event::Text(ref e)) if in_note && in_text => {
+                current_text.push_str(&decode_xml_text_lossless(e));
             }
             Ok(quick_xml::events::Event::End(ref e)) => {
                 if e.name().as_ref() == note_tag {
@@ -1529,22 +1510,16 @@ fn parse_header_footer_xml(xml: &str) -> Vec<Paragraph> {
                 }
                 _ => {}
             },
-            Ok(quick_xml::events::Event::Text(ref e)) => {
-                if in_paragraph && in_text {
-                    if let Ok(text) = e.unescape() {
-                        current_text.push_str(&text);
-                    }
-                }
+            Ok(quick_xml::events::Event::Text(ref e)) if in_paragraph && in_text => {
+                current_text.push_str(&decode_xml_text_lossless(e));
             }
             Ok(quick_xml::events::Event::End(ref e)) => match e.name().as_ref() {
-                b"w:p" => {
-                    if in_paragraph {
-                        let trimmed = current_text.trim().to_string();
-                        if !trimmed.is_empty() {
-                            paragraphs.push(Paragraph::with_text(trimmed));
-                        }
-                        in_paragraph = false;
+                b"w:p" if in_paragraph => {
+                    let trimmed = current_text.trim().to_string();
+                    if !trimmed.is_empty() {
+                        paragraphs.push(Paragraph::with_text(trimmed));
                     }
+                    in_paragraph = false;
                 }
                 b"w:t" => {
                     in_text = false;
@@ -1570,6 +1545,12 @@ fn get_bool_attr(e: &quick_xml::events::BytesStart, key: &[u8]) -> Option<bool> 
         }
     }
     None
+}
+
+fn decode_xml_text_lossless(e: &quick_xml::events::BytesText<'_>) -> String {
+    e.unescape()
+        .map(|text| text.into_owned())
+        .unwrap_or_else(|_| String::from_utf8_lossy(e.as_ref()).into_owned())
 }
 
 /// Escape XML special characters.
@@ -2104,6 +2085,19 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_notes_xml_preserves_raw_malformed_entity() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+        <w:footnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+            <w:footnote w:id="2">
+                <w:p><w:r><w:t>Footnote &bogus; text</w:t></w:r></w:p>
+            </w:footnote>
+        </w:footnotes>"#;
+
+        let notes = parse_notes_xml(xml, b"w:footnote");
+        assert_eq!(notes.get("2").unwrap(), "Footnote &bogus; text");
+    }
+
+    #[test]
     fn test_footnote_reference_in_paragraph() {
         // Test that w:footnoteReference inserts [^N] marker
         let xml = r#"<w:p>
@@ -2284,6 +2278,18 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_header_footer_xml_preserves_raw_malformed_entity() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+        <w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+            <w:p><w:r><w:t>Footer &bogus; text</w:t></w:r></w:p>
+        </w:ftr>"#;
+
+        let paragraphs = parse_header_footer_xml(xml);
+        assert_eq!(paragraphs.len(), 1);
+        assert_eq!(paragraphs[0].plain_text(), "Footer &bogus; text");
+    }
+
+    #[test]
     fn test_parse_header_footer_xml_empty() {
         let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
         <w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
@@ -2347,6 +2353,16 @@ mod tests {
         zip.write_all(document_xml.as_bytes()).unwrap();
 
         zip.finish().unwrap().into_inner()
+    }
+
+    fn empty_test_parser() -> DocxParser {
+        DocxParser::from_bytes(create_minimal_docx(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body><w:p/></w:body>
+</w:document>"#,
+        ))
+        .unwrap()
     }
 
     #[test]
@@ -2428,6 +2444,74 @@ mod tests {
             }
             other => panic!("expected malformed document rels error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_docx_body_malformed_entity_preserves_raw_text() {
+        let doc_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body><w:p><w:r><w:t>Hello &bogus; body</w:t></w:r></w:p></w:body>
+</w:document>"#;
+
+        let data = create_minimal_docx(doc_xml);
+        let mut parser = DocxParser::from_bytes(data).unwrap();
+        let doc = parser.parse().unwrap();
+
+        assert_eq!(doc.plain_text(), "Hello &bogus; body");
+    }
+
+    #[test]
+    fn test_docx_textbox_malformed_entity_preserves_raw_text() {
+        let doc_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+            xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
+  <w:body>
+    <w:p>
+      <w:r>
+        <w:drawing>
+          <wps:wsp>
+            <wps:txbx>
+              <w:txbxContent>
+                <w:p><w:r><w:t>Box &bogus; text</w:t></w:r></w:p>
+              </w:txbxContent>
+            </wps:txbx>
+          </wps:wsp>
+        </w:drawing>
+      </w:r>
+    </w:p>
+  </w:body>
+</w:document>"#;
+
+        let data = create_minimal_docx(doc_xml);
+        let mut parser = DocxParser::from_bytes(data).unwrap();
+        let doc = parser.parse().unwrap();
+
+        assert!(doc.plain_text().contains("Box &bogus; text"));
+    }
+
+    #[test]
+    fn test_docx_nested_table_malformed_entity_preserves_raw_text() {
+        let parser = empty_test_parser();
+        let xml = r#"<w:tbl xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:tr>
+    <w:tc>
+      <w:tbl>
+        <w:tr>
+          <w:tc>
+            <w:p><w:r><w:t>Inner &bogus; table</w:t></w:r></w:p>
+          </w:tc>
+        </w:tr>
+      </w:tbl>
+    </w:tc>
+  </w:tr>
+</w:tbl>"#;
+
+        let table = parser.parse_table(xml).unwrap();
+
+        assert_eq!(
+            table.rows[0].cells[0].nested_tables[0].rows[0].cells[0].plain_text(),
+            "Inner &bogus; table"
+        );
     }
 
     #[test]
@@ -2530,5 +2614,142 @@ mod tests {
             text.contains("Second text box paragraph"),
             "Should contain second text box paragraph"
         );
+    }
+
+    #[test]
+    fn test_docx_chart_invalid_numeric_value_propagates_error() {
+        use std::io::{Cursor, Write};
+        use zip::write::SimpleFileOptions;
+
+        let chart_xml = r#"<?xml version="1.0"?>
+<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart">
+  <c:chart><c:plotArea><c:lineChart>
+    <c:ser>
+      <c:tx><c:strRef><c:strCache><c:pt idx="0"><c:v>S</c:v></c:pt></c:strCache></c:strRef></c:tx>
+      <c:cat><c:strRef><c:strCache><c:pt idx="0"><c:v>Q1</c:v></c:pt></c:strCache></c:strRef></c:cat>
+      <c:val><c:numRef><c:numCache><c:pt idx="0"><c:v>not-a-number</c:v></c:pt></c:numCache></c:numRef></c:val>
+    </c:ser>
+  </c:lineChart></c:plotArea></c:chart>
+</c:chartSpace>"#;
+
+        let document_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+            xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+            xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+            xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart">
+  <w:body>
+    <w:p><w:r><w:drawing>
+      <a:graphic><a:graphicData>
+        <c:chart r:id="rIdChart"/>
+      </a:graphicData></a:graphic>
+    </w:drawing></w:r></w:p>
+  </w:body>
+</w:document>"#;
+
+        let document_rels = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rIdChart" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart" Target="charts/chart1.xml"/>
+</Relationships>"#;
+
+        let buf = Cursor::new(Vec::new());
+        let mut zip = zip::ZipWriter::new(buf);
+        let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+
+        zip.start_file("[Content_Types].xml", options).unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>"#).unwrap();
+
+        zip.start_file("_rels/.rels", options).unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>"#).unwrap();
+
+        zip.start_file("word/document.xml", options).unwrap();
+        zip.write_all(document_xml.as_bytes()).unwrap();
+
+        zip.start_file("word/_rels/document.xml.rels", options).unwrap();
+        zip.write_all(document_rels.as_bytes()).unwrap();
+
+        zip.start_file("word/charts/chart1.xml", options).unwrap();
+        zip.write_all(chart_xml.as_bytes()).unwrap();
+
+        let data = zip.finish().unwrap().into_inner();
+        let mut parser = DocxParser::from_bytes(data).unwrap();
+        let err = parser
+            .parse()
+            .expect_err("invalid chart numeric value must surface");
+
+        match err {
+            Error::InvalidData(msg) => assert!(
+                msg.contains("invalid chart numeric value"),
+                "unexpected msg: {msg}"
+            ),
+            other => panic!("expected InvalidData, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_docx_missing_chart_part_propagates_error() {
+        use std::io::{Cursor, Write};
+        use zip::write::SimpleFileOptions;
+
+        let document_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+            xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+            xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+            xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart">
+  <w:body>
+    <w:p><w:r><w:drawing>
+      <a:graphic><a:graphicData>
+        <c:chart r:id="rIdChart"/>
+      </a:graphicData></a:graphic>
+    </w:drawing></w:r></w:p>
+  </w:body>
+</w:document>"#;
+
+        let document_rels = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rIdChart" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart" Target="charts/chart1.xml"/>
+</Relationships>"#;
+
+        let buf = Cursor::new(Vec::new());
+        let mut zip = zip::ZipWriter::new(buf);
+        let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+
+        zip.start_file("[Content_Types].xml", options).unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>"#).unwrap();
+
+        zip.start_file("_rels/.rels", options).unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>"#).unwrap();
+
+        zip.start_file("word/document.xml", options).unwrap();
+        zip.write_all(document_xml.as_bytes()).unwrap();
+
+        zip.start_file("word/_rels/document.xml.rels", options).unwrap();
+        zip.write_all(document_rels.as_bytes()).unwrap();
+
+        let data = zip.finish().unwrap().into_inner();
+        let mut parser = DocxParser::from_bytes(data).unwrap();
+        let err = parser
+            .parse()
+            .expect_err("missing referenced chart part must surface");
+
+        match err {
+            Error::MissingComponent(path) => assert_eq!(path, "word/charts/chart1.xml"),
+            other => panic!("expected MissingComponent, got {other:?}"),
+        }
     }
 }

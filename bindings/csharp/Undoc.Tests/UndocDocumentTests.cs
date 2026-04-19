@@ -48,6 +48,72 @@ public class Utf8InteropTests
             Marshal.FreeCoTaskMem(ptr);
         }
     }
+
+    [Fact]
+    public void CopyAndFreeRequiredNativeUtf8String_PreservesValidEmptyString()
+    {
+        var ptr = Marshal.StringToCoTaskMemUTF8(string.Empty);
+        var freed = false;
+
+        var value = UndocDocument.CopyAndFreeRequiredNativeUtf8String(
+            ptr,
+            "Failed to get plain text",
+            () => "ignored",
+            p =>
+            {
+                Assert.Equal(ptr, p);
+                Marshal.FreeCoTaskMem(p);
+                freed = true;
+            });
+
+        Assert.True(freed);
+        Assert.Equal(string.Empty, value);
+    }
+
+    [Fact]
+    public void CopyAndFreeRequiredNativeUtf8String_ThrowsOnNullPointer()
+    {
+        var ex = Assert.Throws<UndocException>(() =>
+            UndocDocument.CopyAndFreeRequiredNativeUtf8String(
+                IntPtr.Zero,
+                "Failed to get plain text",
+                () => "native null",
+                _ => throw new InvalidOperationException("free should not run")));
+
+        Assert.Equal("Failed to get plain text: native null", ex.Message);
+    }
+
+    [Fact]
+    public void ParseResourceIdsFromNativeJson_PreservesValidEmptyList()
+    {
+        var ptr = Marshal.StringToCoTaskMemUTF8("[]");
+        var freed = false;
+
+        var resourceIds = UndocDocument.ParseResourceIdsFromNativeJson(
+            ptr,
+            () => "ignored",
+            p =>
+            {
+                Assert.Equal(ptr, p);
+                Marshal.FreeCoTaskMem(p);
+                freed = true;
+            });
+
+        Assert.True(freed);
+        Assert.Empty(resourceIds);
+    }
+
+    [Fact]
+    public void ParseResourceIdsFromNativeJson_ThrowsOnNullPointer()
+    {
+        var ex = Assert.Throws<UndocException>(() =>
+            UndocDocument.ParseResourceIdsFromNativeJson(
+                IntPtr.Zero,
+                () => "native null",
+                _ => throw new InvalidOperationException("free should not run")));
+
+        Assert.Equal("Failed to get resource IDs: native null", ex.Message);
+    }
 }
 
 public class NativeLibraryTests

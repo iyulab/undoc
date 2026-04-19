@@ -193,39 +193,35 @@ impl NumberingMap {
 
         loop {
             match reader.read_event_into(&mut buf) {
-                Ok(quick_xml::events::Event::Start(e)) => {
-                    if e.name().as_ref() == b"w:num" {
+                Ok(quick_xml::events::Event::Start(e)) if e.name().as_ref() == b"w:num" => {
+                    for attr in e.attributes().flatten() {
+                        if attr.key.as_ref() == b"w:numId" {
+                            current_num_id =
+                                Some(String::from_utf8_lossy(&attr.value).to_string());
+                        }
+                    }
+                }
+                Ok(quick_xml::events::Event::Empty(e))
+                    if e.name().as_ref() == b"w:abstractNumId" =>
+                {
+                    if let Some(ref num_id) = current_num_id {
                         for attr in e.attributes().flatten() {
-                            if attr.key.as_ref() == b"w:numId" {
-                                current_num_id =
-                                    Some(String::from_utf8_lossy(&attr.value).to_string());
+                            if attr.key.as_ref() == b"w:val" {
+                                let abstract_id =
+                                    String::from_utf8_lossy(&attr.value).to_string();
+                                self.instances.insert(
+                                    num_id.clone(),
+                                    NumInstance {
+                                        num_id: num_id.clone(),
+                                        abstract_num_id: abstract_id,
+                                    },
+                                );
                             }
                         }
                     }
                 }
-                Ok(quick_xml::events::Event::Empty(e)) => {
-                    if e.name().as_ref() == b"w:abstractNumId" {
-                        if let Some(ref num_id) = current_num_id {
-                            for attr in e.attributes().flatten() {
-                                if attr.key.as_ref() == b"w:val" {
-                                    let abstract_id =
-                                        String::from_utf8_lossy(&attr.value).to_string();
-                                    self.instances.insert(
-                                        num_id.clone(),
-                                        NumInstance {
-                                            num_id: num_id.clone(),
-                                            abstract_num_id: abstract_id,
-                                        },
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
-                Ok(quick_xml::events::Event::End(e)) => {
-                    if e.name().as_ref() == b"w:num" {
-                        current_num_id = None;
-                    }
+                Ok(quick_xml::events::Event::End(e)) if e.name().as_ref() == b"w:num" => {
+                    current_num_id = None;
                 }
                 Ok(quick_xml::events::Event::Eof) => break,
                 Err(_) => break,
