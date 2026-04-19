@@ -63,10 +63,18 @@ fn lenient_slow_path(input: &str) -> String {
                         let semi = amp + 1 + srel;
                         let token = &input[amp..=semi]; // "&...;"
                         match quick_xml::escape::unescape(token) {
-                            Ok(decoded) => out.push_str(&decoded),
-                            Err(_) => out.push_str(token),
+                            Ok(decoded) => {
+                                out.push_str(&decoded);
+                                i = semi + 1;
+                            }
+                            Err(_) => {
+                                // Preserve only the leading '&' raw; let the
+                                // next iteration re-scan the span so any
+                                // legitimate entity inside still decodes.
+                                out.push('&');
+                                i = amp + 1;
+                            }
                         }
-                        i = semi + 1;
                     }
                 }
             }
@@ -116,11 +124,29 @@ mod tests {
     }
 
     #[test]
-    fn slow_path_stray_ampersand_without_semicolon() {
+    fn slow_path_stray_ampersand_then_malformed_entity() {
         assert_eq!(
             lenient_unescape("R&D and &bogus; tail"),
             "R&D and &bogus; tail"
         );
+    }
+
+    #[test]
+    fn slow_path_stray_ampersand_then_legitimate_entity() {
+        // The `&` in "R&D" is a stray (no `;` within MAX_ENTITY_LEN... no
+        // wait, `;` of "&amp;" is within the window). A naive greedy
+        // scanner would consume "&D &amp;" as one failing token and lose
+        // the legitimate decoding. Correct behavior: preserve the `&` raw
+        // and re-scan to decode `&amp;` on its own.
+        assert_eq!(lenient_unescape("R&D &amp; tail"), "R&D & tail");
+    }
+
+    #[test]
+    fn slow_path_adjacent_ampersand_before_legitimate_entity() {
+        // Adjacent case: stray `&` immediately followed by a legitimate
+        // entity. The `&&lt;` span fails as a whole; recovery must push
+        // the first `&` and re-scan so `&lt;` decodes.
+        assert_eq!(lenient_unescape("&&lt;"), "&<");
     }
 
     #[test]
