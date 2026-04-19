@@ -236,7 +236,7 @@ pub fn parse_chart_xml(xml: &str) -> Result<ChartData> {
                 }
             }
             Ok(quick_xml::events::Event::Text(ref e)) if in_text_node => {
-                current_text.push_str(&decode_chart_text_lossless(e));
+                current_text.push_str(&crate::decode::decode_text_lossy(e));
             }
             Ok(quick_xml::events::Event::Eof) => break,
             Err(e) => return Err(Error::XmlParse(e.to_string())),
@@ -246,12 +246,6 @@ pub fn parse_chart_xml(xml: &str) -> Result<ChartData> {
     }
 
     Ok(chart_data)
-}
-
-fn decode_chart_text_lossless(e: &quick_xml::events::BytesText<'_>) -> String {
-    e.unescape()
-        .map(|text| text.into_owned())
-        .unwrap_or_else(|_| String::from_utf8_lossy(e.as_ref()).into_owned())
 }
 
 #[cfg(test)]
@@ -557,5 +551,28 @@ mod tests {
         assert_eq!(format_number(8.300000), "8.3");
         assert_eq!(format_number(12.345678), "12.345678");
         assert_eq!(format_number(12.3456789), "12.3456789");
+    }
+
+    #[test]
+    fn test_chart_text_mixed_entities_preserve_legitimate_and_malformed() {
+        let chart_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart">
+  <c:chart><c:title><c:tx><c:rich>
+    <a:p xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+      <a:r><a:t>A &amp; B &bogus; C</a:t></a:r>
+    </a:p>
+  </c:rich></c:tx></c:title></c:chart>
+</c:chartSpace>"#;
+
+        let data = parse_chart_xml(chart_xml).expect("chart parses");
+        let title = data.title.expect("title extracted");
+        assert!(
+            title.contains("A & B &bogus; C"),
+            "legitimate decoded + malformed preserved; got {title:?}"
+        );
+        assert!(
+            !title.contains("A &amp; B"),
+            "legitimate entity must not remain escaped; got {title:?}"
+        );
     }
 }
