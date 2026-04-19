@@ -28,12 +28,6 @@ struct BuildSheetCellContext<'a> {
     is_header: bool,
 }
 
-fn decode_spreadsheet_text_lossless(e: &quick_xml::events::BytesText<'_>) -> String {
-    e.unescape()
-        .map(|text| text.into_owned())
-        .unwrap_or_else(|_| String::from_utf8_lossy(e.as_ref()).into_owned())
-}
-
 /// Parser for XLSX (Excel) workbooks.
 pub struct XlsxParser {
     container: OoxmlContainer,
@@ -389,7 +383,7 @@ impl XlsxParser {
                     _ => {}
                 },
                 Ok(quick_xml::events::Event::Text(ref e)) if in_value => {
-                    let text = decode_spreadsheet_text_lossless(e);
+                    let text = crate::decode::decode_text_lossy(e);
                     current_cell_value.push_str(&text);
                 }
                 Ok(quick_xml::events::Event::End(ref e)) => match e.name().as_ref() {
@@ -717,7 +711,7 @@ impl XlsxParser {
                     }
                 }
                 Ok(quick_xml::events::Event::Text(ref e)) if in_t => {
-                    let text = decode_spreadsheet_text_lossless(e);
+                    let text = crate::decode::decode_text_lossy(e);
                     if !current_text.is_empty() {
                         current_text.push(' ');
                     }
@@ -2084,5 +2078,68 @@ mod tests {
         // Verify path resolution
         let resolved = XlsxParser::resolve_relative_path("xl/worksheets", target);
         assert_eq!(resolved, "xl/comments1.xml");
+    }
+
+    #[test]
+    fn test_xlsx_inline_str_mixed_entities_preserve_legitimate_and_malformed() {
+        use std::io::Write;
+
+        let mut buf = Vec::new();
+        {
+            let cursor = std::io::Cursor::new(&mut buf);
+            let mut zip = zip::ZipWriter::new(cursor);
+            let options =
+                zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+
+            zip.start_file("[Content_Types].xml", options).unwrap();
+            zip.write_all(br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+</Types>"#).unwrap();
+
+            zip.start_file("_rels/.rels", options).unwrap();
+            zip.write_all(br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>"#).unwrap();
+
+            zip.start_file("xl/_rels/workbook.xml.rels", options).unwrap();
+            zip.write_all(br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+</Relationships>"#).unwrap();
+
+            zip.start_file("xl/workbook.xml", options).unwrap();
+            zip.write_all(br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+          xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets><sheet name="S1" sheetId="1" r:id="rId1"/></sheets>
+</workbook>"#).unwrap();
+
+            zip.start_file("xl/worksheets/sheet1.xml", options).unwrap();
+            zip.write_all(br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    <row r="1"><c r="A1" t="str"><v>A &amp; B &bogus; C</v></c></row>
+  </sheetData>
+</worksheet>"#).unwrap();
+
+            zip.finish().unwrap();
+        }
+
+        let mut parser = XlsxParser::from_bytes(buf).expect("parser opens");
+        let doc = parser.parse().expect("document parses");
+        let text = doc.plain_text();
+        assert!(
+            text.contains("A & B &bogus; C"),
+            "expected legitimate decoded + malformed preserved; got {text:?}"
+        );
+        assert!(
+            !text.contains("A &amp; B"),
+            "legitimate entity must not remain escaped; got {text:?}"
+        );
     }
 }
