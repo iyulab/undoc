@@ -155,11 +155,11 @@ mod tests {
 
     #[test]
     fn slow_path_stray_ampersand_then_legitimate_entity() {
-        // The `&` in "R&D" is a stray (no `;` within MAX_ENTITY_LEN... no
-        // wait, `;` of "&amp;" is within the window). A naive greedy
-        // scanner would consume "&D &amp;" as one failing token and lose
-        // the legitimate decoding. Correct behavior: preserve the `&` raw
-        // and re-scan to decode `&amp;` on its own.
+        // The `&` in "R&D" is a stray, and the `;` of the following
+        // `&amp;` falls within its lookahead window. A naive greedy
+        // scanner would consume "&D &amp;" as one failing token and
+        // lose the legitimate decoding. Correct behavior: preserve the
+        // stray `&` raw and re-scan so `&amp;` decodes on its own.
         assert_eq!(lenient_unescape("R&D &amp; tail"), "R&D & tail");
     }
 
