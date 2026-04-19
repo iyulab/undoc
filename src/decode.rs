@@ -103,7 +103,6 @@ pub(crate) fn decode_text_lossy(text: &BytesText<'_>) -> String {
 /// Intended for metadata and other paths where invalid UTF-8 must surface as
 /// `Error::XmlParse` with a location context rather than be silently
 /// replaced.
-#[allow(dead_code)] // wired into container.rs::metadata_text_or_raw in Task 11
 pub(crate) fn decode_text_strict(
     text: &BytesText<'_>,
     location: &str,

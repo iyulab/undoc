@@ -510,12 +510,7 @@ impl OoxmlContainer {
 }
 
 fn metadata_text_or_raw(text: &quick_xml::events::BytesText<'_>, location: &str) -> Result<String> {
-    match text.unescape() {
-        Ok(value) => Ok(value.into_owned()),
-        Err(_) => std::str::from_utf8(text.as_ref())
-            .map(|raw| raw.to_string())
-            .map_err(|err| Error::xml_parse_with_context(err.to_string(), location)),
-    }
+    crate::decode::decode_text_strict(text, location)
 }
 
 fn parse_relationship_element(
