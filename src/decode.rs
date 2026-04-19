@@ -8,6 +8,8 @@ use std::borrow::Cow;
 
 use quick_xml::events::BytesText;
 
+use crate::error::{Error, Result};
+
 /// Maximum bytes after a stray `&` to search for a closing `;` in the slow
 /// path. Covers the longest XML-spec-supported reference
 /// (`&#x10FFFF;` = 10 bytes) with headroom. HTML5 named entities are
@@ -96,6 +98,21 @@ fn lenient_slow_path(input: &str) -> String {
 pub(crate) fn decode_text_lossy(text: &BytesText<'_>) -> String {
     let raw = String::from_utf8_lossy(text.as_ref());
     lenient_unescape(raw.as_ref()).into_owned()
+}
+
+/// Decode a `BytesText` event into an owned `String`, requiring valid UTF-8.
+///
+/// Intended for metadata and other paths where invalid UTF-8 must surface as
+/// `Error::XmlParse` with a location context rather than be silently
+/// replaced.
+#[allow(dead_code)] // wired into container.rs::metadata_text_or_raw in Task 11
+pub(crate) fn decode_text_strict(
+    text: &BytesText<'_>,
+    location: &str,
+) -> Result<String> {
+    let raw = std::str::from_utf8(text.as_ref())
+        .map_err(|err| Error::xml_parse_with_context(err.to_string(), location))?;
+    Ok(lenient_unescape(raw).into_owned())
 }
 
 #[cfg(test)]
