@@ -58,18 +58,16 @@ impl XlsxParser {
 
     /// Create a parser from a container.
     fn from_container(container: OoxmlContainer) -> Result<Self> {
-        // Parse shared strings
-        let shared_strings = if let Ok(xml) = container.read_xml("xl/sharedStrings.xml") {
-            SharedStrings::parse(&xml)?
-        } else {
-            SharedStrings::default()
+        // Parse shared strings — absent is OK, malformed bytes must surface.
+        let shared_strings = match container.read_xml_optional("xl/sharedStrings.xml")? {
+            Some(xml) => SharedStrings::parse(&xml)?,
+            None => SharedStrings::default(),
         };
 
-        // Parse styles for number formats
-        let styles = if let Ok(xml) = container.read_xml("xl/styles.xml") {
-            Styles::parse(&xml)
-        } else {
-            Styles::default()
+        // Parse styles for number formats — absent is OK, malformed bytes must surface.
+        let styles = match container.read_xml_optional("xl/styles.xml")? {
+            Some(xml) => Styles::parse(&xml),
+            None => Styles::default(),
         };
 
         // Parse workbook relationships
@@ -173,7 +171,10 @@ impl XlsxParser {
                     format!("xl/{}", target)
                 };
 
-                if let Ok(xml) = self.container.read_xml(&sheet_path) {
+                // Sheet file: missing leaves the section empty, but malformed
+                // bytes must surface so sheet content corruption is not silently
+                // dropped.
+                if let Some(xml) = self.container.read_xml_optional(&sheet_path)? {
                     // Parse sheet-level relationships for hyperlinks and comments
                     let sheet_dir = sheet_path.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
                     let sheet_rels = self.read_optional_relationships_for_part(&sheet_path)?;
@@ -181,7 +182,7 @@ impl XlsxParser {
 
                     // Find comments relationship and parse comments XML
                     let comment_map =
-                        Self::find_and_parse_comments(&self.container, &sheet_rels, sheet_dir);
+                        Self::find_and_parse_comments(&self.container, &sheet_rels, sheet_dir)?;
 
                     let table = self.parse_sheet(&xml, &hyperlink_map, &comment_map)?;
                     section.add_block(Block::Table(table));
@@ -753,22 +754,26 @@ impl XlsxParser {
     }
 
     /// Find the comments file for a sheet via its relationships, read it, and parse.
+    ///
+    /// A missing comments part is treated as "no comments", but malformed
+    /// content surfaces as `Error::Encoding` / other read errors so corruption
+    /// is never silently dropped.
     fn find_and_parse_comments(
         container: &OoxmlContainer,
         sheet_rels: &HashMap<String, (String, String)>,
         sheet_dir: &str,
-    ) -> HashMap<String, String> {
+    ) -> Result<HashMap<String, String>> {
         // Look for a relationship whose type contains "comments"
         for (rel_type, target) in sheet_rels.values() {
             if !rel_type.contains("comments") {
                 continue;
             }
             let comments_path = Self::resolve_relative_path(sheet_dir, target);
-            if let Ok(comments_xml) = container.read_xml(&comments_path) {
-                return Self::parse_comments_xml(&comments_xml);
+            if let Some(comments_xml) = container.read_xml_optional(&comments_path)? {
+                return Ok(Self::parse_comments_xml(&comments_xml));
             }
         }
-        HashMap::new()
+        Ok(HashMap::new())
     }
 
     /// Parse drawing images linked to a sheet.
@@ -810,8 +815,9 @@ impl XlsxParser {
                 continue;
             }
 
-            // Step 3: Parse drawing XML for pic elements with a:blip references
-            if let Ok(xml) = self.container.read_xml(&drawing_path) {
+            // Step 3: Parse drawing XML for pic elements with a:blip references.
+            // Missing drawing XML is OK; malformed bytes must surface.
+            if let Some(xml) = self.container.read_xml_optional(&drawing_path)? {
                 if let Ok(images) = Self::parse_drawing_images(&xml, &drawing_rels) {
                     all_images.extend(images);
                 }
@@ -1584,6 +1590,66 @@ mod tests {
             matches!(err, Error::Encoding(_)),
             "expected Error::Encoding, got {err:?}"
         );
+    }
+
+    fn create_minimal_xlsx_with_malformed_optional_part(extra_part_path: &str) -> Vec<u8> {
+        use std::io::{Cursor, Write};
+        use zip::write::SimpleFileOptions;
+
+        let buf = Cursor::new(Vec::new());
+        let mut zip = zip::ZipWriter::new(buf);
+        let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+
+        zip.start_file("[Content_Types].xml", options).unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+</Types>"#).unwrap();
+
+        zip.start_file("_rels/.rels", options).unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>"#).unwrap();
+
+        zip.start_file("xl/_rels/workbook.xml.rels", options)
+            .unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+</Relationships>"#).unwrap();
+
+        zip.start_file("xl/workbook.xml", options).unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheets/>
+</workbook>"#)
+            .unwrap();
+
+        zip.start_file(extra_part_path, options).unwrap();
+        zip.write_all(b"<?xml version=\"1.0\"?><root>Caf\xe9</root>")
+            .unwrap();
+
+        zip.finish().unwrap().into_inner()
+    }
+
+    #[test]
+    fn test_xlsx_non_utf8_optional_parts_surface_encoding_error() {
+        // Optional XLSX parts (shared strings, styles) with malformed byte
+        // content must surface Error::Encoding instead of being silently
+        // treated as absent.
+        for part_path in &["xl/sharedStrings.xml", "xl/styles.xml"] {
+            let data = create_minimal_xlsx_with_malformed_optional_part(part_path);
+            let err = match XlsxParser::from_bytes(data) {
+                Ok(_) => panic!("malformed {part_path} must surface Error::Encoding"),
+                Err(err) => err,
+            };
+            assert!(
+                matches!(err, Error::Encoding(_)),
+                "expected Error::Encoding for {part_path}, got {err:?}"
+            );
+        }
     }
 
     #[test]

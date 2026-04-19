@@ -266,6 +266,20 @@ impl OoxmlContainer {
         Ok(content)
     }
 
+    /// Read an optional XML part.
+    ///
+    /// Returns `Ok(None)` when the part is absent (`Error::MissingComponent`),
+    /// but surfaces any other error — including `Error::Encoding` for malformed
+    /// byte content — so that corrupted optional parts are never silently
+    /// degraded into a valid-empty result.
+    pub fn read_xml_optional(&self, path: &str) -> Result<Option<String>> {
+        match self.read_xml(path) {
+            Ok(content) => Ok(Some(content)),
+            Err(Error::MissingComponent(_)) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
     /// Read a binary file from the archive.
     pub fn read_binary(&self, path: &str) -> Result<Vec<u8>> {
         let mut archive = self.archive.borrow_mut();

@@ -41,18 +41,16 @@ impl DocxParser {
 
     /// Create a parser from a container.
     fn from_container(container: OoxmlContainer) -> Result<Self> {
-        // Parse styles
-        let styles = if let Ok(xml) = container.read_xml("word/styles.xml") {
-            StyleMap::parse(&xml)?
-        } else {
-            StyleMap::default()
+        // Parse styles — absent is OK, malformed bytes must surface.
+        let styles = match container.read_xml_optional("word/styles.xml")? {
+            Some(xml) => StyleMap::parse(&xml)?,
+            None => StyleMap::default(),
         };
 
-        // Parse numbering
-        let numbering = if let Ok(xml) = container.read_xml("word/numbering.xml") {
-            NumberingMap::parse(&xml)?
-        } else {
-            NumberingMap::default()
+        // Parse numbering — absent is OK, malformed bytes must surface.
+        let numbering = match container.read_xml_optional("word/numbering.xml")? {
+            Some(xml) => NumberingMap::parse(&xml)?,
+            None => NumberingMap::default(),
         };
 
         // Parse document relationships when present.
@@ -62,18 +60,16 @@ impl DocxParser {
         // such as images, charts, headers/footers, and hyperlinks.
         let relationships = container.read_optional_relationships_for_part("word/document.xml")?;
 
-        // Parse footnotes
-        let footnotes = if let Ok(xml) = container.read_xml("word/footnotes.xml") {
-            parse_notes_xml(&xml, b"w:footnote")
-        } else {
-            HashMap::new()
+        // Parse footnotes — absent is OK, malformed bytes must surface.
+        let footnotes = match container.read_xml_optional("word/footnotes.xml")? {
+            Some(xml) => parse_notes_xml(&xml, b"w:footnote"),
+            None => HashMap::new(),
         };
 
-        // Parse endnotes
-        let endnotes = if let Ok(xml) = container.read_xml("word/endnotes.xml") {
-            parse_notes_xml(&xml, b"w:endnote")
-        } else {
-            HashMap::new()
+        // Parse endnotes — absent is OK, malformed bytes must surface.
+        let endnotes = match container.read_xml_optional("word/endnotes.xml")? {
+            Some(xml) => parse_notes_xml(&xml, b"w:endnote"),
+            None => HashMap::new(),
         };
 
         Ok(Self {
@@ -411,14 +407,14 @@ impl DocxParser {
 
         // Resolve and parse header/footer from sectPr references
         if let Some(rid) = default_header_rid {
-            if let Some(paragraphs) = self.parse_header_footer_by_rid(&rid) {
+            if let Some(paragraphs) = self.parse_header_footer_by_rid(&rid)? {
                 if !paragraphs.is_empty() {
                     section.header = Some(paragraphs);
                 }
             }
         }
         if let Some(rid) = default_footer_rid {
-            if let Some(paragraphs) = self.parse_header_footer_by_rid(&rid) {
+            if let Some(paragraphs) = self.parse_header_footer_by_rid(&rid)? {
                 if !paragraphs.is_empty() {
                     section.footer = Some(paragraphs);
                 }
@@ -429,11 +425,19 @@ impl DocxParser {
     }
 
     /// Resolve a relationship ID to a header/footer XML path and parse its paragraphs.
-    fn parse_header_footer_by_rid(&self, rid: &str) -> Option<Vec<Paragraph>> {
-        let rel = self.relationships.get(rid)?;
+    ///
+    /// Returns `Ok(None)` when the relationship is absent or the target part is
+    /// missing, but surfaces malformed content (e.g. `Error::Encoding`) so that
+    /// corrupted header/footer parts are not silently dropped.
+    fn parse_header_footer_by_rid(&self, rid: &str) -> Result<Option<Vec<Paragraph>>> {
+        let Some(rel) = self.relationships.get(rid) else {
+            return Ok(None);
+        };
         let path = OoxmlContainer::resolve_path("word/document.xml", &rel.target);
-        let xml = self.container.read_xml(&path).ok()?;
-        Some(parse_header_footer_xml(&xml))
+        match self.container.read_xml_optional(&path)? {
+            Some(xml) => Ok(Some(parse_header_footer_xml(&xml))),
+            None => Ok(None),
+        }
     }
 
     /// Parse a single paragraph element.
@@ -2353,6 +2357,68 @@ mod tests {
         zip.write_all(document_xml.as_bytes()).unwrap();
 
         zip.finish().unwrap().into_inner()
+    }
+
+    /// Build a minimal DOCX with a single extra optional part containing
+    /// CP-1252 bytes (e.g. raw `Café`), which is valid XML syntactically but
+    /// not valid UTF-8 / UTF-16. Used to verify that `read_xml_optional`
+    /// surfaces `Error::Encoding` rather than silently treating the part as
+    /// absent.
+    fn create_minimal_docx_with_malformed_optional_part(extra_part_path: &str) -> Vec<u8> {
+        use std::io::{Cursor, Write};
+        let buf = Cursor::new(Vec::new());
+        let mut zip = zip::ZipWriter::new(buf);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+
+        zip.start_file("[Content_Types].xml", options).unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>"#).unwrap();
+
+        zip.start_file("_rels/.rels", options).unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>"#).unwrap();
+
+        zip.start_file("word/document.xml", options).unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body><w:p/></w:body>
+</w:document>"#).unwrap();
+
+        zip.start_file(extra_part_path, options).unwrap();
+        zip.write_all(b"<?xml version=\"1.0\"?><root>Caf\xe9</root>")
+            .unwrap();
+
+        zip.finish().unwrap().into_inner()
+    }
+
+    #[test]
+    fn test_docx_non_utf8_optional_parts_surface_encoding_error() {
+        // Optional DOCX parts with malformed (non-UTF-8/UTF-16) byte content
+        // must surface Error::Encoding instead of being silently dropped as
+        // if the part were absent.
+        for part_path in &[
+            "word/styles.xml",
+            "word/numbering.xml",
+            "word/footnotes.xml",
+            "word/endnotes.xml",
+        ] {
+            let data = create_minimal_docx_with_malformed_optional_part(part_path);
+            let err = match DocxParser::from_bytes(data) {
+                Ok(_) => panic!("malformed {part_path} must surface Error::Encoding"),
+                Err(err) => err,
+            };
+            assert!(
+                matches!(err, Error::Encoding(_)),
+                "expected Error::Encoding for {part_path}, got {err:?}"
+            );
+        }
     }
 
     fn empty_test_parser() -> DocxParser {

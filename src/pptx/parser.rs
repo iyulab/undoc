@@ -155,7 +155,10 @@ impl PptxParser {
                 // Parse slide-specific relationships for hyperlinks and images
                 let slide_rels = self.parse_slide_relationships(&slide_path)?;
 
-                if let Ok(xml) = self.container.read_xml(&slide_path) {
+                // Slide XML: missing leaves the section empty, but malformed
+                // bytes must surface so slide content corruption is not
+                // silently dropped.
+                if let Some(xml) = self.container.read_xml_optional(&slide_path)? {
                     let blocks =
                         self.parse_slide_content_with_rels(&xml, &slide_rels, &slide_path)?;
                     for block in blocks {
@@ -163,11 +166,12 @@ impl PptxParser {
                     }
                 }
 
-                // Try to parse notes for this slide
+                // Try to parse notes for this slide. Missing notes part is
+                // OK, but malformed bytes surface.
                 let notes_path = slide_path
                     .replace("slides/slide", "notesSlides/notesSlide")
                     .replace("slides\\slide", "notesSlides\\notesSlide");
-                if let Ok(xml) = self.container.read_xml(&notes_path) {
+                if let Some(xml) = self.container.read_xml_optional(&notes_path)? {
                     // Parse notes relationships too
                     let notes_rels = self.parse_slide_relationships(&notes_path)?;
                     let notes = self.parse_notes_with_rels(&xml, &notes_rels)?;
@@ -1853,6 +1857,102 @@ mod tests {
             matches!(err, Error::Encoding(_)),
             "expected Error::Encoding, got {err:?}"
         );
+    }
+
+    fn create_minimal_pptx_with_malformed_part(malformed_part_path: &str) -> Vec<u8> {
+        use std::io::{Cursor, Write};
+        let buf = Cursor::new(Vec::new());
+        let mut zip = zip::ZipWriter::new(buf);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+
+        zip.start_file("[Content_Types].xml", options).unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>
+  <Override PartName="/ppt/slides/slide1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>
+  <Override PartName="/ppt/notesSlides/notesSlide1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.notesSlide+xml"/>
+</Types>"#).unwrap();
+
+        zip.start_file("_rels/.rels", options).unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="ppt/presentation.xml"/>
+</Relationships>"#).unwrap();
+
+        zip.start_file("ppt/_rels/presentation.xml.rels", options)
+            .unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide1.xml"/>
+</Relationships>"#).unwrap();
+
+        zip.start_file("ppt/presentation.xml", options).unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+<p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
+                xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <p:sldIdLst>
+    <p:sldId id="256" r:id="rId1"/>
+  </p:sldIdLst>
+</p:presentation>"#).unwrap();
+
+        zip.start_file("ppt/slides/_rels/slide1.xml.rels", options)
+            .unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+</Relationships>"#).unwrap();
+
+        let valid_slide = br#"<?xml version="1.0" encoding="UTF-8"?>
+<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+       xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
+  <p:cSld><p:spTree/></p:cSld>
+</p:sld>"#;
+        let valid_notes = br#"<?xml version="1.0" encoding="UTF-8"?>
+<p:notes xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+         xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
+  <p:cSld><p:spTree/></p:cSld>
+</p:notes>"#;
+        let malformed = b"<?xml version=\"1.0\"?><root>Caf\xe9</root>";
+
+        zip.start_file("ppt/slides/slide1.xml", options).unwrap();
+        if malformed_part_path == "ppt/slides/slide1.xml" {
+            zip.write_all(malformed).unwrap();
+        } else {
+            zip.write_all(valid_slide).unwrap();
+        }
+
+        zip.start_file("ppt/notesSlides/notesSlide1.xml", options)
+            .unwrap();
+        if malformed_part_path == "ppt/notesSlides/notesSlide1.xml" {
+            zip.write_all(malformed).unwrap();
+        } else {
+            zip.write_all(valid_notes).unwrap();
+        }
+
+        zip.finish().unwrap().into_inner()
+    }
+
+    #[test]
+    fn test_pptx_non_utf8_optional_parts_surface_encoding_error() {
+        // Slide and notes parts with malformed (non-UTF-8/UTF-16) byte content
+        // must surface Error::Encoding instead of being silently dropped.
+        for part_path in &[
+            "ppt/slides/slide1.xml",
+            "ppt/notesSlides/notesSlide1.xml",
+        ] {
+            let data = create_minimal_pptx_with_malformed_part(part_path);
+            let mut parser = PptxParser::from_bytes(data).expect("constructor must succeed");
+            let err = match parser.parse() {
+                Ok(_) => panic!("malformed {part_path} must surface Error::Encoding"),
+                Err(err) => err,
+            };
+            assert!(
+                matches!(err, Error::Encoding(_)),
+                "expected Error::Encoding for {part_path}, got {err:?}"
+            );
+        }
     }
 
     #[test]
