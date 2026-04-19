@@ -1,12 +1,7 @@
 //! XLSX shared strings parsing.
 
+use crate::decode::decode_text_lossy;
 use crate::error::{Error, Result};
-
-fn decode_shared_text_lossless(e: &quick_xml::events::BytesText<'_>) -> String {
-    e.unescape()
-        .map(|text| text.into_owned())
-        .unwrap_or_else(|_| String::from_utf8_lossy(e.as_ref()).into_owned())
-}
 
 /// Shared strings table.
 #[derive(Debug, Clone, Default)]
@@ -42,7 +37,7 @@ impl SharedStrings {
                     _ => {}
                 },
                 Ok(quick_xml::events::Event::Text(e)) if in_t => {
-                    let text = decode_shared_text_lossless(&e);
+                    let text = decode_text_lossy(&e);
                     current_text.push_str(&text);
                 }
                 Ok(quick_xml::events::Event::End(e)) => match e.name().as_ref() {
@@ -130,5 +125,17 @@ mod tests {
 
         let ss = SharedStrings::parse(xml).unwrap();
         assert_eq!(ss.get(0), Some("Hello &bogus; World"));
+    }
+
+    #[test]
+    fn test_shared_strings_mixed_entities_preserve_legitimate_and_malformed() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="1" uniqueCount="1">
+  <si><t>A &amp; B &bogus; C</t></si>
+</sst>"#;
+
+        let table = SharedStrings::parse(xml).expect("parse succeeds");
+        let s = table.get(0).expect("index 0 exists");
+        assert_eq!(s, "A & B &bogus; C");
     }
 }
