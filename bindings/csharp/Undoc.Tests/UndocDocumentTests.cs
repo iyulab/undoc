@@ -213,15 +213,8 @@ internal static class NativeTestSupport
             if (_prepared)
                 return _stagedLibraryPath!;
 
-            var builtLibrary = Path.Combine(RepoRoot, "target", "release", NativeLibraryFileName);
-            Assert.True(
-                File.Exists(builtLibrary),
-                $"Expected native library at {builtLibrary}. Run `cargo build --release --features ffi` first.");
-
             var runtimeId = NativeMethods.GetRuntimeIdentifierForCurrentPlatform();
             Assert.False(string.IsNullOrEmpty(runtimeId), "Native test runtime identifier should resolve on supported test platforms.");
-
-            DeleteIfExists(Path.Combine(AppContext.BaseDirectory, NativeLibraryFileName));
 
             var destination = Path.Combine(
                 AppContext.BaseDirectory,
@@ -229,8 +222,26 @@ internal static class NativeTestSupport
                 runtimeId!,
                 "native",
                 NativeLibraryFileName);
-            Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
-            File.Copy(builtLibrary, destination, overwrite: true);
+
+            DeleteLooseCopies();
+
+            // CI path: the workflow stages the native library directly at
+            // the shipping runtime layout before the tests run.
+            // Local-dev path: build target/release/<libname> via
+            // `cargo build --release --features ffi`, then stage it here.
+            if (!File.Exists(destination))
+            {
+                var builtLibrary = Path.Combine(RepoRoot, "target", "release", NativeLibraryFileName);
+                Assert.True(
+                    File.Exists(builtLibrary),
+                    $"Native library not found at shipping path ({destination}) or local build ({builtLibrary}). "
+                    + "In CI, the bindings workflow stages the library at runtimes/<rid>/native/. "
+                    + "Locally, run `cargo build --release --features ffi` first.");
+
+                Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+                File.Copy(builtLibrary, destination, overwrite: true);
+            }
+
             _stagedLibraryPath = destination;
             _prepared = true;
             return destination;
@@ -295,12 +306,6 @@ internal static class NativeTestSupport
         var entry = zip.CreateEntry(path, CompressionLevel.NoCompression);
         using var writer = new StreamWriter(entry.Open(), new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
         writer.Write(content);
-    }
-
-    private static void DeleteIfExists(string path)
-    {
-        if (File.Exists(path))
-            File.Delete(path);
     }
 
     private static string RepoRoot =>

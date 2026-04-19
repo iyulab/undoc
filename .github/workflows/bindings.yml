@@ -314,29 +314,36 @@ jobs:
         working-directory: bindings/csharp
         run: dotnet build Undoc.Tests/Undoc.Tests.csproj -c Release
 
-      - name: Copy native library to test output (Unix)
+      - name: Stage native library at shipping runtime path (Unix)
         if: matrix.os != 'windows-latest'
         shell: bash
         run: |
+          # NativeLibraryTests asserts the library is loaded from the
+          # runtimes/<rid>/native/ shipping layout (not a flat copy).
+          # Staging to that location in CI matches the local-dev behavior
+          # of NativeTestSupport.EnsureNativeLibraryPrepared().
           find bindings/csharp/Undoc.Tests/bin/Release -type d -name "net*" | while read dir; do
-            cp ./native-lib/* "$dir/"
-            echo "Copied native library to $dir"
-            ls -la "$dir"
+            runtime_dir="$dir/runtimes/${{ matrix.runtime }}/native"
+            mkdir -p "$runtime_dir"
+            cp ./native-lib/* "$runtime_dir/"
+            echo "Staged native library at $runtime_dir"
+            ls -la "$runtime_dir"
           done
 
-      - name: Copy native library to test output (Windows)
+      - name: Stage native library at shipping runtime path (Windows)
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
-          # On Windows, native undoc.dll conflicts with managed Undoc.dll (case-insensitive)
-          # Rename to undoc_native.dll to avoid overwriting the managed assembly
+          # Stage the native undoc.dll under runtimes/<rid>/native/ so it
+          # does not collide with the managed Undoc.dll at the flat bin
+          # root (case-insensitive Windows filesystem).
           Get-ChildItem -Path "bindings/csharp/Undoc.Tests/bin/Release" -Directory -Recurse | Where-Object { $_.Name -like "net*" } | ForEach-Object {
+            $runtimeDir = Join-Path $_.FullName "runtimes/${{ matrix.runtime }}/native"
+            New-Item -ItemType Directory -Path $runtimeDir -Force | Out-Null
             $srcFile = Get-ChildItem "./native-lib/*" | Select-Object -First 1
-            $destFile = Join-Path $_.FullName "undoc_native.dll"
+            $destFile = Join-Path $runtimeDir "undoc.dll"
             Copy-Item $srcFile.FullName -Destination $destFile -Force
-            Write-Host "Copied native library to $destFile"
-            Write-Host "Test output directory (Undoc files):"
-            Get-ChildItem $_.FullName | Where-Object { $_.Name -like "Undoc*" -or $_.Name -like "undoc*" }
+            Write-Host "Staged native library at $destFile"
           }
 
       - name: Run tests
