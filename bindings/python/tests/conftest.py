@@ -30,6 +30,13 @@ def _built_native_library_path() -> Path:
 
 
 def _configure_python_path() -> None:
+    # Only prepend the source tree to sys.path for local development where
+    # the caller has also built the native library at target/release. In
+    # CI's test-python job, the installed wheel bundles the native library
+    # under its own package dir and must not be shadowed by a bare source
+    # tree (which has no `lib/` populated in a fresh checkout).
+    if not _built_native_library_path().exists():
+        return
     python_src = str(_python_src_dir())
     if python_src not in sys.path:
         sys.path.insert(0, python_src)
