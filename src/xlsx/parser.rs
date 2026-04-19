@@ -89,56 +89,51 @@ impl XlsxParser {
     /// Parse workbook.xml for sheet info.
     fn parse_workbook(container: &OoxmlContainer) -> Result<Vec<SheetInfo>> {
         let mut sheets = Vec::new();
+        let xml = container.read_xml("xl/workbook.xml")?;
 
-        match container.read_xml("xl/workbook.xml") {
-            Ok(xml) => {
-                let mut reader = quick_xml::Reader::from_str(&xml);
-                reader.config_mut().trim_text(true);
+        let mut reader = quick_xml::Reader::from_str(&xml);
+        reader.config_mut().trim_text(true);
 
-                let mut buf = Vec::new();
+        let mut buf = Vec::new();
 
-                loop {
-                    match reader.read_event_into(&mut buf) {
-                        Ok(quick_xml::events::Event::Empty(e))
-                        | Ok(quick_xml::events::Event::Start(e))
-                            if e.name().as_ref() == b"sheet" =>
-                        {
-                            let mut name = String::new();
-                            let mut sheet_id = String::new();
-                            let mut rel_id = String::new();
+        loop {
+            match reader.read_event_into(&mut buf) {
+                Ok(quick_xml::events::Event::Empty(e))
+                | Ok(quick_xml::events::Event::Start(e))
+                    if e.name().as_ref() == b"sheet" =>
+                {
+                    let mut name = String::new();
+                    let mut sheet_id = String::new();
+                    let mut rel_id = String::new();
 
-                            for attr in e.attributes().flatten() {
-                                match attr.key.as_ref() {
-                                    b"name" => {
-                                        name = String::from_utf8_lossy(&attr.value).to_string();
-                                    }
-                                    b"sheetId" => {
-                                        sheet_id = String::from_utf8_lossy(&attr.value).to_string();
-                                    }
-                                    b"r:id" => {
-                                        rel_id = String::from_utf8_lossy(&attr.value).to_string();
-                                    }
-                                    _ => {}
-                                }
+                    for attr in e.attributes().flatten() {
+                        match attr.key.as_ref() {
+                            b"name" => {
+                                name = String::from_utf8_lossy(&attr.value).to_string();
                             }
-
-                            if !name.is_empty() {
-                                sheets.push(SheetInfo {
-                                    name,
-                                    sheet_id,
-                                    rel_id,
-                                });
+                            b"sheetId" => {
+                                sheet_id = String::from_utf8_lossy(&attr.value).to_string();
                             }
+                            b"r:id" => {
+                                rel_id = String::from_utf8_lossy(&attr.value).to_string();
+                            }
+                            _ => {}
                         }
-                        Ok(quick_xml::events::Event::Eof) => break,
-                        Err(e) => return Err(Error::XmlParse(e.to_string())),
-                        _ => {}
                     }
-                    buf.clear();
+
+                    if !name.is_empty() {
+                        sheets.push(SheetInfo {
+                            name,
+                            sheet_id,
+                            rel_id,
+                        });
+                    }
                 }
+                Ok(quick_xml::events::Event::Eof) => break,
+                Err(e) => return Err(Error::XmlParse(e.to_string())),
+                _ => {}
             }
-            Err(Error::MissingComponent(_)) => {}
-            Err(err) => return Err(err),
+            buf.clear();
         }
 
         Ok(sheets)
@@ -2158,5 +2153,62 @@ mod tests {
             !text.contains("A &amp; B"),
             "legitimate entity must not remain escaped; got {text:?}"
         );
+    }
+
+    #[test]
+    fn test_xlsx_missing_workbook_surfaces_missing_component() {
+        use std::io::Write;
+
+        let mut buf = Vec::new();
+        {
+            let cursor = std::io::Cursor::new(&mut buf);
+            let mut zip = zip::ZipWriter::new(cursor);
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+
+            zip.start_file("[Content_Types].xml", options).unwrap();
+            zip.write_all(
+                br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+</Types>"#,
+            )
+            .unwrap();
+
+            zip.start_file("_rels/.rels", options).unwrap();
+            zip.write_all(
+                br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>"#,
+            )
+            .unwrap();
+
+            // xl/workbook.xml INTENTIONALLY ABSENT.
+            // xl/_rels/workbook.xml.rels must be present — otherwise the earlier
+            // read_required_relationships_for_part call in from_container would
+            // fail first, masking the workbook-missing error we're testing.
+            zip.start_file("xl/_rels/workbook.xml.rels", options)
+                .unwrap();
+            zip.write_all(
+                br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/>"#,
+            )
+            .unwrap();
+
+            zip.finish().unwrap();
+        }
+
+        let err = XlsxParser::from_bytes(buf)
+            .err()
+            .expect("must fail on missing workbook");
+        match err {
+            Error::MissingComponent(path) => {
+                assert_eq!(path, "xl/workbook.xml");
+            }
+            other => panic!("expected MissingComponent(\"xl/workbook.xml\"), got {other:?}"),
+        }
     }
 }
