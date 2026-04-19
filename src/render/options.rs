@@ -271,7 +271,7 @@ mod tests {
     fn test_default_options() {
         let opts = RenderOptions::default();
         assert!(opts.image_dir.is_none());
-        assert!(opts.include_frontmatter == false);
+        assert!(!opts.include_frontmatter);
         assert_eq!(opts.table_fallback, TableFallback::Markdown);
         // Default max_heading_level is 4 (not 6) because Office documents
         // often misuse deep heading levels for visual styling

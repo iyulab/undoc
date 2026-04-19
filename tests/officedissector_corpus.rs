@@ -12,7 +12,7 @@ use undoc::{parse_bytes, Document, Result};
 
 /// Helper to run extraction and verify basic success
 fn extract_and_verify(path: &str) -> Result<Document> {
-    let data = fs::read(path).map_err(|e| undoc::Error::Io(e))?;
+    let data = fs::read(path).map_err(undoc::Error::Io)?;
     let result = parse_bytes(&data)?;
 
     // Basic validations - document should parse without panic

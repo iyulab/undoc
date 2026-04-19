@@ -118,7 +118,7 @@ fn bench_markdown_rendering(c: &mut Criterion) {
             &document,
             |b, doc| {
                 b.iter(|| {
-                    let options = undoc::RenderOptions::default();
+                    let options = undoc::render::RenderOptions::default();
                     let _ = undoc::render::to_markdown(black_box(doc), &options);
                 });
             },

@@ -17,8 +17,6 @@ struct DocumentStats {
     path: String,
     /// File format (docx, xlsx, pptx)
     format: String,
-    /// File size in bytes
-    file_size: usize,
     /// Parse result
     success: bool,
     /// Error message if failed
@@ -46,7 +44,7 @@ struct DocumentStats {
 }
 
 impl DocumentStats {
-    fn from_document(path: &str, doc: &Document, file_size: usize) -> Self {
+    fn from_document(path: &str, doc: &Document) -> Self {
         let format = Path::new(path)
             .extension()
             .and_then(|e| e.to_str())
@@ -56,7 +54,6 @@ impl DocumentStats {
         let mut stats = Self {
             path: path.to_string(),
             format,
-            file_size,
             success: true,
             error: None,
             section_count: doc.sections.len(),
@@ -119,7 +116,7 @@ impl DocumentStats {
         stats
     }
 
-    fn from_error(path: &str, error: &str, file_size: usize) -> Self {
+    fn from_error(path: &str, error: &str) -> Self {
         let format = Path::new(path)
             .extension()
             .and_then(|e| e.to_str())
@@ -129,7 +126,6 @@ impl DocumentStats {
         Self {
             path: path.to_string(),
             format,
-            file_size,
             success: false,
             error: Some(error.to_string()),
             ..Default::default()
@@ -172,32 +168,23 @@ fn scan_directory(dir: &Path, stats: &mut Vec<DocumentStats>) {
                     );
 
                     match fs::read(&path) {
-                        Ok(data) => {
-                            let file_size = data.len();
-                            match parse_bytes(&data) {
-                                Ok(doc) => {
-                                    stats.push(DocumentStats::from_document(
-                                        &path_str, &doc, file_size,
-                                    ));
-                                }
-                                Err(e) => {
-                                    let mut doc_stats = DocumentStats::from_error(
-                                        &path_str,
-                                        &e.to_string(),
-                                        file_size,
-                                    );
-                                    if expected_failure {
-                                        doc_stats.warnings.push("Expected failure".to_string());
-                                    }
-                                    stats.push(doc_stats);
-                                }
+                        Ok(data) => match parse_bytes(&data) {
+                            Ok(doc) => {
+                                stats.push(DocumentStats::from_document(&path_str, &doc));
                             }
-                        }
+                            Err(e) => {
+                                let mut doc_stats =
+                                    DocumentStats::from_error(&path_str, &e.to_string());
+                                if expected_failure {
+                                    doc_stats.warnings.push("Expected failure".to_string());
+                                }
+                                stats.push(doc_stats);
+                            }
+                        },
                         Err(e) => {
                             stats.push(DocumentStats::from_error(
                                 &path_str,
                                 &format!("IO error: {}", e),
-                                0,
                             ));
                         }
                     }
@@ -454,7 +441,7 @@ fn check_specific_file() {
         match fs::read(path) {
             Ok(data) => match parse_bytes(&data) {
                 Ok(doc) => {
-                    let stats = DocumentStats::from_document(path, &doc, data.len());
+                    let stats = DocumentStats::from_document(path, &doc);
                     println!("Sections: {}", stats.section_count);
                     println!("Paragraphs: {}", stats.paragraph_count);
                     println!("Tables: {}", stats.table_count);

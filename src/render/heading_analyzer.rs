@@ -861,7 +861,7 @@ mod tests {
         let config = HeadingConfig::default().with_trust_explicit(false);
         let analyzer = HeadingAnalyzer::new(config);
 
-        let paras = vec![
+        let paras = [
             make_paragraph("1. 첫째", HeadingLevel::H2),
             make_paragraph("2. 둘째", HeadingLevel::H2),
             make_paragraph("3. 셋째", HeadingLevel::H2),
@@ -884,7 +884,7 @@ mod tests {
         let analyzer = HeadingAnalyzer::new(config);
 
         // Numbered headings separated by plain text (not consecutive)
-        let paras = vec![
+        let paras = [
             make_paragraph("1. 서론", HeadingLevel::H2),
             make_paragraph("본문 내용입니다.", HeadingLevel::None),
             make_paragraph("2. 본론", HeadingLevel::H2),
