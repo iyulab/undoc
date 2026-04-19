@@ -177,6 +177,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - ID-based access pattern (vs index-based) for natural OOXML alignment
   - Enables C# object-oriented wrapper: `result.Images`, `result.Markdown`
 
+## [0.2.0] - 2026-04-19
+
+### Breaking
+
+- **Strict root-part integrity (XLSX/PPTX)**
+  - XLSX files missing `xl/workbook.xml` now return `Error::MissingComponent("xl/workbook.xml")`; previously returned an empty `Document`.
+  - PPTX files missing `ppt/presentation.xml` now return `Error::MissingComponent("ppt/presentation.xml")`; previously returned an empty `Document`.
+  - Consistent with 0.1.21 behavior for *malformed* root parts (already surfaces `Error::Encoding`). Missing root parts are the same integrity category and no longer fall through silently.
+  - Migration: if prior code relied on empty-`Document` behavior for structurally-corrupt inputs, match on `Error::MissingComponent(path)` at the call site and construct an empty `Document` explicitly.
+
+### Fixed
+
+- **Mixed-entity round-trip across all OOXML parsers**
+  - Text nodes containing both legitimate entities (e.g. `&amp;`) and malformed entities (e.g. `&bogus;`) in the same span now decode legitimate entities and preserve malformed tokens verbatim.
+  - Previously the `quick_xml::escape::unescape` all-or-nothing failure caused the whole span to fall back to raw bytes, leaving legitimate entities over-escaped.
+  - Affects DOCX body/textbox/nested tables, PPTX slide text, XLSX shared strings and inline `str` cells, chart labels, and OOXML metadata.
+
+### Added
+
+- **`src/decode.rs` module** — new crate-private module owning lenient XML entity decoding.
+  - `lenient_unescape(&str) -> Cow<'_, str>` — fast path via `quick_xml::escape::unescape`; slow path scans `&...;` tokens within a 16-byte window and decodes each independently.
+  - `decode_text_lossy(&BytesText) -> String` — content-text wrapper with `String::from_utf8_lossy` substitution.
+  - `decode_text_strict(&BytesText, location) -> Result<String>` — metadata wrapper requiring valid UTF-8, surfacing `Error::xml_parse_with_context` on failure.
+
+### Changed
+
+- **Eliminated decoder duplication** — five duplicate `decode_*_lossless` helpers across `src/docx/parser.rs`, `src/pptx/parser.rs`, `src/xlsx/parser.rs`, `src/xlsx/shared_strings.rs`, `src/charts.rs` removed. 15 call sites now route through `crate::decode::decode_text_lossy`.
+- **`container::metadata_text_or_raw`** delegates to `crate::decode::decode_text_strict`, gaining mixed-entity decoding while preserving strict-UTF-8 semantics.
+
 ## [Unreleased]
 
 ### Planned
