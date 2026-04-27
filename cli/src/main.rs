@@ -57,6 +57,21 @@ enum Commands {
         /// Apply text cleanup
         #[arg(long)]
         cleanup: Option<CleanupMode>,
+
+        /// Emit `\n\n---\n\n` for hard page breaks (default: off — markdown has
+        /// no page concept).
+        #[arg(long)]
+        emit_page_breaks: bool,
+
+        /// Include DOCX section headers/footers as blockquoted lines around
+        /// the body (default: off — they are typically page-chrome noise).
+        #[arg(long)]
+        include_headers_footers: bool,
+
+        /// Shortcut: enable both `--emit-page-breaks` and
+        /// `--include-headers-footers` (i.e. `RenderOptions::lossless()`).
+        #[arg(long)]
+        lossless: bool,
     },
 
     /// Convert a document to Markdown
@@ -84,6 +99,21 @@ enum Commands {
         /// Maximum heading level (1-6, default: 4)
         #[arg(long, default_value = "4")]
         max_heading: u8,
+
+        /// Emit `\n\n---\n\n` for hard page breaks (default: off — markdown has
+        /// no page concept).
+        #[arg(long)]
+        emit_page_breaks: bool,
+
+        /// Include DOCX section headers/footers as blockquoted lines around
+        /// the body (default: off — they are typically page-chrome noise).
+        #[arg(long)]
+        include_headers_footers: bool,
+
+        /// Shortcut: enable both `--emit-page-breaks` and
+        /// `--include-headers-footers` (i.e. `RenderOptions::lossless()`).
+        #[arg(long)]
+        lossless: bool,
     },
 
     /// Convert a document to plain text
@@ -227,7 +257,14 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     // Handle default command (undoc <file> [output])
     if cli.command.is_none() {
         if let Some(input) = cli.input {
-            return run_convert(&input, cli.output.as_ref(), cli.cleanup);
+            return run_convert(
+                &input,
+                cli.output.as_ref(),
+                cli.cleanup,
+                false,
+                false,
+                false,
+            );
         } else {
             // No input provided, show help
             use clap::CommandFactory;
@@ -241,8 +278,18 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             input,
             output,
             cleanup,
+            emit_page_breaks,
+            include_headers_footers,
+            lossless,
         } => {
-            run_convert(&input, output.as_ref(), cleanup)?;
+            run_convert(
+                &input,
+                output.as_ref(),
+                cleanup,
+                emit_page_breaks,
+                include_headers_footers,
+                lossless,
+            )?;
         }
 
         Commands::Markdown {
@@ -252,6 +299,9 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             table_mode,
             cleanup,
             max_heading,
+            emit_page_breaks,
+            include_headers_footers,
+            lossless,
         } => {
             let pb = create_spinner("Parsing document...");
 
@@ -259,7 +309,14 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             pb.set_message("Rendering to Markdown...");
 
             let heading_config = HeadingConfig::default().with_default_style_mapping();
-            let mut options = RenderOptions::new()
+            let base = if lossless {
+                RenderOptions::lossless()
+            } else {
+                RenderOptions::new()
+                    .with_emit_page_breaks(emit_page_breaks)
+                    .with_include_headers_footers(include_headers_footers)
+            };
+            let mut options = base
                 .with_frontmatter(frontmatter)
                 .with_table_fallback(table_mode.into())
                 .with_max_heading(max_heading)
@@ -293,7 +350,12 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let doc = undoc::parse_file(&input)?;
             pb.set_message("Rendering to text...");
 
-            let mut options = RenderOptions::new();
+            // Mirror Markdown/Convert: enable the heading analyzer for
+            // consistency. The text renderer currently ignores heading levels,
+            // so this is a no-op for output today, but keeps the three
+            // commands aligned for future heading-aware text rendering.
+            let heading_config = HeadingConfig::default().with_default_style_mapping();
+            let mut options = RenderOptions::new().with_heading_config(heading_config);
             if let Some(mode) = cleanup {
                 options = options.with_cleanup_preset(mode.into());
             }
@@ -434,6 +496,9 @@ fn run_convert(
     input: &PathBuf,
     output: Option<&PathBuf>,
     cleanup: Option<CleanupMode>,
+    emit_page_breaks: bool,
+    include_headers_footers: bool,
+    lossless: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Start async update check in background
     let update_rx = update::check_update_async();
@@ -462,7 +527,14 @@ fn run_convert(
 
     // Prepare render options with heading analysis enabled
     let heading_config = HeadingConfig::default().with_default_style_mapping();
-    let mut options = RenderOptions::new()
+    let base = if lossless {
+        RenderOptions::lossless()
+    } else {
+        RenderOptions::new()
+            .with_emit_page_breaks(emit_page_breaks)
+            .with_include_headers_footers(include_headers_footers)
+    };
+    let mut options = base
         .with_frontmatter(true)
         .with_heading_config(heading_config);
     if let Some(mode) = cleanup {

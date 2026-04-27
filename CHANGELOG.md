@@ -228,6 +228,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   default**, matching the default `Convert` command. Documents that style
   headings via font size + bold (no explicit `Heading` paragraph style) are
   now detected as headings on this code path too.
+- **`undoc text` (Text subcommand) now also enables the heading analyzer
+  config** for parity with `md` and `convert`. The plain-text renderer
+  currently ignores heading levels, so this is a no-op for output today; it
+  unifies the three commands' option-building so future heading-aware text
+  rendering can light up uniformly.
 
 ### Added
 
@@ -241,6 +246,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `> **…**` blockquotes instead of 1×1 markdown tables. Off by default; turn
   on only when the corpus is known to use 1×1 tables exclusively for
   callouts.
+- **CLI: `--emit-page-breaks`, `--include-headers-footers`, `--lossless`
+  flags on `undoc md` and `undoc convert`** — surface the new
+  `RenderOptions` toggles at the CLI so users can opt back into the pre-0.2.1
+  page-break / header-footer rendering without writing Rust. `--lossless` is
+  a shortcut equivalent to setting both individual toggles. Without these
+  flags the CLI follows the new 0.2.1 defaults (page breaks and
+  headers/footers off).
 
 ### Fixed
 
