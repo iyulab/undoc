@@ -98,18 +98,25 @@ fn to_markdown_standard(doc: &Document, options: &RenderOptions) -> Result<Strin
         }
 
         // Render header if present (DOCX)
-        if let Some(ref header) = section.header {
-            render_header_footer("Header", header, options, &resource_map, &mut output);
+        if options.include_headers_footers {
+            if let Some(ref header) = section.header {
+                render_header_footer("Header", header, options, &resource_map, &mut output);
+            }
         }
 
         // Render content blocks
-        for block in &section.content {
+        for (block_idx, block) in section.content.iter().enumerate() {
             match block {
                 Block::Paragraph(para) => {
                     let md = render_paragraph(para, options, None, &resource_map);
                     if !md.is_empty() || options.include_empty_paragraphs {
                         output.push_str(&md);
-                        if options.paragraph_spacing {
+                        let in_list = para.list_info.is_some();
+                        let tight =
+                            in_list && next_block_continues_list(&section.content, block_idx);
+                        if tight {
+                            output.push('\n');
+                        } else if options.paragraph_spacing {
                             output.push_str("\n\n");
                         } else {
                             output.push('\n');
@@ -121,7 +128,9 @@ fn to_markdown_standard(doc: &Document, options: &RenderOptions) -> Result<Strin
                     output.push_str("\n\n");
                 }
                 Block::PageBreak => {
-                    output.push_str("\n---\n\n");
+                    if options.emit_page_breaks {
+                        output.push_str("\n---\n\n");
+                    }
                 }
                 Block::SectionBreak => {
                     output.push_str("\n---\n\n");
@@ -140,8 +149,10 @@ fn to_markdown_standard(doc: &Document, options: &RenderOptions) -> Result<Strin
         }
 
         // Render footer if present (DOCX)
-        if let Some(ref footer) = section.footer {
-            render_header_footer("Footer", footer, options, &resource_map, &mut output);
+        if options.include_headers_footers {
+            if let Some(ref footer) = section.footer {
+                render_header_footer("Footer", footer, options, &resource_map, &mut output);
+            }
         }
 
         // Render notes if present (for PPTX)
@@ -160,11 +171,17 @@ fn to_markdown_standard(doc: &Document, options: &RenderOptions) -> Result<Strin
     }
 
     // Apply cleanup if configured
-    let result = if let Some(ref cleanup) = options.cleanup {
+    let processed = if let Some(ref cleanup) = options.cleanup {
         super::cleanup::clean_text(&output, cleanup)
     } else {
-        output.trim().to_string()
+        output
     };
+
+    // Always collapse 3+ consecutive newlines into a single blank line.
+    // This is lossless: CommonMark renders multiple blank lines identically.
+    let result = super::cleanup::collapse_blank_lines(&processed)
+        .trim()
+        .to_string();
 
     Ok(result)
 }
@@ -198,8 +215,10 @@ fn to_markdown_with_analyzer(
         }
 
         // Render header if present (DOCX)
-        if let Some(ref header) = section.header {
-            render_header_footer("Header", header, options, &resource_map, &mut output);
+        if options.include_headers_footers {
+            if let Some(ref header) = section.header {
+                render_header_footer("Header", header, options, &resource_map, &mut output);
+            }
         }
 
         // Get decisions for this section
@@ -209,7 +228,7 @@ fn to_markdown_with_analyzer(
         let mut para_idx = 0;
 
         // Render content blocks
-        for block in &section.content {
+        for (block_idx, block) in section.content.iter().enumerate() {
             match block {
                 Block::Paragraph(para) => {
                     // Get the pre-computed decision for this paragraph
@@ -218,7 +237,12 @@ fn to_markdown_with_analyzer(
 
                     if !md.is_empty() || options.include_empty_paragraphs {
                         output.push_str(&md);
-                        if options.paragraph_spacing {
+                        let in_list = para.list_info.is_some();
+                        let tight =
+                            in_list && next_block_continues_list(&section.content, block_idx);
+                        if tight {
+                            output.push('\n');
+                        } else if options.paragraph_spacing {
                             output.push_str("\n\n");
                         } else {
                             output.push('\n');
@@ -232,7 +256,9 @@ fn to_markdown_with_analyzer(
                     output.push_str("\n\n");
                 }
                 Block::PageBreak => {
-                    output.push_str("\n---\n\n");
+                    if options.emit_page_breaks {
+                        output.push_str("\n---\n\n");
+                    }
                 }
                 Block::SectionBreak => {
                     output.push_str("\n---\n\n");
@@ -251,8 +277,10 @@ fn to_markdown_with_analyzer(
         }
 
         // Render footer if present (DOCX)
-        if let Some(ref footer) = section.footer {
-            render_header_footer("Footer", footer, options, &resource_map, &mut output);
+        if options.include_headers_footers {
+            if let Some(ref footer) = section.footer {
+                render_header_footer("Footer", footer, options, &resource_map, &mut output);
+            }
         }
 
         // Render notes if present (for PPTX)
@@ -272,11 +300,17 @@ fn to_markdown_with_analyzer(
     }
 
     // Apply cleanup if configured
-    let result = if let Some(ref cleanup) = options.cleanup {
+    let processed = if let Some(ref cleanup) = options.cleanup {
         super::cleanup::clean_text(&output, cleanup)
     } else {
-        output.trim().to_string()
+        output
     };
+
+    // Always collapse 3+ consecutive newlines into a single blank line.
+    // This is lossless: CommonMark renders multiple blank lines identically.
+    let result = super::cleanup::collapse_blank_lines(&processed)
+        .trim()
+        .to_string();
 
     Ok(result)
 }
@@ -429,9 +463,19 @@ fn render_paragraph(
         }
     }
 
+    // Decide whether the heading text is uniformly emphasized (a styling
+    // artifact). Partial emphasis stays untouched.
+    let suppress_heading_emphasis = effective_heading.is_some()
+        && options.strip_redundant_emphasis_in_headings
+        && all_runs_uniformly_bold(&merged_para);
+
     // Render text runs with smart spacing
+    let run_ctx = RunContext {
+        in_table_cell: false,
+        suppress_emphasis: suppress_heading_emphasis,
+    };
     for (i, run) in merged_para.runs.iter().enumerate() {
-        let run_text = render_run(run, options);
+        let run_text = render_run(run, options, run_ctx);
 
         // Add space between runs if needed
         if i > 0 && !run_text.is_empty() && !output.is_empty() {
@@ -466,6 +510,33 @@ fn render_paragraph(
     output
 }
 
+/// True when the next block is another list paragraph — used to decide
+/// whether the separator after the current list item should be tight
+/// (`\n`) or loose (`\n\n`).
+fn next_block_continues_list(blocks: &[Block], idx: usize) -> bool {
+    matches!(
+        blocks.get(idx + 1),
+        Some(Block::Paragraph(p)) if p.list_info.is_some()
+    )
+}
+
+/// True when every non-empty run in the paragraph carries `bold`. This
+/// signals that the bold is a styling artifact (e.g. a Heading style with a
+/// blanket `<w:b/>` run property), not author-applied emphasis on a slice.
+fn all_runs_uniformly_bold(para: &Paragraph) -> bool {
+    let mut saw_text = false;
+    for run in &para.runs {
+        if run.text.trim().is_empty() {
+            continue;
+        }
+        saw_text = true;
+        if !run.style.bold {
+            return false;
+        }
+    }
+    saw_text
+}
+
 /// Check if a character should NOT have a space before it.
 fn is_no_space_before(c: char) -> bool {
     matches!(
@@ -474,14 +545,25 @@ fn is_no_space_before(c: char) -> bool {
     )
 }
 
+/// Context flags passed to [`render_run`].
+#[derive(Debug, Clone, Copy, Default)]
+struct RunContext {
+    /// True when rendering inside a markdown table cell (`|` must be escaped).
+    in_table_cell: bool,
+    /// True when surrounding container (heading, header cell) is uniformly
+    /// emphasized — bold/italic on individual runs is treated as a styling
+    /// artifact and stripped.
+    suppress_emphasis: bool,
+}
+
 /// Render a text run to Markdown.
-fn render_run(run: &TextRun, options: &RenderOptions) -> String {
+fn render_run(run: &TextRun, options: &RenderOptions, ctx: RunContext) -> String {
     // Handle tracked changes based on revision_handling option
     match (&run.revision, &options.revision_handling) {
         // AcceptAll: show inserted text, hide deleted text
         (RevisionType::Deleted, RevisionHandling::AcceptAll) => {
             // Return only break markers if present
-            if run.page_break {
+            if run.page_break && options.emit_page_breaks {
                 return "\n\n---\n\n".to_string();
             } else if run.line_break && options.preserve_line_breaks {
                 return "  \n".to_string();
@@ -491,7 +573,7 @@ fn render_run(run: &TextRun, options: &RenderOptions) -> String {
         // RejectAll: show deleted text, hide inserted text
         (RevisionType::Inserted, RevisionHandling::RejectAll) => {
             // Return only break markers if present
-            if run.page_break {
+            if run.page_break && options.emit_page_breaks {
                 return "\n\n---\n\n".to_string();
             } else if run.line_break && options.preserve_line_breaks {
                 return "  \n".to_string();
@@ -504,7 +586,7 @@ fn render_run(run: &TextRun, options: &RenderOptions) -> String {
 
     // Handle empty runs with line/page breaks
     if run.text.is_empty() {
-        if run.page_break {
+        if run.page_break && options.emit_page_breaks {
             return "\n\n---\n\n".to_string();
         } else if run.line_break && options.preserve_line_breaks {
             return "  \n".to_string();
@@ -514,7 +596,7 @@ fn render_run(run: &TextRun, options: &RenderOptions) -> String {
     }
 
     let mut text = if options.escape_special_chars {
-        escape_markdown(&run.text)
+        escape_markdown(&run.text, ctx.in_table_cell)
     } else {
         run.text.clone()
     };
@@ -535,11 +617,13 @@ fn render_run(run: &TextRun, options: &RenderOptions) -> String {
     if run.style.strikethrough {
         text = format!("~~{}~~", text);
     }
-    if run.style.bold && run.style.italic {
+    let effective_bold = run.style.bold && !ctx.suppress_emphasis;
+    let effective_italic = run.style.italic && !ctx.suppress_emphasis;
+    if effective_bold && effective_italic {
         text = format!("***{}***", text);
-    } else if run.style.bold {
+    } else if effective_bold {
         text = format!("**{}**", text);
-    } else if run.style.italic {
+    } else if effective_italic {
         text = format!("*{}*", text);
     }
 
@@ -562,7 +646,7 @@ fn render_run(run: &TextRun, options: &RenderOptions) -> String {
     }
 
     // Append page break (horizontal rule) or line break
-    if run.page_break {
+    if run.page_break && options.emit_page_breaks {
         text.push_str("\n\n---\n\n");
     } else if run.line_break && options.preserve_line_breaks {
         text.push_str("  \n");
@@ -574,14 +658,17 @@ fn render_run(run: &TextRun, options: &RenderOptions) -> String {
 /// Escape Markdown special characters.
 ///
 /// Context-aware escaping - only escapes when the character could actually
-/// trigger markdown formatting:
+/// trigger markdown formatting.
 ///
 /// - `\` - always escape (escape character)
 /// - `` ` `` - always escape (inline code)
-/// - `|` - always escape (table delimiter)
-/// - `*` and `_` - only escape when they could trigger emphasis:
-///   - NOT escaped after `(`, `[`, or whitespace (can't start emphasis)
-///   - NOT escaped before `)`, `]`, or whitespace (can't end emphasis)
+/// - `|` - escape only inside table cells (where it is the column delimiter).
+///   In regular paragraphs `|` is just a literal character.
+/// - `*` - escape only when it could trigger emphasis (CommonMark flanking
+///   rules). Intra-word `*` *can* still trigger emphasis, so it is escaped.
+/// - `_` - same as `*`, **plus** an extra rule: CommonMark forbids intra-word
+///   `_` from opening or closing emphasis, so identifiers like `snake_case`
+///   are left intact.
 ///
 /// Characters NOT escaped (only special in specific contexts):
 /// - `()`, `[]`, `{}` - only special in link/image syntax `[text](url)`
@@ -589,31 +676,28 @@ fn render_run(run: &TextRun, options: &RenderOptions) -> String {
 /// - `+`, `-` - only special at start of line (lists) or `---` (rules)
 /// - `!` - only special before `[` (images)
 /// - `.` - only special in ordered lists at line start (e.g., "1.")
-fn escape_markdown(s: &str) -> String {
+fn escape_markdown(s: &str, in_table_cell: bool) -> String {
     let mut result = String::with_capacity(s.len());
     let chars: Vec<char> = s.chars().collect();
 
     for (i, &c) in chars.iter().enumerate() {
         match c {
-            // Always escape
-            '\\' | '`' | '|' => {
+            '\\' | '`' => {
                 result.push('\\');
                 result.push(c);
             }
-            // Context-aware escaping for emphasis markers
+            '|' => {
+                if in_table_cell {
+                    result.push('\\');
+                }
+                result.push(c);
+            }
             '*' | '_' => {
                 let prev = if i > 0 { Some(chars[i - 1]) } else { None };
                 let next = chars.get(i + 1).copied();
 
-                // Don't escape if:
-                // 1. After opening bracket/paren, whitespace, or start of string
-                // 2. Before closing bracket/paren, whitespace, or end of string
-                // 3. Before colon (common in `*NOTE:` patterns)
-                //
-                // In CommonMark, emphasis requires BOTH:
-                // - A left-flanking `*` (followed by non-whitespace)
-                // - A matching right-flanking `*` (preceded by non-whitespace)
-                // If there's no matching pair, it won't render as emphasis.
+                // CommonMark: emphasis requires a matching pair of flanking
+                // delimiters. If neither side can flank, no escape is needed.
                 let after_opener = prev.is_none_or(|p| {
                     matches!(p, '(' | '[' | '{' | ':' | '-' | '/' | '\\') || p.is_whitespace()
                 });
@@ -621,11 +705,16 @@ fn escape_markdown(s: &str) -> String {
                     matches!(n, ')' | ']' | '}' | ':' | '-' | '/' | '\\') || n.is_whitespace()
                 });
 
-                if after_opener || before_closer {
-                    // Safe to use without escaping
+                // Underscore-only rule: CommonMark disallows intra-word `_`
+                // from opening/closing emphasis, so identifiers like
+                // `YESUNG_OMS_backup` never need escaping.
+                let intra_word_underscore = c == '_'
+                    && prev.is_some_and(|p| p.is_alphanumeric())
+                    && next.is_some_and(|n| n.is_alphanumeric());
+
+                if after_opener || before_closer || intra_word_underscore {
                     result.push(c);
                 } else {
-                    // Could potentially trigger emphasis, escape it
                     result.push('\\');
                     result.push(c);
                 }
@@ -647,6 +736,7 @@ fn render_cell_content(
     cell: &crate::model::Cell,
     options: &RenderOptions,
     resource_map: &ResourceMap,
+    is_header_cell: bool,
 ) -> String {
     let mut parts = Vec::new();
 
@@ -655,8 +745,19 @@ fn render_cell_content(
         let merged_para = para.with_merged_runs();
         let mut para_text = String::new();
 
+        // Suppress uniform bold inside a header cell so the markdown header
+        // row doesn't end up like `| **Field** |` when the docx applied a
+        // blanket bold to every header cell.
+        let suppress_emphasis = is_header_cell
+            && options.strip_redundant_emphasis_in_headings
+            && all_runs_uniformly_bold(&merged_para);
+        let ctx = RunContext {
+            in_table_cell: true,
+            suppress_emphasis,
+        };
+
         for (i, run) in merged_para.runs.iter().enumerate() {
-            let run_text = render_run(run, options);
+            let run_text = render_run(run, options, ctx);
 
             // Add smart spacing between runs (like render_paragraph does)
             if i > 0 && !run_text.is_empty() && !para_text.is_empty() {
@@ -706,6 +807,27 @@ fn render_cell_content(
     text.replace('\n', " ")
 }
 
+/// Effective alignment for a cell.
+///
+/// Word stores cell alignment two places: directly on the cell
+/// (`<w:tcPr>/<w:jc>`) and on the cell's paragraphs (`<w:pPr>/<w:jc>`).
+/// Authors normally set only the latter, so when the explicit cell
+/// alignment is `Left` (the default) we fall back to the first paragraph's
+/// alignment to recover the visual intent.
+fn effective_cell_alignment(cell: &crate::model::Cell) -> CellAlignment {
+    if cell.alignment != CellAlignment::Left {
+        return cell.alignment;
+    }
+    if let Some(para) = cell.content.first() {
+        return match para.alignment {
+            crate::model::TextAlignment::Center => CellAlignment::Center,
+            crate::model::TextAlignment::Right => CellAlignment::Right,
+            _ => CellAlignment::Left,
+        };
+    }
+    CellAlignment::Left
+}
+
 /// Get column alignments from the first data row (or first row if no data rows).
 /// Returns a vector of alignments for each column.
 fn get_column_alignments(table: &Table, col_count: usize) -> Vec<CellAlignment> {
@@ -721,9 +843,10 @@ fn get_column_alignments(table: &Table, col_count: usize) -> Vec<CellAlignment> 
 
     if let Some(row) = source_row {
         for cell in &row.cells {
+            let alignment = effective_cell_alignment(cell);
             // Add alignment for each column the cell spans
             for _ in 0..cell.col_span {
-                alignments.push(cell.alignment);
+                alignments.push(alignment);
             }
         }
     }
@@ -737,10 +860,66 @@ fn get_column_alignments(table: &Table, col_count: usize) -> Vec<CellAlignment> 
     alignments
 }
 
+/// If `table` is a single-row, single-column table whose content is fully
+/// emphasized (every non-empty run is bold), render it as a blockquote
+/// callout: `> **...**`. Returns `None` when the heuristic does not apply.
+fn render_callout_blockquote(
+    table: &Table,
+    options: &RenderOptions,
+    resource_map: &ResourceMap,
+) -> Option<String> {
+    if table.rows.len() != 1 {
+        return None;
+    }
+    let row = &table.rows[0];
+    if row.cells.len() != 1 {
+        return None;
+    }
+    let cell = &row.cells[0];
+    if cell.content.is_empty() {
+        return None;
+    }
+    let all_bold = cell.content.iter().all(|p| {
+        p.runs
+            .iter()
+            .all(|r| r.text.trim().is_empty() || r.style.bold)
+    });
+    let any_text = cell
+        .content
+        .iter()
+        .any(|p| p.runs.iter().any(|r| !r.text.trim().is_empty()));
+    if !(all_bold && any_text) {
+        return None;
+    }
+
+    // Render the cell with bold suppressed, then prefix every line with `> `.
+    let inner = render_cell_content(cell, options, resource_map, true);
+    let inner = inner.replace("<br>", "\n");
+    let mut out = String::new();
+    for line in inner.lines() {
+        if line.trim().is_empty() {
+            out.push_str(">\n");
+        } else {
+            out.push_str("> **");
+            out.push_str(line.trim());
+            out.push_str("**\n");
+        }
+    }
+    Some(out)
+}
+
 /// Render a table to Markdown.
 fn render_table(table: &Table, options: &RenderOptions, resource_map: &ResourceMap) -> String {
     if table.is_empty() {
         return String::new();
+    }
+
+    // Optional: a 1×1 emphasized table is almost always a callout box,
+    // not tabular data. Render it as a blockquote when the user opts in.
+    if options.callout_blockquote {
+        if let Some(quote) = render_callout_blockquote(table, options, resource_map) {
+            return quote;
+        }
     }
 
     // Check if we need HTML fallback
@@ -771,8 +950,12 @@ fn render_table(table: &Table, options: &RenderOptions, resource_map: &ResourceM
             }
         }
 
+        // The first row is always rendered as a header row in markdown,
+        // regardless of `row.is_header`. Treat it as a header cell for
+        // emphasis-suppression purposes too.
+        let is_header_row = i == 0 || row.is_header;
         for cell in &row.cells {
-            let text = render_cell_content(cell, options, resource_map);
+            let text = render_cell_content(cell, options, resource_map, is_header_row);
             output.push_str(&format!(" {} |", text));
 
             // Collect nested tables for rendering after the main table
@@ -937,6 +1120,241 @@ mod tests {
         assert!(md.contains("# Test Document"));
         // Period is NOT escaped (only special in ordered list context)
         assert!(md.contains("This is a test."));
+    }
+
+    #[test]
+    fn test_escape_pipe_only_in_table_cells() {
+        // Outside a table cell, `|` is just a literal character.
+        assert_eq!(
+            escape_markdown("v1.0 | 2026-04-27", false),
+            "v1.0 | 2026-04-27"
+        );
+        // Inside a table cell, `|` must be escaped to avoid breaking columns.
+        assert_eq!(escape_markdown("a | b", true), "a \\| b");
+    }
+
+    #[test]
+    fn test_escape_intra_word_underscore_not_escaped() {
+        // CommonMark forbids intra-word `_` from triggering emphasis, so
+        // identifiers like `snake_case` should pass through verbatim.
+        assert_eq!(
+            escape_markdown("YESUNG_OMS_backup_2026", false),
+            "YESUNG_OMS_backup_2026"
+        );
+        assert_eq!(escape_markdown("in_house", false), "in_house");
+        // Word-boundary `_` (next to whitespace) still needs escaping when it
+        // could open an emphasis run.
+        assert_eq!(escape_markdown("a _foo_ b", false), "a _foo_ b");
+    }
+
+    #[test]
+    fn test_escape_backslash_and_backtick_always() {
+        assert_eq!(escape_markdown("a`b\\c", false), "a\\`b\\\\c");
+    }
+
+    #[test]
+    fn test_escape_star_intra_word_still_escaped() {
+        // Unlike `_`, intra-word `*` *can* trigger emphasis, so it stays
+        // escaped to be safe.
+        assert_eq!(escape_markdown("foo*bar*baz", false), "foo\\*bar\\*baz");
+    }
+
+    #[test]
+    fn test_heading_strips_uniform_bold_artifact() {
+        // A heading whose every run is bold (Word's typical "Heading" style)
+        // should not render as `# **text**` — the bold is a styling artifact.
+        let mut para = Paragraph::heading(HeadingLevel::H1, "");
+        para.runs.push(TextRun::styled("Title", TextStyle::bold()));
+        let options = RenderOptions::default();
+        let md = render_paragraph(&para, &options, None, &empty_resource_map());
+        assert_eq!(md, "# Title", "heading bold should be stripped, got {md:?}");
+    }
+
+    #[test]
+    fn test_heading_preserves_partial_bold_intent() {
+        // If only part of the heading is bold, that's author intent — keep it.
+        let mut para = Paragraph::heading(HeadingLevel::H2, "");
+        para.runs.push(TextRun::plain("Section 2: "));
+        para.runs
+            .push(TextRun::styled("Required", TextStyle::bold()));
+        let options = RenderOptions::default();
+        let md = render_paragraph(&para, &options, None, &empty_resource_map());
+        assert!(
+            md.contains("**Required**"),
+            "partial bold must be preserved, got {md:?}"
+        );
+        assert!(md.starts_with("## "));
+    }
+
+    #[test]
+    fn test_cell_alignment_falls_back_to_paragraph_alignment() {
+        use crate::model::TextAlignment;
+        let mut table = Table::new();
+        // Header row (Left default).
+        table.add_row(Row::header(vec![
+            Cell::header("L"),
+            Cell::header("C"),
+            Cell::header("R"),
+        ]));
+        // Data row: paragraphs carry alignment, cells do not.
+        let mut data_row = Row {
+            cells: vec![
+                Cell::with_text("left-text"),
+                Cell::with_text("center-text"),
+                Cell::with_text("right-text"),
+            ],
+            is_header: false,
+            height: None,
+        };
+        data_row.cells[1].content[0].alignment = TextAlignment::Center;
+        data_row.cells[2].content[0].alignment = TextAlignment::Right;
+        table.add_row(data_row);
+
+        let md = render_table(&table, &RenderOptions::default(), &empty_resource_map());
+        assert!(md.contains("| --- | :---: | ---: |"), "got {md:?}");
+    }
+
+    #[test]
+    fn test_callout_blockquote_when_enabled() {
+        // 1×1 fully-bold tables become `> **...**` when the option is on.
+        let mut table = Table::new();
+        let mut para = Paragraph::new();
+        para.runs
+            .push(TextRun::styled("Important note", TextStyle::bold()));
+        let cell = Cell {
+            content: vec![para],
+            ..Cell::with_text("")
+        };
+        table.add_row(Row {
+            cells: vec![cell],
+            is_header: false,
+            height: None,
+        });
+
+        let options = RenderOptions::default().with_callout_blockquote(true);
+        let md = render_table(&table, &options, &empty_resource_map());
+        assert!(md.starts_with("> **Important note**"), "got {md:?}");
+        assert!(!md.contains("|"), "should not render as table: {md:?}");
+    }
+
+    #[test]
+    fn test_callout_blockquote_off_by_default() {
+        let mut table = Table::new();
+        let mut para = Paragraph::new();
+        para.runs.push(TextRun::styled("X", TextStyle::bold()));
+        let cell = Cell {
+            content: vec![para],
+            ..Cell::with_text("")
+        };
+        table.add_row(Row {
+            cells: vec![cell],
+            is_header: false,
+            height: None,
+        });
+
+        let md = render_table(&table, &RenderOptions::default(), &empty_resource_map());
+        assert!(md.contains("|"), "default should keep table form: {md:?}");
+    }
+
+    #[test]
+    fn test_page_break_default_off() {
+        // PageBreak no longer emits a horizontal rule unless opted in.
+        let mut doc = Document::new();
+        let mut section = Section::new(0);
+        section.add_paragraph(Paragraph::with_text("Before"));
+        section.content.push(Block::PageBreak);
+        section.add_paragraph(Paragraph::with_text("After"));
+        doc.add_section(section);
+
+        let md = to_markdown(&doc, &RenderOptions::default()).unwrap();
+        assert!(
+            !md.contains("---"),
+            "page break should not emit ---: {md:?}"
+        );
+
+        let md_lossless = to_markdown(&doc, &RenderOptions::lossless()).unwrap();
+        assert!(
+            md_lossless.contains("---"),
+            "lossless preset should emit ---"
+        );
+    }
+
+    #[test]
+    fn test_headers_footers_default_off() {
+        let mut doc = Document::new();
+        let mut section = Section::new(0);
+        section.header = Some(vec![Paragraph::with_text("Page header text")]);
+        section.footer = Some(vec![Paragraph::with_text("Page footer text")]);
+        section.add_paragraph(Paragraph::with_text("Body."));
+        doc.add_section(section);
+
+        let md = to_markdown(&doc, &RenderOptions::default()).unwrap();
+        assert!(!md.contains("Page header text"), "got {md:?}");
+        assert!(!md.contains("Page footer text"), "got {md:?}");
+    }
+
+    #[test]
+    fn test_consecutive_list_items_are_tight() {
+        use crate::model::{ListInfo, ListType};
+        let mut doc = Document::new();
+        let mut section = Section::new(0);
+
+        let mk_item = |text: &str| -> Paragraph {
+            let mut p = Paragraph::with_text(text);
+            p.list_info = Some(ListInfo {
+                list_type: ListType::Bullet,
+                level: 0,
+                number: None,
+            });
+            p
+        };
+        section.add_paragraph(mk_item("Alpha"));
+        section.add_paragraph(mk_item("Bravo"));
+        section.add_paragraph(mk_item("Charlie"));
+        section.add_paragraph(Paragraph::with_text("After list."));
+        doc.add_section(section);
+
+        let options = RenderOptions::default();
+        let md = to_markdown(&doc, &options).unwrap();
+
+        // Tight list: items separated by single newline (no blank line between).
+        assert!(
+            md.contains("- Alpha\n- Bravo\n- Charlie"),
+            "expected tight list, got {md:?}"
+        );
+        // Blank line still separates the list from the following paragraph.
+        assert!(md.contains("- Charlie\n\nAfter list."), "got {md:?}");
+    }
+
+    #[test]
+    fn test_blank_lines_collapsed_without_cleanup() {
+        // A PageBreak after a paragraph naturally produces 3+ consecutive
+        // newlines because the paragraph trails with "\n\n" and the break
+        // prepends another "\n". The renderer must collapse this even when
+        // no cleanup pipeline is configured.
+        let mut doc = Document::new();
+        let mut section = Section::new(0);
+        section.add_paragraph(Paragraph::with_text("Before break."));
+        section.content.push(Block::PageBreak);
+        section.add_paragraph(Paragraph::with_text("After break."));
+        doc.add_section(section);
+
+        // Page breaks are now opt-in (F8). Use the lossless preset so the
+        // PageBreak block actually emits the `---` rule whose surrounding
+        // newlines we want to verify get collapsed.
+        let options = RenderOptions::lossless();
+        assert!(options.cleanup.is_none());
+
+        let md = to_markdown(&doc, &options).unwrap();
+
+        assert!(
+            !md.contains("\n\n\n"),
+            "output must not contain 3+ consecutive newlines: {:?}",
+            md
+        );
+        assert!(md.contains("Before break."));
+        assert!(md.contains("After break."));
+        assert!(md.contains("---"));
     }
 
     #[test]
@@ -1401,7 +1819,8 @@ mod tests {
         section.add_paragraph(Paragraph::with_text("Body content"));
         doc.add_section(section);
 
-        let options = RenderOptions::default();
+        // Header/Footer rendering is now opt-in (F10).
+        let options = RenderOptions::lossless();
         let md = to_markdown(&doc, &options).unwrap();
 
         assert!(
@@ -1433,7 +1852,7 @@ mod tests {
         section.add_paragraph(Paragraph::with_text("Content"));
         doc.add_section(section);
 
-        let options = RenderOptions::default();
+        let options = RenderOptions::lossless();
         let md = to_markdown(&doc, &options).unwrap();
 
         assert!(

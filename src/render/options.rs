@@ -143,6 +143,32 @@ pub struct RenderOptions {
 
     /// How to handle tracked changes (insertions and deletions).
     pub revision_handling: RevisionHandling,
+
+    /// Strip redundant `**bold**`/`*italic*` from heading text and table
+    /// header cells when the *entire* paragraph is uniformly emphasized
+    /// (i.e. the emphasis is a styling artifact, not author intent).
+    ///
+    /// Partial emphasis (e.g. `Section 2: **Required**`) is always preserved.
+    pub strip_redundant_emphasis_in_headings: bool,
+
+    /// Emit `\n\n---\n\n` for hard page breaks (`<w:br w:type="page"/>` and
+    /// `Block::PageBreak`). Disabled by default — markdown has no page
+    /// concept and these break visual flow.
+    ///
+    /// `Block::SectionBreak` is *not* affected; it remains emitted as a
+    /// horizontal rule because it carries a semantic boundary.
+    pub emit_page_breaks: bool,
+
+    /// Render DOCX section headers/footers as blockquoted lines around the
+    /// document body. Disabled by default because they are typically
+    /// page-chrome and add noise to LLM training data.
+    pub include_headers_footers: bool,
+
+    /// Convert single-row, single-column tables whose entire content is
+    /// emphasized into `> **...**` blockquotes (a callout fallback).
+    /// Off by default — only enable if the corpus is known to use 1×1
+    /// tables exclusively for callouts.
+    pub callout_blockquote: bool,
 }
 
 /// How to handle tracked changes in the output.
@@ -174,6 +200,10 @@ impl Default for RenderOptions {
             cleanup: None,
             heading_config: None,
             revision_handling: RevisionHandling::AcceptAll,
+            strip_redundant_emphasis_in_headings: true,
+            emit_page_breaks: false,
+            include_headers_footers: false,
+            callout_blockquote: false,
         }
     }
 }
@@ -259,6 +289,42 @@ impl RenderOptions {
     /// Show tracked changes with markup (insertions and deletions visible).
     pub fn with_show_revisions(mut self) -> Self {
         self.revision_handling = RevisionHandling::ShowMarkup;
+        self
+    }
+
+    /// Restore the lossless rendering behavior: emit hard page breaks and
+    /// include section headers/footers in the output. Use this when round-
+    /// tripping document layout matters more than reading flow.
+    pub fn lossless() -> Self {
+        Self {
+            emit_page_breaks: true,
+            include_headers_footers: true,
+            ..Self::default()
+        }
+    }
+
+    /// Toggle whether hard page breaks emit a horizontal rule.
+    pub fn with_emit_page_breaks(mut self, enabled: bool) -> Self {
+        self.emit_page_breaks = enabled;
+        self
+    }
+
+    /// Toggle whether DOCX section headers/footers appear in the output.
+    pub fn with_include_headers_footers(mut self, enabled: bool) -> Self {
+        self.include_headers_footers = enabled;
+        self
+    }
+
+    /// Toggle conversion of 1×1 emphasized tables into blockquoted callouts.
+    pub fn with_callout_blockquote(mut self, enabled: bool) -> Self {
+        self.callout_blockquote = enabled;
+        self
+    }
+
+    /// Toggle stripping of styling-artifact emphasis in heading text and
+    /// table header cells.
+    pub fn with_strip_redundant_emphasis_in_headings(mut self, enabled: bool) -> Self {
+        self.strip_redundant_emphasis_in_headings = enabled;
         self
     }
 }

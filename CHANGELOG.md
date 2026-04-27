@@ -206,6 +206,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Eliminated decoder duplication** — five duplicate `decode_*_lossless` helpers across `src/docx/parser.rs`, `src/pptx/parser.rs`, `src/xlsx/parser.rs`, `src/xlsx/shared_strings.rs`, `src/charts.rs` removed. 15 call sites now route through `crate::decode::decode_text_lossy`.
 - **`container::metadata_text_or_raw`** delegates to `crate::decode::decode_text_strict`, gaining mixed-entity decoding while preserving strict-UTF-8 semantics.
 
+## [0.2.1] - 2026-04-27
+
+### Changed (behavior — review before upgrading)
+
+- **`Block::PageBreak` no longer emits `\n\n---\n\n` by default.** Markdown has
+  no page concept, and the rule fragments reading flow. Consumers that need
+  the old behavior can opt back in via
+  `RenderOptions::default().with_emit_page_breaks(true)` or the new
+  `RenderOptions::lossless()` preset (which restores both page breaks and
+  headers/footers in one shot).
+- **DOCX section headers/footers are no longer included by default.** Their
+  page-chrome content was contaminating LLM training data. Set
+  `with_include_headers_footers(true)` (or use `lossless()`) to restore.
+- **Heading paragraphs no longer emit redundant `**…**` wrappers** when the
+  whole heading text is uniformly bold (a Word styling artifact). Partial
+  bold runs inside headings are still preserved as authored emphasis. The
+  same rule applies to header cells in tables. Toggle via
+  `with_strip_redundant_emphasis_in_headings(false)` to revert.
+- **`undoc md` (Markdown subcommand) now uses the heading analyzer by
+  default**, matching the default `Convert` command. Documents that style
+  headings via font size + bold (no explicit `Heading` paragraph style) are
+  now detected as headings on this code path too.
+
+### Added
+
+- `RenderOptions::lossless()` constructor — opt back into the previous
+  rendering behavior in one call (page breaks + headers/footers).
+- `RenderOptions::with_emit_page_breaks`,
+  `with_include_headers_footers`, `with_callout_blockquote`,
+  `with_strip_redundant_emphasis_in_headings` builder methods.
+- `RenderOptions::callout_blockquote` (default `false`) — when enabled,
+  single-row, single-column tables whose entire content is bold render as
+  `> **…**` blockquotes instead of 1×1 markdown tables. Off by default; turn
+  on only when the corpus is known to use 1×1 tables exclusively for
+  callouts.
+
+### Fixed
+
+- **Markdown escape policy** is now context-aware:
+  - `|` is no longer escaped in regular paragraphs — only inside table
+    cells where it is the column delimiter. (`v1.0 | 2026-04-27` was
+    previously emitted as `v1.0 \| 2026-04-27`.)
+  - Intra-word `_` is no longer escaped, per the CommonMark flanking rule
+    that intra-word `_` cannot open or close emphasis. Identifiers like
+    `YESUNG_OMS_backup`, `snake_case`, `in_house` now pass through
+    verbatim instead of `YESUNG\_OMS\_backup`.
+- **Tight lists** — consecutive list paragraphs are now joined by a single
+  newline so they render as tight markdown lists. Previously every list
+  item was separated by a blank line, forcing renderers into "loose list"
+  mode with oversized vertical spacing.
+- **Cell alignment fallback** — when a table cell has no explicit
+  `<w:tcPr>/<w:jc>` (the common case), the renderer now falls back to the
+  alignment of the cell's first paragraph (`<w:pPr>/<w:jc>`), recovering
+  the visual intent that authors typically express via paragraph
+  properties.
+
 ## [Unreleased]
 
 ### Planned

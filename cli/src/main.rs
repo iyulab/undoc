@@ -258,10 +258,12 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let doc = undoc::parse_file(&input)?;
             pb.set_message("Rendering to Markdown...");
 
+            let heading_config = HeadingConfig::default().with_default_style_mapping();
             let mut options = RenderOptions::new()
                 .with_frontmatter(frontmatter)
                 .with_table_fallback(table_mode.into())
-                .with_max_heading(max_heading);
+                .with_max_heading(max_heading)
+                .with_heading_config(heading_config);
 
             if let Some(mode) = cleanup {
                 options = options.with_cleanup_preset(mode.into());

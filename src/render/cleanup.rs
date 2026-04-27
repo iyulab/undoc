@@ -209,34 +209,45 @@ fn is_toc_marker(line: &str) -> bool {
     false
 }
 
-/// Filter structural elements - remove empty paragraphs, orphaned elements.
-fn filter_structure(text: &str) -> String {
-    let lines: Vec<&str> = text.lines().collect();
+/// Collapse 3+ consecutive newlines into a single blank line (`\n\n`).
+///
+/// This is a lossless normalization: per CommonMark, two or more blank lines
+/// render identically to one blank line, so the output is semantically
+/// equivalent to the input but more compact.
+pub(crate) fn collapse_blank_lines(text: &str) -> String {
     let mut result = Vec::new();
     let mut prev_blank = false;
 
-    for line in lines {
+    for line in text.lines() {
         let is_blank = line.trim().is_empty();
-
-        // Skip consecutive blank lines
         if is_blank && prev_blank {
             continue;
         }
-
-        // Skip lines that are just whitespace with special characters
-        if !is_blank && line.trim().len() == 1 {
-            if let Some(c) = line.trim().chars().next() {
-                if matches!(c, '|' | '-' | '_' | '=' | '*' | '#' | '~') {
-                    continue;
-                }
-            }
-        }
-
         result.push(line);
         prev_blank = is_blank;
     }
 
     result.join("\n")
+}
+
+/// Filter structural elements - remove empty paragraphs, orphaned elements.
+fn filter_structure(text: &str) -> String {
+    let stripped: String = text
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim();
+            if trimmed.len() != 1 {
+                return true;
+            }
+            !trimmed
+                .chars()
+                .next()
+                .is_some_and(|c| matches!(c, '|' | '-' | '_' | '=' | '*' | '#' | '~'))
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    collapse_blank_lines(&stripped)
 }
 
 /// Final whitespace normalization.
@@ -349,6 +360,37 @@ mod tests {
         let input = "Line 1\n\n\n\nLine 2";
         let result = filter_structure(input);
         assert!(!result.contains("\n\n\n")); // No triple blank lines
+    }
+
+    #[test]
+    fn test_collapse_blank_lines_basic() {
+        let input = "A\n\n\n\nB";
+        assert_eq!(collapse_blank_lines(input), "A\n\nB");
+    }
+
+    #[test]
+    fn test_collapse_blank_lines_idempotent() {
+        let input = "A\n\nB\n\nC";
+        assert_eq!(collapse_blank_lines(input), input);
+    }
+
+    #[test]
+    fn test_collapse_blank_lines_whitespace_only() {
+        // Lines containing only whitespace count as blank
+        let input = "A\n\n   \n\t\nB";
+        assert_eq!(collapse_blank_lines(input), "A\n\nB");
+    }
+
+    #[test]
+    fn test_collapse_blank_lines_preserves_single_blank() {
+        let input = "A\n\nB";
+        assert_eq!(collapse_blank_lines(input), "A\n\nB");
+    }
+
+    #[test]
+    fn test_collapse_blank_lines_no_blanks() {
+        let input = "A\nB\nC";
+        assert_eq!(collapse_blank_lines(input), "A\nB\nC");
     }
 
     #[test]
