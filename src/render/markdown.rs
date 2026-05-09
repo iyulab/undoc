@@ -81,7 +81,12 @@ fn resolve_image_path(resource_id: &str, resource_map: &ResourceMap, prefix: &st
 /// Build a section boundary marker comment for PPTX slides or XLSX sheets.
 ///
 /// Returns an empty string when markers are disabled or the format is DOCX.
-fn section_marker(format: FormatType, style: SectionMarkerStyle, idx: usize, name: Option<&str>) -> String {
+fn section_marker(
+    format: FormatType,
+    style: SectionMarkerStyle,
+    idx: usize,
+    name: Option<&str>,
+) -> String {
     if style == SectionMarkerStyle::None {
         return String::new();
     }
@@ -112,7 +117,12 @@ fn to_markdown_standard(doc: &Document, options: &RenderOptions) -> Result<Strin
     // Render each section
     for (i, section) in doc.sections.iter().enumerate() {
         // Section boundary marker (PPTX/XLSX only, opt-in)
-        let marker = section_marker(doc.format, options.section_markers, i, section.name.as_deref());
+        let marker = section_marker(
+            doc.format,
+            options.section_markers,
+            i,
+            section.name.as_deref(),
+        );
         if !marker.is_empty() {
             output.push_str(&marker);
             output.push_str("\n\n");
@@ -236,7 +246,12 @@ fn to_markdown_with_analyzer(
     // Render each section with pre-computed heading decisions
     for (section_idx, section) in doc.sections.iter().enumerate() {
         // Section boundary marker (PPTX/XLSX only, opt-in)
-        let marker = section_marker(doc.format, options.section_markers, section_idx, section.name.as_deref());
+        let marker = section_marker(
+            doc.format,
+            options.section_markers,
+            section_idx,
+            section.name.as_deref(),
+        );
         if !marker.is_empty() {
             output.push_str(&marker);
             output.push_str("\n\n");
@@ -1095,8 +1110,16 @@ mod tests {
         let doc = two_section_doc(FormatType::Pptx, ["Introduction", "Conclusion"]);
         let opts = RenderOptions::new().with_section_markers(SectionMarkerStyle::Comment);
         let md = to_markdown(&doc, &opts).unwrap();
-        assert!(md.contains("<!-- slide 1: Introduction -->"), "slide 1 marker missing\n{}", md);
-        assert!(md.contains("<!-- slide 2: Conclusion -->"), "slide 2 marker missing\n{}", md);
+        assert!(
+            md.contains("<!-- slide 1: Introduction -->"),
+            "slide 1 marker missing\n{}",
+            md
+        );
+        assert!(
+            md.contains("<!-- slide 2: Conclusion -->"),
+            "slide 2 marker missing\n{}",
+            md
+        );
     }
 
     #[test]
@@ -1104,7 +1127,11 @@ mod tests {
         let doc = two_section_doc(FormatType::Pptx, ["Introduction", "Conclusion"]);
         let opts = RenderOptions::new();
         let md = to_markdown(&doc, &opts).unwrap();
-        assert!(!md.contains("<!-- slide"), "markers must be absent by default\n{}", md);
+        assert!(
+            !md.contains("<!-- slide"),
+            "markers must be absent by default\n{}",
+            md
+        );
     }
 
     #[test]
@@ -1112,8 +1139,16 @@ mod tests {
         let doc = two_section_doc(FormatType::Xlsx, ["Revenue", "Costs"]);
         let opts = RenderOptions::new().with_section_markers(SectionMarkerStyle::Comment);
         let md = to_markdown(&doc, &opts).unwrap();
-        assert!(md.contains("<!-- sheet 1: Revenue -->"), "sheet 1 marker missing\n{}", md);
-        assert!(md.contains("<!-- sheet 2: Costs -->"), "sheet 2 marker missing\n{}", md);
+        assert!(
+            md.contains("<!-- sheet 1: Revenue -->"),
+            "sheet 1 marker missing\n{}",
+            md
+        );
+        assert!(
+            md.contains("<!-- sheet 2: Costs -->"),
+            "sheet 2 marker missing\n{}",
+            md
+        );
     }
 
     #[test]
@@ -1133,7 +1168,11 @@ mod tests {
         doc.sections.push(s);
         let opts = RenderOptions::new().with_section_markers(SectionMarkerStyle::Comment);
         let md = to_markdown(&doc, &opts).unwrap();
-        assert!(md.contains("<!-- slide 1 -->"), "nameless slide must use number-only marker\n{}", md);
+        assert!(
+            md.contains("<!-- slide 1 -->"),
+            "nameless slide must use number-only marker\n{}",
+            md
+        );
     }
 
     /// Helper to create an empty resource map for tests
