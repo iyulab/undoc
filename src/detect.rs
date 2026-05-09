@@ -2,6 +2,7 @@
 
 use crate::container::decode_xml_bytes;
 use crate::error::{Error, Result};
+use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{BufReader, Read, Seek};
 use std::path::Path;
@@ -22,7 +23,7 @@ const PPTX_CONTENT_TYPE: &str =
     "application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml";
 
 /// Detected Office document format.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum FormatType {
     /// Microsoft Word document (.docx)
@@ -216,12 +217,12 @@ mod tests {
     }
 
     #[test]
-    fn format_type_default_is_docx() {
+    fn test_format_type_default_is_docx() {
         assert_eq!(FormatType::default(), FormatType::Docx);
     }
 
     #[test]
-    fn format_type_serde_roundtrip() {
+    fn test_format_type_serde_roundtrip() {
         let json = serde_json::to_string(&FormatType::Xlsx).unwrap();
         assert_eq!(json, "\"xlsx\"");
         let back: FormatType = serde_json::from_str(&json).unwrap();
