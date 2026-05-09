@@ -80,6 +80,7 @@ pub use model::{
     Block, Cell, CellAlignment, Document, HeadingLevel, ListInfo, ListType, Metadata, Paragraph,
     Resource, ResourceType, Row, Section, Table, TextAlignment, TextRun, TextStyle,
 };
+pub use render::SectionMarkerStyle;
 
 use std::path::Path;
 
