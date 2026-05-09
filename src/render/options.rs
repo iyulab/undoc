@@ -169,6 +169,10 @@ pub struct RenderOptions {
     /// Off by default — only enable if the corpus is known to use 1×1
     /// tables exclusively for callouts.
     pub callout_blockquote: bool,
+
+    /// Style for PPTX slide / XLSX sheet boundary markers.
+    /// DOCX is unaffected regardless of this setting.
+    pub section_markers: SectionMarkerStyle,
 }
 
 /// How to handle tracked changes in the output.
@@ -181,6 +185,17 @@ pub enum RevisionHandling {
     RejectAll,
     /// Show both insertions and deletions with markup
     ShowMarkup,
+}
+
+/// Style for section boundary markers in Markdown output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SectionMarkerStyle {
+    /// No markers (default — preserves existing output unchanged).
+    #[default]
+    None,
+    /// HTML comment inserted before each PPTX slide or XLSX sheet:
+    /// `<!-- slide N: Name -->` / `<!-- sheet N: Name -->`.
+    Comment,
 }
 
 impl Default for RenderOptions {
@@ -204,6 +219,7 @@ impl Default for RenderOptions {
             emit_page_breaks: false,
             include_headers_footers: false,
             callout_blockquote: false,
+            section_markers: SectionMarkerStyle::None,
         }
     }
 }
@@ -321,6 +337,12 @@ impl RenderOptions {
         self
     }
 
+    /// Set the section boundary marker style.
+    pub fn with_section_markers(mut self, style: SectionMarkerStyle) -> Self {
+        self.section_markers = style;
+        self
+    }
+
     /// Toggle stripping of styling-artifact emphasis in heading text and
     /// table header cells.
     pub fn with_strip_redundant_emphasis_in_headings(mut self, enabled: bool) -> Self {
@@ -376,5 +398,17 @@ mod tests {
 
         let opts = RenderOptions::new().with_max_heading(0);
         assert_eq!(opts.max_heading_level, 1);
+    }
+
+    #[test]
+    fn test_section_marker_style_default_is_none() {
+        let opts = RenderOptions::new();
+        assert_eq!(opts.section_markers, SectionMarkerStyle::None);
+    }
+
+    #[test]
+    fn test_section_marker_style_builder() {
+        let opts = RenderOptions::new().with_section_markers(SectionMarkerStyle::Comment);
+        assert_eq!(opts.section_markers, SectionMarkerStyle::Comment);
     }
 }
