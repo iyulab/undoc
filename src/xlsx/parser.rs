@@ -141,6 +141,7 @@ impl XlsxParser {
     /// Parse the workbook and return a Document model.
     pub fn parse(&mut self) -> Result<Document> {
         let mut doc = Document::new();
+        doc.format = crate::detect::FormatType::Xlsx;
 
         // Parse metadata
         doc.metadata = self.parse_metadata()?;

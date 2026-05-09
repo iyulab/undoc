@@ -85,6 +85,7 @@ impl DocxParser {
     /// Parse the document and return a Document model.
     pub fn parse(&mut self) -> Result<Document> {
         let mut doc = Document::new();
+        doc.format = crate::detect::FormatType::Docx;
 
         // Parse metadata
         doc.metadata = self.parse_metadata()?;
