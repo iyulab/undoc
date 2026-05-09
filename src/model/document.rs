@@ -1,6 +1,7 @@
 //! Document model structures.
 
 use super::{Paragraph, Resource, Table};
+use crate::detect::FormatType;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -154,6 +155,9 @@ impl Section {
 /// A parsed Office document.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Document {
+    /// Document format (DOCX, XLSX, PPTX).
+    pub format: FormatType,
+
     /// Document metadata
     pub metadata: Metadata,
 
@@ -233,7 +237,14 @@ impl Document {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::detect::FormatType;
     use crate::model::{RevisionType, TextRun, TextStyle};
+
+    #[test]
+    fn test_document_default_format_is_docx() {
+        let doc = Document::new();
+        assert_eq!(doc.format, FormatType::Docx);
+    }
 
     #[test]
     fn test_document_creation() {
