@@ -72,6 +72,11 @@ enum Commands {
         /// `--include-headers-footers` (i.e. `RenderOptions::lossless()`).
         #[arg(long)]
         lossless: bool,
+
+        /// Insert HTML section boundary markers (<!-- slide N: Name -->, <!-- sheet N: Name -->).
+        /// No effect on DOCX documents.
+        #[arg(long)]
+        section_markers: bool,
     },
 
     /// Convert a document to Markdown
@@ -114,6 +119,11 @@ enum Commands {
         /// `--include-headers-footers` (i.e. `RenderOptions::lossless()`).
         #[arg(long)]
         lossless: bool,
+
+        /// Insert HTML section boundary markers (<!-- slide N: Name -->, <!-- sheet N: Name -->).
+        /// No effect on DOCX documents.
+        #[arg(long)]
+        section_markers: bool,
     },
 
     /// Convert a document to plain text
@@ -264,6 +274,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 false,
                 false,
                 false,
+                false,
             );
         } else {
             // No input provided, show help
@@ -281,6 +292,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             emit_page_breaks,
             include_headers_footers,
             lossless,
+            section_markers,
         } => {
             run_convert(
                 &input,
@@ -289,6 +301,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 emit_page_breaks,
                 include_headers_footers,
                 lossless,
+                section_markers,
             )?;
         }
 
@@ -302,6 +315,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             emit_page_breaks,
             include_headers_footers,
             lossless,
+            section_markers,
         } => {
             let pb = create_spinner("Parsing document...");
 
@@ -321,6 +335,10 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 .with_table_fallback(table_mode.into())
                 .with_max_heading(max_heading)
                 .with_heading_config(heading_config);
+
+            if section_markers {
+                options = options.with_section_markers(undoc::SectionMarkerStyle::Comment);
+            }
 
             if let Some(mode) = cleanup {
                 options = options.with_cleanup_preset(mode.into());
@@ -499,6 +517,7 @@ fn run_convert(
     emit_page_breaks: bool,
     include_headers_footers: bool,
     lossless: bool,
+    section_markers: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Start async update check in background
     let update_rx = update::check_update_async();
@@ -537,6 +556,9 @@ fn run_convert(
     let mut options = base
         .with_frontmatter(true)
         .with_heading_config(heading_config);
+    if section_markers {
+        options = options.with_section_markers(undoc::SectionMarkerStyle::Comment);
+    }
     if let Some(mode) = cleanup {
         options = options.with_cleanup_preset(mode.into());
     }
