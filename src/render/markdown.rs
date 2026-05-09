@@ -2,13 +2,14 @@
 
 use std::collections::HashMap;
 
+use crate::detect::FormatType;
 use crate::error::Result;
 use crate::model::{
     Block, CellAlignment, Document, HeadingLevel, Paragraph, RevisionType, Table, TextRun,
 };
 
 use super::heading_analyzer::{HeadingAnalyzer, HeadingDecision};
-use super::options::{RenderOptions, RevisionHandling};
+use super::options::{RenderOptions, RevisionHandling, SectionMarkerStyle};
 
 /// Map of resource IDs to their filenames
 type ResourceMap = HashMap<String, String>;
@@ -77,6 +78,27 @@ fn resolve_image_path(resource_id: &str, resource_map: &ResourceMap, prefix: &st
     format!("{}{}", prefix, filename)
 }
 
+/// Build a section boundary marker comment for PPTX slides or XLSX sheets.
+///
+/// Returns an empty string when markers are disabled or the format is DOCX.
+fn section_marker(format: FormatType, style: SectionMarkerStyle, idx: usize, name: Option<&str>) -> String {
+    if style == SectionMarkerStyle::None {
+        return String::new();
+    }
+    let n = idx + 1;
+    match format {
+        FormatType::Pptx => match name.filter(|s| !s.is_empty()) {
+            Some(name) => format!("<!-- slide {}: {} -->", n, name),
+            None => format!("<!-- slide {} -->", n),
+        },
+        FormatType::Xlsx => match name.filter(|s| !s.is_empty()) {
+            Some(name) => format!("<!-- sheet {}: {} -->", n, name),
+            None => format!("<!-- sheet {} -->", n),
+        },
+        FormatType::Docx => String::new(),
+    }
+}
+
 /// Standard markdown conversion (without heading analyzer).
 fn to_markdown_standard(doc: &Document, options: &RenderOptions) -> Result<String> {
     let mut output = String::new();
@@ -89,6 +111,13 @@ fn to_markdown_standard(doc: &Document, options: &RenderOptions) -> Result<Strin
 
     // Render each section
     for (i, section) in doc.sections.iter().enumerate() {
+        // Section boundary marker (PPTX/XLSX only, opt-in)
+        let marker = section_marker(doc.format, options.section_markers, i, section.name.as_deref());
+        if !marker.is_empty() {
+            output.push_str(&marker);
+            output.push_str("\n\n");
+        }
+
         // Add section name as heading if present
         if let Some(ref name) = section.name {
             if i > 0 {
@@ -206,6 +235,13 @@ fn to_markdown_with_analyzer(
 
     // Render each section with pre-computed heading decisions
     for (section_idx, section) in doc.sections.iter().enumerate() {
+        // Section boundary marker (PPTX/XLSX only, opt-in)
+        let marker = section_marker(doc.format, options.section_markers, section_idx, section.name.as_deref());
+        if !marker.is_empty() {
+            output.push_str(&marker);
+            output.push_str("\n\n");
+        }
+
         // Add section name as heading if present
         if let Some(ref name) = section.name {
             if section_idx > 0 {
@@ -1038,7 +1074,67 @@ fn escape_html(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::detect::FormatType;
     use crate::model::{Cell, HeadingLevel, RevisionType, Row, Section, TextStyle};
+    use crate::render::options::SectionMarkerStyle;
+
+    fn two_section_doc(format: FormatType, names: [&str; 2]) -> Document {
+        let mut doc = Document::new();
+        doc.format = format;
+        let mut s0 = Section::new(0);
+        s0.name = Some(names[0].to_string());
+        let mut s1 = Section::new(1);
+        s1.name = Some(names[1].to_string());
+        doc.sections.push(s0);
+        doc.sections.push(s1);
+        doc
+    }
+
+    #[test]
+    fn test_pptx_section_markers_comment() {
+        let doc = two_section_doc(FormatType::Pptx, ["Introduction", "Conclusion"]);
+        let opts = RenderOptions::new().with_section_markers(SectionMarkerStyle::Comment);
+        let md = to_markdown(&doc, &opts).unwrap();
+        assert!(md.contains("<!-- slide 1: Introduction -->"), "slide 1 marker missing\n{}", md);
+        assert!(md.contains("<!-- slide 2: Conclusion -->"), "slide 2 marker missing\n{}", md);
+    }
+
+    #[test]
+    fn test_pptx_section_markers_default_off() {
+        let doc = two_section_doc(FormatType::Pptx, ["Introduction", "Conclusion"]);
+        let opts = RenderOptions::new();
+        let md = to_markdown(&doc, &opts).unwrap();
+        assert!(!md.contains("<!-- slide"), "markers must be absent by default\n{}", md);
+    }
+
+    #[test]
+    fn test_xlsx_section_markers_comment() {
+        let doc = two_section_doc(FormatType::Xlsx, ["Revenue", "Costs"]);
+        let opts = RenderOptions::new().with_section_markers(SectionMarkerStyle::Comment);
+        let md = to_markdown(&doc, &opts).unwrap();
+        assert!(md.contains("<!-- sheet 1: Revenue -->"), "sheet 1 marker missing\n{}", md);
+        assert!(md.contains("<!-- sheet 2: Costs -->"), "sheet 2 marker missing\n{}", md);
+    }
+
+    #[test]
+    fn test_docx_section_markers_never_emitted() {
+        let doc = two_section_doc(FormatType::Docx, ["Chapter 1", "Chapter 2"]);
+        let opts = RenderOptions::new().with_section_markers(SectionMarkerStyle::Comment);
+        let md = to_markdown(&doc, &opts).unwrap();
+        assert!(!md.contains("<!-- "), "DOCX must not emit markers\n{}", md);
+    }
+
+    #[test]
+    fn test_pptx_nameless_section_marker() {
+        let mut doc = Document::new();
+        doc.format = FormatType::Pptx;
+        let mut s = Section::new(0);
+        s.name = None;
+        doc.sections.push(s);
+        let opts = RenderOptions::new().with_section_markers(SectionMarkerStyle::Comment);
+        let md = to_markdown(&doc, &opts).unwrap();
+        assert!(md.contains("<!-- slide 1 -->"), "nameless slide must use number-only marker\n{}", md);
+    }
 
     /// Helper to create an empty resource map for tests
     fn empty_resource_map() -> ResourceMap {
