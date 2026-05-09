@@ -22,9 +22,11 @@ const PPTX_CONTENT_TYPE: &str =
     "application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml";
 
 /// Detected Office document format.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum FormatType {
     /// Microsoft Word document (.docx)
+    #[default]
     Docx,
     /// Microsoft Excel workbook (.xlsx)
     Xlsx,
@@ -211,5 +213,18 @@ mod tests {
             assert!(result.is_ok());
             assert_eq!(result.unwrap(), FormatType::Pptx);
         }
+    }
+
+    #[test]
+    fn format_type_default_is_docx() {
+        assert_eq!(FormatType::default(), FormatType::Docx);
+    }
+
+    #[test]
+    fn format_type_serde_roundtrip() {
+        let json = serde_json::to_string(&FormatType::Xlsx).unwrap();
+        assert_eq!(json, "\"xlsx\"");
+        let back: FormatType = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, FormatType::Xlsx);
     }
 }
