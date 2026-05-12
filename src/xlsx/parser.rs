@@ -148,41 +148,7 @@ impl XlsxParser {
 
         // Parse each sheet as a section with a table
         for (idx, sheet) in self.sheets.clone().iter().enumerate() {
-            let mut section = Section::new(idx);
-            section.name = Some(sheet.name.clone());
-
-            // Get the sheet path from relationships
-            if let Some(target) = self.relationships.get(&sheet.rel_id) {
-                let sheet_path = if let Some(stripped) = target.strip_prefix('/') {
-                    stripped.to_string()
-                } else {
-                    format!("xl/{}", target)
-                };
-
-                // Sheet file: missing leaves the section empty, but malformed
-                // bytes must surface so sheet content corruption is not silently
-                // dropped.
-                if let Some(xml) = self.container.read_xml_optional(&sheet_path)? {
-                    // Parse sheet-level relationships for hyperlinks and comments
-                    let sheet_dir = sheet_path.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
-                    let sheet_rels = self.read_optional_relationships_for_part(&sheet_path)?;
-                    let hyperlink_map = Self::parse_hyperlinks(&xml, &sheet_rels);
-
-                    // Find comments relationship and parse comments XML
-                    let comment_map =
-                        Self::find_and_parse_comments(&self.container, &sheet_rels, sheet_dir)?;
-
-                    let table = self.parse_sheet(&xml, &hyperlink_map, &comment_map)?;
-                    section.add_block(Block::Table(table));
-
-                    // Parse drawing images linked to this sheet
-                    let images = self.parse_sheet_drawing_images(&sheet_path)?;
-                    for image in images {
-                        section.add_block(image);
-                    }
-                }
-            }
-
+            let section = self.parse_sheet_as_section(idx, sheet)?;
             doc.add_section(section);
         }
 
@@ -190,6 +156,117 @@ impl XlsxParser {
         self.extract_resources(&mut doc)?;
 
         Ok(doc)
+    }
+
+    /// Stream sections (sheets) one at a time, calling `f` for each event.
+    ///
+    /// See [`crate::parse_file_streaming`] for the full API contract.
+    pub fn for_each_section<F>(
+        &mut self,
+        opts: crate::streaming::SectionStreamOptions,
+        mut f: F,
+    ) -> Result<()>
+    where
+        F: FnMut(crate::streaming::ParseEvent<'_>) -> std::ops::ControlFlow<()>,
+    {
+        let metadata = self.parse_metadata()?;
+        let section_count = self.sheets.len();
+
+        // Build image_map from resources before streaming sections.
+        let mut dummy_doc = Document::new();
+        self.extract_resources(&mut dummy_doc)?;
+        let image_map: std::collections::HashMap<String, String> = dummy_doc
+            .resources
+            .iter()
+            .filter_map(|(id, r)| r.filename.as_ref().map(|name| (id.clone(), name.clone())))
+            .collect();
+
+        if f(crate::streaming::ParseEvent::DocumentStart {
+            metadata: &metadata,
+            section_count,
+            image_map,
+        })
+        .is_break()
+        {
+            return Ok(());
+        }
+
+        for (idx, sheet) in self.sheets.clone().iter().enumerate() {
+            let section_result = self.parse_sheet_as_section(idx, sheet);
+
+            match section_result {
+                Ok(section) => {
+                    if f(crate::streaming::ParseEvent::SectionParsed(&section)).is_break() {
+                        return Ok(());
+                    }
+                }
+                Err(e) => {
+                    if opts.lenient {
+                        if f(crate::streaming::ParseEvent::SectionFailed {
+                            index: idx,
+                            error: e,
+                        })
+                        .is_break()
+                        {
+                            return Ok(());
+                        }
+                    } else {
+                        return Err(e);
+                    }
+                }
+            }
+        }
+
+        if f(crate::streaming::ParseEvent::DocumentEnd).is_break() {
+            return Ok(());
+        }
+
+        if opts.extract_resources {
+            for (id, resource) in dummy_doc.resources {
+                let name = resource.filename.clone().unwrap_or(id);
+                if f(crate::streaming::ParseEvent::ResourceExtracted {
+                    name,
+                    data: resource.data,
+                })
+                .is_break()
+                {
+                    return Ok(());
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Parse a single sheet into a Section.
+    fn parse_sheet_as_section(&self, idx: usize, sheet: &SheetInfo) -> Result<Section> {
+        let mut section = Section::new(idx);
+        section.name = Some(sheet.name.clone());
+
+        if let Some(target) = self.relationships.get(&sheet.rel_id) {
+            let sheet_path = if let Some(stripped) = target.strip_prefix('/') {
+                stripped.to_string()
+            } else {
+                format!("xl/{}", target)
+            };
+
+            if let Some(xml) = self.container.read_xml_optional(&sheet_path)? {
+                let sheet_dir = sheet_path.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
+                let sheet_rels = self.read_optional_relationships_for_part(&sheet_path)?;
+                let hyperlink_map = Self::parse_hyperlinks(&xml, &sheet_rels);
+                let comment_map =
+                    Self::find_and_parse_comments(&self.container, &sheet_rels, sheet_dir)?;
+                let table = self.parse_sheet(&xml, &hyperlink_map, &comment_map)?;
+                section.add_block(Block::Table(table));
+
+                let images = self.parse_sheet_drawing_images(&sheet_path)?;
+                for image in images {
+                    section.add_block(image);
+                }
+            }
+        }
+
+        Ok(section)
     }
 
     /// Parse metadata from docProps/core.xml.

@@ -124,50 +124,127 @@ impl PptxParser {
 
         // Parse each slide as a section
         for (idx, slide) in self.slides.clone().iter().enumerate() {
-            let mut section = Section::new(idx);
-            section.name = Some(format!("Slide {}", idx + 1));
-
-            // Get the slide path from relationships
-            if let Some(target) = self.relationships.get(&slide.rel_id) {
-                let slide_path = if let Some(stripped) = target.strip_prefix('/') {
-                    stripped.to_string()
-                } else {
-                    format!("ppt/{}", target)
-                };
-
-                // Parse slide-specific relationships for hyperlinks and images
-                let slide_rels = self.parse_slide_relationships(&slide_path)?;
-
-                // Slide XML: missing leaves the section empty, but malformed
-                // bytes must surface so slide content corruption is not
-                // silently dropped.
-                if let Some(xml) = self.container.read_xml_optional(&slide_path)? {
-                    let blocks =
-                        self.parse_slide_content_with_rels(&xml, &slide_rels, &slide_path)?;
-                    for block in blocks {
-                        section.add_block(block);
-                    }
-                }
-
-                // Try to parse notes for this slide. Missing notes part is
-                // OK, but malformed bytes surface.
-                let notes_path = slide_path
-                    .replace("slides/slide", "notesSlides/notesSlide")
-                    .replace("slides\\slide", "notesSlides\\notesSlide");
-                if let Some(xml) = self.container.read_xml_optional(&notes_path)? {
-                    // Parse notes relationships too
-                    let notes_rels = self.parse_slide_relationships(&notes_path)?;
-                    let notes = self.parse_notes_with_rels(&xml, &notes_rels)?;
-                    if !notes.is_empty() {
-                        section.notes = Some(notes);
-                    }
-                }
-            }
-
+            let section = self.parse_slide_as_section(idx, slide)?;
             doc.add_section(section);
         }
 
         Ok(doc)
+    }
+
+    /// Stream sections (slides) one at a time, calling `f` for each event.
+    ///
+    /// See [`crate::parse_file_streaming`] for the full API contract.
+    pub fn for_each_section<F>(
+        &mut self,
+        opts: crate::streaming::SectionStreamOptions,
+        mut f: F,
+    ) -> Result<()>
+    where
+        F: FnMut(crate::streaming::ParseEvent<'_>) -> std::ops::ControlFlow<()>,
+    {
+        let metadata = self.parse_metadata()?;
+        let section_count = self.slides.len();
+
+        // Extract resources once; reuse for both image_map and ResourceExtracted.
+        let resources = self.extract_resources()?;
+        let image_map: std::collections::HashMap<String, String> = resources
+            .iter()
+            .filter_map(|r| r.filename.as_ref().map(|name| (name.clone(), name.clone())))
+            .collect();
+
+        if f(crate::streaming::ParseEvent::DocumentStart {
+            metadata: &metadata,
+            section_count,
+            image_map,
+        })
+        .is_break()
+        {
+            return Ok(());
+        }
+
+        for (idx, slide) in self.slides.clone().iter().enumerate() {
+            let section_result = self.parse_slide_as_section(idx, slide);
+
+            match section_result {
+                Ok(section) => {
+                    if f(crate::streaming::ParseEvent::SectionParsed(&section)).is_break() {
+                        return Ok(());
+                    }
+                }
+                Err(e) => {
+                    if opts.lenient {
+                        if f(crate::streaming::ParseEvent::SectionFailed {
+                            index: idx,
+                            error: e,
+                        })
+                        .is_break()
+                        {
+                            return Ok(());
+                        }
+                    } else {
+                        return Err(e);
+                    }
+                }
+            }
+        }
+
+        if f(crate::streaming::ParseEvent::DocumentEnd).is_break() {
+            return Ok(());
+        }
+
+        if opts.extract_resources {
+            for resource in resources {
+                let name = resource
+                    .filename
+                    .unwrap_or_else(|| "resource.bin".to_string());
+                if f(crate::streaming::ParseEvent::ResourceExtracted {
+                    name,
+                    data: resource.data,
+                })
+                .is_break()
+                {
+                    return Ok(());
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Parse a single slide into a Section.
+    fn parse_slide_as_section(&self, idx: usize, slide: &SlideInfo) -> Result<Section> {
+        let mut section = Section::new(idx);
+        section.name = Some(format!("Slide {}", idx + 1));
+
+        if let Some(target) = self.relationships.get(&slide.rel_id) {
+            let slide_path = if let Some(stripped) = target.strip_prefix('/') {
+                stripped.to_string()
+            } else {
+                format!("ppt/{}", target)
+            };
+
+            let slide_rels = self.parse_slide_relationships(&slide_path)?;
+
+            if let Some(xml) = self.container.read_xml_optional(&slide_path)? {
+                let blocks = self.parse_slide_content_with_rels(&xml, &slide_rels, &slide_path)?;
+                for block in blocks {
+                    section.add_block(block);
+                }
+            }
+
+            let notes_path = slide_path
+                .replace("slides/slide", "notesSlides/notesSlide")
+                .replace("slides\\slide", "notesSlides\\notesSlide");
+            if let Some(xml) = self.container.read_xml_optional(&notes_path)? {
+                let notes_rels = self.parse_slide_relationships(&notes_path)?;
+                let notes = self.parse_notes_with_rels(&xml, &notes_rels)?;
+                if !notes.is_empty() {
+                    section.notes = Some(notes);
+                }
+            }
+        }
+
+        Ok(section)
     }
 
     /// Parse relationships for a specific slide/notes file.

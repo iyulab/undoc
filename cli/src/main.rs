@@ -3,6 +3,7 @@
 //! A command-line tool for extracting content from DOCX, XLSX, and PPTX files.
 
 mod update;
+mod writer;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use colored::*;
@@ -11,6 +12,7 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use undoc::render::{CleanupPreset, HeadingConfig, JsonFormat, RenderOptions, TableFallback};
+use writer::{MultiFormatWriter, OutputFormat, StreamingWriter};
 
 /// Microsoft Office document extraction to Markdown, text, and JSON
 #[derive(Parser)]
@@ -45,7 +47,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Convert a document (default command - extracts all formats)
+    /// Convert a document (Markdown output by default; use --all or --formats for more)
     Convert {
         /// Input file path
         input: PathBuf,
@@ -57,6 +59,22 @@ enum Commands {
         /// Apply text cleanup
         #[arg(long)]
         cleanup: Option<CleanupMode>,
+
+        /// Output formats to produce (comma-separated: md,txt,json; default: md)
+        #[arg(long, value_delimiter = ',', default_value = "md")]
+        formats: Vec<String>,
+
+        /// Produce all output formats (md + txt + json)
+        #[arg(long)]
+        all: bool,
+
+        /// Skip image extraction (images are extracted by default)
+        #[arg(long)]
+        no_images: bool,
+
+        /// Suppress progress output
+        #[arg(short, long)]
+        quiet: bool,
 
         /// Emit `\n\n---\n\n` for hard page breaks (default: off — markdown has
         /// no page concept).
@@ -209,6 +227,8 @@ impl From<TableMode> for TableFallback {
 /// Cleanup mode
 #[derive(Clone, ValueEnum)]
 enum CleanupMode {
+    /// No cleanup
+    None,
     /// Minimal cleanup
     Minimal,
     /// Standard cleanup (default)
@@ -217,12 +237,13 @@ enum CleanupMode {
     Aggressive,
 }
 
-impl From<CleanupMode> for CleanupPreset {
-    fn from(mode: CleanupMode) -> Self {
-        match mode {
-            CleanupMode::Minimal => CleanupPreset::Minimal,
-            CleanupMode::Standard => CleanupPreset::Default,
-            CleanupMode::Aggressive => CleanupPreset::Aggressive,
+impl CleanupMode {
+    fn to_preset(self) -> Option<CleanupPreset> {
+        match self {
+            Self::None => None,
+            Self::Minimal => Some(CleanupPreset::Minimal),
+            Self::Standard => Some(CleanupPreset::Default),
+            Self::Aggressive => Some(CleanupPreset::Aggressive),
         }
     }
 }
@@ -267,15 +288,18 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     // Handle default command (undoc <file> [output])
     if cli.command.is_none() {
         if let Some(input) = cli.input {
-            return run_convert(
-                &input,
-                cli.output.as_ref(),
-                cli.cleanup,
-                false,
-                false,
-                false,
-                false,
-            );
+            return run_convert(ConvertParams {
+                input: &input,
+                output: cli.output.as_ref(),
+                cleanup: cli.cleanup,
+                formats: &[OutputFormat::Markdown],
+                no_images: false,
+                quiet: false,
+                emit_page_breaks: false,
+                include_headers_footers: false,
+                lossless: false,
+                section_markers: false,
+            });
         } else {
             // No input provided, show help
             use clap::CommandFactory;
@@ -289,20 +313,44 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             input,
             output,
             cleanup,
+            formats,
+            all,
+            no_images,
+            quiet,
             emit_page_breaks,
             include_headers_footers,
             lossless,
             section_markers,
         } => {
-            run_convert(
-                &input,
-                output.as_ref(),
+            let resolved: Vec<OutputFormat> = if all {
+                vec![
+                    OutputFormat::Markdown,
+                    OutputFormat::Text,
+                    OutputFormat::Json,
+                ]
+            } else {
+                formats
+                    .iter()
+                    .filter_map(|s| OutputFormat::parse(s))
+                    .collect()
+            };
+            let resolved = if resolved.is_empty() {
+                vec![OutputFormat::Markdown]
+            } else {
+                resolved
+            };
+            run_convert(ConvertParams {
+                input: &input,
+                output: output.as_ref(),
                 cleanup,
+                formats: &resolved,
+                no_images,
+                quiet,
                 emit_page_breaks,
                 include_headers_footers,
                 lossless,
                 section_markers,
-            )?;
+            })?;
         }
 
         Commands::Markdown {
@@ -341,7 +389,9 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             }
 
             if let Some(mode) = cleanup {
-                options = options.with_cleanup_preset(mode.into());
+                if let Some(preset) = mode.to_preset() {
+                    options = options.with_cleanup_preset(preset);
+                }
             }
 
             let markdown = undoc::render::to_markdown(&doc, &options)?;
@@ -375,7 +425,9 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let heading_config = HeadingConfig::default().with_default_style_mapping();
             let mut options = RenderOptions::new().with_heading_config(heading_config);
             if let Some(mode) = cleanup {
-                options = options.with_cleanup_preset(mode.into());
+                if let Some(preset) = mode.to_preset() {
+                    options = options.with_cleanup_preset(preset);
+                }
             }
 
             let text = undoc::render::to_text(&doc, &options)?;
@@ -474,8 +526,11 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 
             let mut count = 0;
             for (id, resource) in &doc.resources {
-                let filename = resource.suggested_filename(id);
-                let path = output.join(&filename);
+                let raw = resource.suggested_filename(id);
+                let safe_name = std::path::Path::new(&raw)
+                    .file_name()
+                    .unwrap_or_else(|| std::ffi::OsStr::new(&raw));
+                let path = output.join(safe_name);
                 fs::write(&path, &resource.data)?;
                 count += 1;
             }
@@ -509,131 +564,114 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Run the default convert command - extracts all formats to output directory
-fn run_convert(
-    input: &PathBuf,
-    output: Option<&PathBuf>,
+struct ConvertParams<'a> {
+    input: &'a PathBuf,
+    output: Option<&'a PathBuf>,
     cleanup: Option<CleanupMode>,
+    formats: &'a [OutputFormat],
+    no_images: bool,
+    quiet: bool,
     emit_page_breaks: bool,
     include_headers_footers: bool,
     lossless: bool,
     section_markers: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    // Start async update check in background
+}
+
+fn run_convert(p: ConvertParams<'_>) -> Result<(), Box<dyn std::error::Error>> {
     let update_rx = update::check_update_async();
 
-    let pb = create_spinner("Parsing document...");
+    let pb = if p.quiet {
+        ProgressBar::hidden()
+    } else {
+        create_spinner("Parsing document...")
+    };
 
-    // Determine output directory
-    let output_dir = match output {
+    let output_dir = match p.output {
         Some(p) => p.clone(),
         None => {
-            let stem = input
+            let stem = p
+                .input
                 .file_stem()
                 .unwrap_or_default()
                 .to_string_lossy()
                 .to_string();
-            let parent = input.parent().unwrap_or(std::path::Path::new("."));
+            let parent = p.input.parent().unwrap_or(std::path::Path::new("."));
             parent.join(format!("{}_output", stem))
         }
     };
 
-    // Create output directory
     fs::create_dir_all(&output_dir)?;
 
-    // Parse document
-    let doc = undoc::parse_file(input)?;
-
-    // Prepare render options with heading analysis enabled
     let heading_config = HeadingConfig::default().with_default_style_mapping();
-    let base = if lossless {
+    let base = if p.lossless {
         RenderOptions::lossless()
     } else {
         RenderOptions::new()
-            .with_emit_page_breaks(emit_page_breaks)
-            .with_include_headers_footers(include_headers_footers)
+            .with_emit_page_breaks(p.emit_page_breaks)
+            .with_include_headers_footers(p.include_headers_footers)
     };
     let mut options = base
         .with_frontmatter(true)
         .with_heading_config(heading_config);
-    if section_markers {
+    if p.section_markers {
         options = options.with_section_markers(undoc::SectionMarkerStyle::Comment);
     }
-    if let Some(mode) = cleanup {
-        options = options.with_cleanup_preset(mode.into());
-    }
-
-    // Generate Markdown
-    pb.set_message("Generating Markdown...");
-    let markdown = undoc::render::to_markdown(&doc, &options)?;
-    let md_path = output_dir.join("extract.md");
-    fs::write(&md_path, &markdown)?;
-
-    // Generate plain text
-    pb.set_message("Generating text...");
-    let text = undoc::render::to_text(&doc, &options)?;
-    let txt_path = output_dir.join("extract.txt");
-    fs::write(&txt_path, &text)?;
-
-    // Generate JSON
-    pb.set_message("Generating JSON...");
-    let json = undoc::render::to_json(&doc, JsonFormat::Pretty)?;
-    let json_path = output_dir.join("content.json");
-    fs::write(&json_path, &json)?;
-
-    // Extract resources (images/ for images, media/ for audio/video/other)
-    let mut image_count = 0;
-    let mut media_count = 0;
-    if !doc.resources.is_empty() {
-        pb.set_message("Extracting resources...");
-        let images_dir = output_dir.join("images");
-        let media_dir = output_dir.join("media");
-
-        for (id, resource) in &doc.resources {
-            let filename = resource.suggested_filename(id);
-            if resource.is_image() {
-                fs::create_dir_all(&images_dir)?;
-                fs::write(images_dir.join(&filename), &resource.data)?;
-                image_count += 1;
-            } else {
-                fs::create_dir_all(&media_dir)?;
-                fs::write(media_dir.join(&filename), &resource.data)?;
-                media_count += 1;
-            }
+    if let Some(mode) = p.cleanup {
+        if let Some(preset) = mode.to_preset() {
+            options = options.with_cleanup_preset(preset);
         }
     }
 
+    pb.set_message("Generating output...");
+
+    let format = undoc::detect_format_from_path(p.input)?;
+    let mfw = MultiFormatWriter::new(&output_dir, p.formats, &options);
+
+    let (summary, image_count, media_count) = match format {
+        undoc::FormatType::Pptx | undoc::FormatType::Xlsx => {
+            run_convert_streaming(p.input, p.no_images, &output_dir, mfw, format)?
+        }
+        _ => run_convert_batch(p.input, p.no_images, &output_dir, mfw)?,
+    };
+    let word_count = summary.word_count;
+
     pb.finish_and_clear();
 
-    // Print summary
-    println!("{}", "Conversion Complete".green().bold());
-    println!("{}", "─".repeat(40));
-    println!("{}: {}", "Output".bold(), output_dir.display());
-    println!("  {} extract.md", "✓".green());
-    println!("  {} extract.txt", "✓".green());
-    println!("  {} content.json", "✓".green());
-    if image_count > 0 {
-        println!("  {} images/ ({} files)", "✓".green(), image_count);
-    }
-    if media_count > 0 {
-        println!("  {} media/ ({} files)", "✓".green(), media_count);
+    if !p.quiet {
+        println!("{}", "Conversion Complete".green().bold());
+        println!("{}", "─".repeat(40));
+        println!("{}: {}", "Output".bold(), output_dir.display());
+        if summary.md_path.is_some() {
+            println!("  {} extract.md", "✓".green());
+        }
+        if summary.txt_path.is_some() {
+            println!("  {} extract.txt", "✓".green());
+        }
+        if summary.json_path.is_some() {
+            println!("  {} content.json", "✓".green());
+        }
+        if image_count > 0 {
+            println!("  {} images/ ({} files)", "✓".green(), image_count);
+        }
+        if media_count > 0 {
+            println!("  {} media/ ({} files)", "✓".green(), media_count);
+        }
+
+        println!("\n{}", "Statistics".cyan().bold());
+        println!("{}", "─".repeat(40));
+        println!("{}: {}", "Sections".bold(), summary.section_count);
+        if summary.md_path.is_some() {
+            println!("{}: {}", "Words".bold(), word_count);
+        }
+        println!(
+            "{}: {} (images: {}, media: {})",
+            "Resources".bold(),
+            image_count + media_count,
+            image_count,
+            media_count
+        );
     }
 
-    // Print statistics
-    let word_count = text.split_whitespace().count();
-    println!("\n{}", "Statistics".cyan().bold());
-    println!("{}", "─".repeat(40));
-    println!("{}: {}", "Sections".bold(), doc.sections.len());
-    println!("{}: {}", "Words".bold(), word_count);
-    println!(
-        "{}: {} (images: {}, media: {})",
-        "Resources".bold(),
-        image_count + media_count,
-        image_count,
-        media_count
-    );
-
-    // Check for update result and notify if available
     if let Some(result) = update::try_get_update_result(&update_rx) {
         update::print_update_notification(&result);
     }
@@ -660,6 +698,128 @@ fn create_spinner(message: &str) -> ProgressBar {
     pb.set_message(message.to_string());
     pb.enable_steady_tick(std::time::Duration::from_millis(100));
     pb
+}
+
+type ConvertResult = (writer::WriteSummary, usize, usize);
+
+fn run_convert_batch(
+    input: &std::path::Path,
+    no_images: bool,
+    output_dir: &std::path::Path,
+    mfw: MultiFormatWriter<'_>,
+) -> Result<ConvertResult, Box<dyn std::error::Error>> {
+    let doc = undoc::parse_file(input)?;
+    let summary = mfw.write_document(&doc)?;
+    let (image_count, media_count) = extract_resources_to_dir(&doc, no_images, output_dir)?;
+    Ok((summary, image_count, media_count))
+}
+
+fn run_convert_streaming(
+    input: &std::path::Path,
+    no_images: bool,
+    output_dir: &std::path::Path,
+    mfw: MultiFormatWriter<'_>,
+    doc_format: undoc::FormatType,
+) -> Result<ConvertResult, Box<dyn std::error::Error>> {
+    use std::ops::ControlFlow;
+    use undoc::{parse_file_streaming, ParseEvent, SectionStreamOptions};
+
+    let stream_opts = SectionStreamOptions {
+        lenient: false,
+        extract_resources: !no_images,
+    };
+
+    let mut sw: Option<StreamingWriter> = None;
+    let mut image_count = 0usize;
+    let mut media_count = 0usize;
+    let images_dir = output_dir.join("images");
+    let media_dir = output_dir.join("media");
+
+    parse_file_streaming(input, stream_opts, |event| {
+        match event {
+            ParseEvent::DocumentStart { image_map, .. } => {
+                match mfw.open_streaming(doc_format, image_map) {
+                    Ok(mut writer) => {
+                        let _ = writer.write_json_start();
+                        sw = Some(writer);
+                    }
+                    Err(_) => return ControlFlow::Break(()),
+                }
+            }
+            ParseEvent::SectionParsed(section) => {
+                if let Some(ref mut writer) = sw {
+                    let _ = writer.write_section(section);
+                }
+            }
+            ParseEvent::SectionFailed { .. } | ParseEvent::DocumentEnd => {}
+            ParseEvent::ResourceExtracted { name, data } => {
+                let safe_name = std::path::Path::new(&name)
+                    .file_name()
+                    .unwrap_or_else(|| std::ffi::OsStr::new(&name));
+                let ext = std::path::Path::new(&name)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("");
+                let is_image = matches!(
+                    ext.to_lowercase().as_str(),
+                    "png" | "jpg" | "jpeg" | "gif" | "bmp" | "tiff" | "tif" | "wmf" | "emf" | "svg"
+                );
+                if is_image {
+                    let _ = fs::create_dir_all(&images_dir);
+                    let _ = fs::write(images_dir.join(safe_name), &data);
+                    image_count += 1;
+                } else {
+                    let _ = fs::create_dir_all(&media_dir);
+                    let _ = fs::write(media_dir.join(safe_name), &data);
+                    media_count += 1;
+                }
+            }
+        }
+        ControlFlow::Continue(())
+    })?;
+
+    // If streaming path didn't initialize (e.g., empty document), fall back to batch
+    let summary = match sw {
+        Some(writer) => writer.finish()?,
+        None => {
+            let doc = undoc::parse_file(input)?;
+            mfw.write_document(&doc)?
+        }
+    };
+
+    Ok((summary, image_count, media_count))
+}
+
+fn extract_resources_to_dir(
+    doc: &undoc::Document,
+    no_images: bool,
+    output_dir: &std::path::Path,
+) -> Result<(usize, usize), Box<dyn std::error::Error>> {
+    let mut image_count = 0;
+    let mut media_count = 0;
+
+    if !no_images && !doc.resources.is_empty() {
+        let images_dir = output_dir.join("images");
+        let media_dir = output_dir.join("media");
+
+        for (id, resource) in &doc.resources {
+            let raw = resource.suggested_filename(id);
+            let safe_name = std::path::Path::new(&raw)
+                .file_name()
+                .unwrap_or_else(|| std::ffi::OsStr::new(&raw));
+            if resource.is_image() {
+                fs::create_dir_all(&images_dir)?;
+                fs::write(images_dir.join(safe_name), &resource.data)?;
+                image_count += 1;
+            } else {
+                fs::create_dir_all(&media_dir)?;
+                fs::write(media_dir.join(safe_name), &resource.data)?;
+                media_count += 1;
+            }
+        }
+    }
+
+    Ok((image_count, media_count))
 }
 
 fn write_output(path: Option<&PathBuf>, content: &str) -> Result<(), Box<dyn std::error::Error>> {

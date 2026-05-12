@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [0.3.0] - 2026-05-12
+
+### Added
+
+#### Streaming API
+- `parse_file_streaming()` — processes PPTX slides and XLSX sheets with bounded memory
+- `ParseEvent` enum: `DocumentStart` (with `image_map`), `SectionParsed`, `SectionFailed`, `DocumentEnd`, `ResourceExtracted`
+- `SectionStreamOptions` — configure lenient mode and resource extraction for streaming
+- `render_section_to_string()` — render a single section to Markdown (streaming renderer)
+
+#### CLI Improvements (parity with unhwp v0.3.0)
+- `convert` default output is now **Markdown only** (`extract.md` + `images/`); use `--all` or `--formats` for additional formats
+- `--formats <md,txt,json>` — select output formats (comma-separated)
+- `--all` — shorthand for `--formats md,txt,json`
+- `--no-images` — skip binary resource extraction
+- `--quiet` / `-q` — suppress progress output
+- `--cleanup none` — explicit no-cleanup option added to `CleanupMode`
+
+#### Architecture
+- `cli/src/writer.rs` — `MultiFormatWriter` and `StreamingWriter` separated from CLI logic
+- `cmd_convert` rewired to streaming pipeline for PPTX/XLSX; DOCX uses full-parse batch path
+
+### Fixed
+- CLI path sanitization in resource extraction (prevent path traversal attacks)
+- `cli/Cargo.toml` dep version now exact (`"0.3.0"`) so CI version-check catches drift
+- CI `version-check` job now also verifies `cli -> undoc dep` version alignment
+
 ## [0.1.0] - 2025-01-20
 
 ### Added

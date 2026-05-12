@@ -57,6 +57,7 @@ mod decode;
 pub mod detect;
 pub mod error;
 pub mod model;
+pub mod streaming;
 
 #[cfg(feature = "docx")]
 pub mod docx;
@@ -81,6 +82,7 @@ pub use model::{
     Resource, ResourceType, Row, Section, Table, TextAlignment, TextRun, TextStyle,
 };
 pub use render::SectionMarkerStyle;
+pub use streaming::{parse_file_streaming, ParseEvent, SectionStreamOptions};
 
 use std::path::Path;
 

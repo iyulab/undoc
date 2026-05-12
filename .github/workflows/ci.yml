@@ -31,20 +31,25 @@ jobs:
           py=$(grep -m1 '^version = ' bindings/python/pyproject.toml | sed 's/.*"\(.*\)".*/\1/')
           cs=$(grep -oE '<Version>[^<]+</Version>' bindings/csharp/Undoc/Undoc.csproj | head -1 | sed 's/<[^>]*>//g')
 
+          # Also verify cli/Cargo.toml's undoc dep points at the same version
+          # so consumers of the published crate aren't broken.
+          dep=$(grep -m1 'undoc = { version =' cli/Cargo.toml | sed 's/.*version = "\([^"]*\)".*/\1/')
+
           echo "Root Cargo.toml:                    $root"
           echo "cli/Cargo.toml:                     $cli"
           echo "bindings/python/pyproject.toml:     $py"
           echo "bindings/csharp/Undoc/Undoc.csproj: $cs"
+          echo "cli -> undoc dep version:            $dep"
 
           fail=0
-          for v in "$cli" "$py" "$cs"; do
+          for v in "$cli" "$py" "$cs" "$dep"; do
             if [ "$v" != "$root" ]; then
               fail=1
             fi
           done
 
           if [ $fail -eq 1 ]; then
-            echo "::error::Version mismatch — update all four canonical files together per CLAUDE.md Version Bump Checklist."
+            echo "::error::Version mismatch — update all four canonical files AND cli's undoc dep together per CLAUDE.md Version Bump Checklist."
             exit 1
           fi
           echo "All versions match: $root"

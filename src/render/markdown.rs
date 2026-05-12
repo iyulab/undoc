@@ -43,6 +43,34 @@ pub fn to_markdown(doc: &Document, options: &RenderOptions) -> Result<String> {
     to_markdown_standard(doc, options)
 }
 
+/// Render a single section to Markdown.
+///
+/// This is the streaming counterpart to [`to_markdown`]: it renders one
+/// section at a time without requiring a full `Document`. Heading analysis
+/// is not available on this path (requires all sections); heading levels come
+/// from `section.content` directly.
+///
+/// `resource_map` maps resource IDs to filenames (e.g., `"rId1" → "image1.png"`).
+/// In the streaming path, supply the `image_map` from [`crate::ParseEvent::DocumentStart`].
+pub fn render_section_to_string(
+    section: &crate::model::Section,
+    section_index: usize,
+    doc_format: crate::detect::FormatType,
+    options: &RenderOptions,
+    resource_map: &HashMap<String, String>,
+) -> String {
+    let mut output = String::new();
+    render_section_impl(
+        section,
+        section_index,
+        doc_format,
+        options,
+        resource_map,
+        &mut output,
+    );
+    output
+}
+
 /// Build a map from resource IDs to their suggested filenames.
 fn build_resource_map(doc: &Document) -> ResourceMap {
     doc.resources
@@ -104,120 +132,120 @@ fn section_marker(
     }
 }
 
+/// Core per-section render, shared by the batch and streaming paths.
+fn render_section_impl(
+    section: &crate::model::Section,
+    section_index: usize,
+    doc_format: FormatType,
+    options: &RenderOptions,
+    resource_map: &ResourceMap,
+    output: &mut String,
+) {
+    let marker = section_marker(
+        doc_format,
+        options.section_markers,
+        section_index,
+        section.name.as_deref(),
+    );
+    if !marker.is_empty() {
+        output.push_str(&marker);
+        output.push_str("\n\n");
+    }
+
+    if let Some(ref name) = section.name {
+        if section_index > 0 {
+            output.push_str("\n---\n\n");
+        }
+        output.push_str(&format!("## {}\n\n", name));
+    }
+
+    if options.include_headers_footers {
+        if let Some(ref header) = section.header {
+            render_header_footer("Header", header, options, resource_map, output);
+        }
+    }
+
+    for (block_idx, block) in section.content.iter().enumerate() {
+        match block {
+            Block::Paragraph(para) => {
+                let md = render_paragraph(para, options, None, resource_map);
+                if !md.is_empty() || options.include_empty_paragraphs {
+                    output.push_str(&md);
+                    let in_list = para.list_info.is_some();
+                    let tight = in_list && next_block_continues_list(&section.content, block_idx);
+                    if tight {
+                        output.push('\n');
+                    } else if options.paragraph_spacing {
+                        output.push_str("\n\n");
+                    } else {
+                        output.push('\n');
+                    }
+                }
+            }
+            Block::Table(table) => {
+                output.push_str(&render_table(table, options, resource_map));
+                output.push_str("\n\n");
+            }
+            Block::PageBreak => {
+                if options.emit_page_breaks {
+                    output.push_str("\n---\n\n");
+                }
+            }
+            Block::SectionBreak => {
+                output.push_str("\n---\n\n");
+            }
+            Block::Image {
+                resource_id,
+                alt_text,
+                ..
+            } => {
+                let alt = alt_text.as_deref().unwrap_or("image");
+                let path =
+                    resolve_image_path(resource_id, resource_map, &options.image_path_prefix);
+                output.push_str(&format!("![{}]({})\n\n", alt, path));
+            }
+        }
+    }
+
+    if options.include_headers_footers {
+        if let Some(ref footer) = section.footer {
+            render_header_footer("Footer", footer, options, resource_map, output);
+        }
+    }
+
+    if let Some(ref notes) = section.notes {
+        if !notes.is_empty() {
+            output.push_str("\n> **Notes:**\n");
+            for note in notes {
+                let text = render_paragraph(note, options, None, resource_map);
+                if !text.is_empty() {
+                    output.push_str(&format!("> {}\n", text));
+                }
+            }
+            output.push('\n');
+        }
+    }
+}
+
 /// Standard markdown conversion (without heading analyzer).
 fn to_markdown_standard(doc: &Document, options: &RenderOptions) -> Result<String> {
     let mut output = String::new();
     let resource_map = build_resource_map(doc);
 
-    // Add frontmatter if requested
     if options.include_frontmatter {
         output.push_str(&render_frontmatter(doc));
     }
 
-    // Render each section
     for (i, section) in doc.sections.iter().enumerate() {
-        // Section boundary marker (PPTX/XLSX only, opt-in)
-        let marker = section_marker(
-            doc.format,
-            options.section_markers,
-            i,
-            section.name.as_deref(),
-        );
-        if !marker.is_empty() {
-            output.push_str(&marker);
-            output.push_str("\n\n");
-        }
-
-        // Add section name as heading if present
-        if let Some(ref name) = section.name {
-            if i > 0 {
-                output.push_str("\n---\n\n");
-            }
-            output.push_str(&format!("## {}\n\n", name));
-        }
-
-        // Render header if present (DOCX)
-        if options.include_headers_footers {
-            if let Some(ref header) = section.header {
-                render_header_footer("Header", header, options, &resource_map, &mut output);
-            }
-        }
-
-        // Render content blocks
-        for (block_idx, block) in section.content.iter().enumerate() {
-            match block {
-                Block::Paragraph(para) => {
-                    let md = render_paragraph(para, options, None, &resource_map);
-                    if !md.is_empty() || options.include_empty_paragraphs {
-                        output.push_str(&md);
-                        let in_list = para.list_info.is_some();
-                        let tight =
-                            in_list && next_block_continues_list(&section.content, block_idx);
-                        if tight {
-                            output.push('\n');
-                        } else if options.paragraph_spacing {
-                            output.push_str("\n\n");
-                        } else {
-                            output.push('\n');
-                        }
-                    }
-                }
-                Block::Table(table) => {
-                    output.push_str(&render_table(table, options, &resource_map));
-                    output.push_str("\n\n");
-                }
-                Block::PageBreak => {
-                    if options.emit_page_breaks {
-                        output.push_str("\n---\n\n");
-                    }
-                }
-                Block::SectionBreak => {
-                    output.push_str("\n---\n\n");
-                }
-                Block::Image {
-                    resource_id,
-                    alt_text,
-                    ..
-                } => {
-                    let alt = alt_text.as_deref().unwrap_or("image");
-                    let path =
-                        resolve_image_path(resource_id, &resource_map, &options.image_path_prefix);
-                    output.push_str(&format!("![{}]({})\n\n", alt, path));
-                }
-            }
-        }
-
-        // Render footer if present (DOCX)
-        if options.include_headers_footers {
-            if let Some(ref footer) = section.footer {
-                render_header_footer("Footer", footer, options, &resource_map, &mut output);
-            }
-        }
-
-        // Render notes if present (for PPTX)
-        if let Some(ref notes) = section.notes {
-            if !notes.is_empty() {
-                output.push_str("\n> **Notes:**\n");
-                for note in notes {
-                    let text = render_paragraph(note, options, None, &resource_map);
-                    if !text.is_empty() {
-                        output.push_str(&format!("> {}\n", text));
-                    }
-                }
-                output.push('\n');
-            }
-        }
+        render_section_impl(section, i, doc.format, options, &resource_map, &mut output);
     }
 
-    // Apply cleanup if configured
     let processed = if let Some(ref cleanup) = options.cleanup {
         super::cleanup::clean_text(&output, cleanup)
     } else {
         output
     };
 
-    // Always collapse 3+ consecutive newlines into a single blank line.
-    // This is lossless: CommonMark renders multiple blank lines identically.
     let result = super::cleanup::collapse_blank_lines(&processed)
         .trim()
         .to_string();
