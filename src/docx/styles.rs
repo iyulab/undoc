@@ -125,7 +125,7 @@ impl StyleMap {
         }
 
         let mut map = StyleMap::default();
-        let mut reader = quick_xml::Reader::from_str(xml);
+        let mut reader = crate::decode::reader_for(xml);
         reader.config_mut().trim_text(true);
 
         let mut buf = Vec::new();

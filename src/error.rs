@@ -79,12 +79,6 @@ impl From<quick_xml::Error> for Error {
     }
 }
 
-impl From<quick_xml::DeError> for Error {
-    fn from(err: quick_xml::DeError) -> Self {
-        Error::XmlParse(err.to_string())
-    }
-}
-
 impl Error {
     /// Create an XML parse error with context information.
     ///

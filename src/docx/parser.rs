@@ -279,7 +279,7 @@ impl DocxParser {
         let xml = self.container.read_xml("word/document.xml")?;
         let mut section = Section::new(0);
 
-        let mut reader = quick_xml::Reader::from_str(&xml);
+        let mut reader = crate::decode::reader_for(&xml);
         // IMPORTANT: Don't trim text - preserve whitespace from xml:space="preserve" elements
         // This fixes the "DATE OF BIRTH" -> "DATEOFBIRTH" bug (GitHub Issue #2)
         reader.config_mut().trim_text(false);
@@ -423,6 +423,18 @@ impl DocxParser {
                         table_xml.push_str(&escape_xml(&text));
                     }
                 }
+                // quick-xml 0.40+ emits entity refs as separate events. This buffer
+                // is re-serialized XML that gets parsed a second time, so re-emit
+                // the resolved entity through escape_xml — the second pass then sees
+                // "&amp;" again and decodes it via its own GeneralRef arm.
+                Ok(quick_xml::events::Event::GeneralRef(ref e)) => {
+                    let decoded = crate::decode::resolve_general_ref(e);
+                    if in_paragraph {
+                        paragraph_xml.push_str(&escape_xml(&decoded));
+                    } else if table_depth > 0 {
+                        table_xml.push_str(&escape_xml(&decoded));
+                    }
+                }
                 Ok(quick_xml::events::Event::End(ref e)) => {
                     let name = e.name();
                     match name.as_ref() {
@@ -524,7 +536,7 @@ impl DocxParser {
         use crate::model::InlineImage;
 
         let mut para = Paragraph::new();
-        let mut reader = quick_xml::Reader::from_str(xml);
+        let mut reader = crate::decode::reader_for(xml);
         // Don't trim text - preserve whitespace from xml:space="preserve" elements
         reader.config_mut().trim_text(false);
 
@@ -913,6 +925,36 @@ impl DocxParser {
                         para.runs.push(run);
                     }
                 }
+                // quick-xml 0.40+ delivers entity refs separately; mirror the Text
+                // arm so a run like "AT&amp;T" keeps its ampersand. The entity
+                // becomes its own run, which concatenates identically on render.
+                Ok(quick_xml::events::Event::GeneralRef(ref e))
+                    if in_run
+                        && in_text
+                        && !in_instr_text
+                        && mc_fallback_depth == 0
+                        && txbx_content_depth == 0 =>
+                {
+                    let text = crate::decode::resolve_general_ref(e);
+                    if !text.is_empty() {
+                        let current_revision = if in_del {
+                            RevisionType::Deleted
+                        } else if in_ins {
+                            RevisionType::Inserted
+                        } else {
+                            RevisionType::None
+                        };
+                        let run = TextRun {
+                            text,
+                            style: current_style.clone(),
+                            hyperlink: current_hyperlink.clone(),
+                            line_break: false,
+                            page_break: false,
+                            revision: current_revision,
+                        };
+                        para.runs.push(run);
+                    }
+                }
                 Ok(quick_xml::events::Event::End(ref e)) => match e.name().as_ref() {
                     b"mc:Fallback" if mc_fallback_depth > 0 => {
                         mc_fallback_depth -= 1;
@@ -956,7 +998,7 @@ impl DocxParser {
     /// to avoid duplication) and parses the inner `<w:p>` elements as regular paragraphs.
     fn extract_textbox_paragraphs(&mut self, xml: &str) -> Vec<Paragraph> {
         let mut paragraphs = Vec::new();
-        let mut reader = quick_xml::Reader::from_str(xml);
+        let mut reader = crate::decode::reader_for(xml);
         reader.config_mut().trim_text(false);
 
         let mut buf = Vec::new();
@@ -1024,6 +1066,12 @@ impl DocxParser {
                     let text = crate::decode::decode_text_lossy(e);
                     txbx_para_xml.push_str(&escape_xml(&text));
                 }
+                // Re-serialized buffer (parsed a second time): re-emit the resolved
+                // entity through escape_xml so the second pass decodes it again.
+                Ok(quick_xml::events::Event::GeneralRef(ref e)) if in_txbx_para => {
+                    let decoded = crate::decode::resolve_general_ref(e);
+                    txbx_para_xml.push_str(&escape_xml(&decoded));
+                }
                 Ok(quick_xml::events::Event::End(ref e)) => {
                     let name = e.name();
                     match name.as_ref() {
@@ -1063,7 +1111,7 @@ impl DocxParser {
 
     /// Parse list info from paragraph XML.
     fn parse_list_info(&mut self, xml: &str) -> Option<ListInfo> {
-        let mut reader = quick_xml::Reader::from_str(xml);
+        let mut reader = crate::decode::reader_for(xml);
         reader.config_mut().trim_text(true);
 
         let mut buf = Vec::new();
@@ -1128,7 +1176,7 @@ impl DocxParser {
         use crate::model::InlineImage;
 
         let mut table = Table::new();
-        let mut reader = quick_xml::Reader::from_str(xml);
+        let mut reader = crate::decode::reader_for(xml);
         // Don't trim text - preserve whitespace from xml:space="preserve" elements
         reader.config_mut().trim_text(false);
 
@@ -1374,6 +1422,33 @@ impl DocxParser {
                         }
                     }
                 }
+                // quick-xml 0.40+ delivers entity refs separately; mirror both
+                // branches of the Text arm (nested-table re-serialization and the
+                // cell's own run text).
+                Ok(quick_xml::events::Event::GeneralRef(ref e)) => {
+                    if nested_table_depth > 0 {
+                        let decoded = crate::decode::resolve_general_ref(e);
+                        nested_table_xml.push_str(&escape_xml(&decoded));
+                        continue;
+                    }
+
+                    if in_run && in_text && !in_instr_text {
+                        let text = crate::decode::resolve_general_ref(e);
+                        if !text.is_empty() {
+                            if let Some(ref mut para) = current_paragraph {
+                                let run = TextRun {
+                                    text,
+                                    style: current_style.clone(),
+                                    hyperlink: None,
+                                    line_break: false,
+                                    page_break: false,
+                                    revision: RevisionType::None,
+                                };
+                                para.runs.push(run);
+                            }
+                        }
+                    }
+                }
                 Ok(quick_xml::events::Event::End(ref e)) => {
                     let name = e.name();
 
@@ -1546,7 +1621,7 @@ impl DocxParser {
 /// Entries with `w:type="separator"` or `w:type="continuationSeparator"` are skipped.
 fn parse_notes_xml(xml: &str, note_tag: &[u8]) -> HashMap<String, String> {
     let mut notes = HashMap::new();
-    let mut reader = quick_xml::Reader::from_str(xml);
+    let mut reader = crate::decode::reader_for(xml);
     reader.config_mut().trim_text(false);
 
     let mut buf = Vec::new();
@@ -1592,6 +1667,9 @@ fn parse_notes_xml(xml: &str, note_tag: &[u8]) -> HashMap<String, String> {
             Ok(quick_xml::events::Event::Text(ref e)) if in_note && in_text => {
                 current_text.push_str(&crate::decode::decode_text_lossy(e));
             }
+            Ok(quick_xml::events::Event::GeneralRef(ref e)) if in_note && in_text => {
+                current_text.push_str(&crate::decode::resolve_general_ref(e));
+            }
             Ok(quick_xml::events::Event::End(ref e)) => {
                 if e.name().as_ref() == note_tag {
                     if in_note {
@@ -1624,7 +1702,7 @@ fn parse_notes_xml(xml: &str, note_tag: &[u8]) -> HashMap<String, String> {
 /// This function extracts plain text only (no styles or formatting).
 fn parse_header_footer_xml(xml: &str) -> Vec<Paragraph> {
     let mut paragraphs = Vec::new();
-    let mut reader = quick_xml::Reader::from_str(xml);
+    let mut reader = crate::decode::reader_for(xml);
     reader.config_mut().trim_text(false);
 
     let mut buf = Vec::new();
@@ -1646,6 +1724,9 @@ fn parse_header_footer_xml(xml: &str) -> Vec<Paragraph> {
             },
             Ok(quick_xml::events::Event::Text(ref e)) if in_paragraph && in_text => {
                 current_text.push_str(&crate::decode::decode_text_lossy(e));
+            }
+            Ok(quick_xml::events::Event::GeneralRef(ref e)) if in_paragraph && in_text => {
+                current_text.push_str(&crate::decode::resolve_general_ref(e));
             }
             Ok(quick_xml::events::Event::End(ref e)) => match e.name().as_ref() {
                 b"w:p" if in_paragraph => {
@@ -3234,6 +3315,107 @@ mod tests {
             !text.contains("A &amp; B"),
             "legitimate entity must not remain escaped; got {text:?}"
         );
+    }
+
+    #[test]
+    fn test_docx_ampersand_midword_renders_intact() {
+        // Gate-2: under quick-xml 0.40+, "AT&amp;T" splits into runs "AT","&","T".
+        // Verify the fragmentation survives full rendering to Markdown — the entity
+        // run carries the same style, so it must concatenate with no inserted
+        // separator. Assert on rendered Markdown, not just run existence.
+        use std::io::Write;
+
+        let mut buf = Vec::new();
+        {
+            let cursor = std::io::Cursor::new(&mut buf);
+            let mut zip = zip::ZipWriter::new(cursor);
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+
+            zip.start_file("[Content_Types].xml", options).unwrap();
+            zip.write_all(br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>"#).unwrap();
+
+            zip.start_file("_rels/.rels", options).unwrap();
+            zip.write_all(br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>"#).unwrap();
+
+            zip.start_file("word/document.xml", options).unwrap();
+            zip.write_all(
+                br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:r><w:t>AT&amp;T &lt;tag&gt; R &amp; D &#48;&#x30;</w:t></w:r></w:p>
+  </w:body>
+</w:document>"#,
+            )
+            .unwrap();
+
+            zip.finish().unwrap();
+        }
+
+        let mut parser = DocxParser::from_bytes(buf).expect("parser opens");
+        let doc = parser.parse().expect("document parses");
+        let md = crate::render::to_markdown(&doc, &crate::render::RenderOptions::new())
+            .expect("renders to markdown");
+        assert!(
+            md.contains("AT&T <tag> R & D 00"),
+            "entity runs must concatenate without inserted separators; got {md:?}"
+        );
+    }
+
+    #[test]
+    fn test_docx_core_metadata_preserves_fragmented_ampersand() {
+        // The core.xml metadata loop previously assigned text per Text event, so
+        // under quick-xml 0.40+ "Tom &amp; Jerry" (Text/GeneralRef/Text) kept only
+        // the last fragment. Verify element-level accumulation preserves the whole.
+        use std::io::Write;
+
+        let mut buf = Vec::new();
+        {
+            let cursor = std::io::Cursor::new(&mut buf);
+            let mut zip = zip::ZipWriter::new(cursor);
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+
+            zip.start_file("[Content_Types].xml", options).unwrap();
+            zip.write_all(br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>"#).unwrap();
+
+            zip.start_file("_rels/.rels", options).unwrap();
+            zip.write_all(br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>"#).unwrap();
+
+            zip.start_file("docProps/core.xml", options).unwrap();
+            zip.write_all(br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <dc:title>Tom &amp; Jerry &lt;S1&gt;</dc:title>
+  <dc:creator>A &amp; B</dc:creator>
+</cp:coreProperties>"#).unwrap();
+
+            zip.start_file("word/document.xml", options).unwrap();
+            zip.write_all(br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>x</w:t></w:r></w:p></w:body></w:document>"#).unwrap();
+
+            zip.finish().unwrap();
+        }
+
+        let mut parser = DocxParser::from_bytes(buf).expect("parser opens");
+        let doc = parser.parse().expect("document parses");
+        assert_eq!(doc.metadata.title.as_deref(), Some("Tom & Jerry <S1>"));
+        assert_eq!(doc.metadata.author.as_deref(), Some("A & B"));
     }
 
     #[test]

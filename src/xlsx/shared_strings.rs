@@ -1,6 +1,8 @@
 //! XLSX shared strings parsing.
 
-use crate::decode::decode_text_lossy;
+use std::borrow::Cow;
+
+use crate::decode::{decode_text_lossy, normalize_line_endings, resolve_general_ref};
 use crate::error::{Error, Result};
 
 /// Shared strings table.
@@ -14,7 +16,7 @@ impl SharedStrings {
     /// Parse shared strings from XML content.
     pub fn parse(xml: &str) -> Result<Self> {
         let mut strings = Vec::new();
-        let mut reader = quick_xml::Reader::from_str(xml);
+        let mut reader = crate::decode::reader_for(xml);
         // IMPORTANT: Don't trim text - preserve whitespace from xml:space="preserve" elements
         // Excel cells may contain significant leading/trailing spaces
         reader.config_mut().trim_text(false);
@@ -40,9 +42,19 @@ impl SharedStrings {
                     let text = decode_text_lossy(&e);
                     current_text.push_str(&text);
                 }
+                // quick-xml 0.40+ emits entity refs (&amp;, &#13;, …) as separate
+                // events; without this arm every entity in a shared string vanishes.
+                Ok(quick_xml::events::Event::GeneralRef(e)) if in_t => {
+                    current_text.push_str(&resolve_general_ref(&e));
+                }
                 Ok(quick_xml::events::Event::End(e)) => match e.name().as_ref() {
                     b"si" => {
-                        strings.push(current_text.clone());
+                        // Collapse CR that re-entered via &#13;/&#xD; refs (Excel
+                        // in-cell breaks); a CRLF pair arrives as two refs, so the
+                        // whole accumulated string is normalized once here.
+                        strings.push(
+                            normalize_line_endings(Cow::Borrowed(&current_text)).into_owned(),
+                        );
                         in_si = false;
                     }
                     b"t" => {
@@ -137,5 +149,30 @@ mod tests {
         let table = SharedStrings::parse(xml).expect("parse succeeds");
         let s = table.get(0).expect("index 0 exists");
         assert_eq!(s, "A & B &bogus; C");
+    }
+
+    #[test]
+    fn test_shared_strings_cr_character_refs_collapse_to_lf() {
+        // Excel stores in-cell line breaks as &#13;&#10; (CRLF) or bare &#13;.
+        // Under quick-xml 0.40+ these arrive as separate GeneralRef events, so
+        // the CRLF pair must be collapsed at the flush point, not per-event.
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+    <si><t>line1&#13;&#10;line2&#13;line3&#xD;line4</t></si>
+</sst>"#;
+
+        let ss = SharedStrings::parse(xml).expect("parse succeeds");
+        assert_eq!(ss.get(0), Some("line1\nline2\nline3\nline4"));
+    }
+
+    #[test]
+    fn test_shared_strings_numeric_and_predefined_refs_round_trip() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+    <si><t>&#48;&#x30; &lt;a&gt; &amp; &quot;q&quot; &apos;p&apos;</t></si>
+</sst>"#;
+
+        let ss = SharedStrings::parse(xml).expect("parse succeeds");
+        assert_eq!(ss.get(0), Some("00 <a> & \"q\" 'p'"));
     }
 }

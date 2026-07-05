@@ -1,7 +1,9 @@
 //! ZIP container abstraction for OOXML documents.
 
+use crate::decode::{normalize_line_endings, resolve_general_ref};
 use crate::error::{Error, Result};
 use crate::model::Metadata;
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashMap;
 #[cfg(not(target_arch = "wasm32"))]
@@ -366,11 +368,16 @@ impl OoxmlContainer {
 
         match self.read_xml("docProps/core.xml") {
             Ok(xml) => {
-                let mut reader = quick_xml::Reader::from_str(&xml);
+                let mut reader = crate::decode::reader_for(&xml);
                 reader.config_mut().trim_text(false);
 
                 let mut buf = Vec::new();
                 let mut current_element: Option<String> = None;
+                // Accumulate an element's text across events. quick-xml 0.40+ splits
+                // a value like "Tom &amp; Jerry" into Text/GeneralRef/Text, so the
+                // value must be built up and flushed at the element's End rather than
+                // assigned per Text event (which would drop all but the last fragment).
+                let mut current_text = String::new();
 
                 loop {
                     match reader.read_event_into(&mut buf) {
@@ -379,10 +386,20 @@ impl OoxmlContainer {
                             current_element = Some(
                                 String::from_utf8_lossy(name.local_name().as_ref()).to_string(),
                             );
+                            current_text.clear();
                         }
-                        Ok(quick_xml::events::Event::Text(e)) => {
+                        Ok(quick_xml::events::Event::Text(e)) if current_element.is_some() => {
+                            current_text.push_str(&metadata_text_or_raw(&e, "docProps/core.xml")?);
+                        }
+                        Ok(quick_xml::events::Event::GeneralRef(e))
+                            if current_element.is_some() =>
+                        {
+                            current_text.push_str(&resolve_general_ref(&e));
+                        }
+                        Ok(quick_xml::events::Event::End(_)) => {
                             if let Some(ref elem) = current_element {
-                                let text = metadata_text_or_raw(&e, "docProps/core.xml")?;
+                                let text = normalize_line_endings(Cow::Borrowed(&current_text))
+                                    .into_owned();
                                 match elem.as_str() {
                                     "title" => meta.title = Some(text),
                                     "creator" => meta.author = Some(text),
@@ -401,9 +418,8 @@ impl OoxmlContainer {
                                     _ => {}
                                 }
                             }
-                        }
-                        Ok(quick_xml::events::Event::End(_)) => {
                             current_element = None;
+                            current_text.clear();
                         }
                         Ok(quick_xml::events::Event::Eof) => break,
                         Err(e) => {
@@ -438,11 +454,14 @@ impl OoxmlContainer {
             Err(err) => return Err(err),
         };
 
-        let mut reader = quick_xml::Reader::from_str(&xml);
+        let mut reader = crate::decode::reader_for(&xml);
         reader.config_mut().trim_text(false);
 
         let mut buf = Vec::new();
         let mut current_element: Option<String> = None;
+        // Accumulate per element and flush at End — see parse_core_metadata for
+        // why per-Text assignment is unsafe under quick-xml 0.40+.
+        let mut current_text = String::new();
 
         loop {
             match reader.read_event_into(&mut buf) {
@@ -450,10 +469,18 @@ impl OoxmlContainer {
                     let name = e.name();
                     current_element =
                         Some(String::from_utf8_lossy(name.local_name().as_ref()).to_string());
+                    current_text.clear();
                 }
-                Ok(quick_xml::events::Event::Text(e)) => {
+                Ok(quick_xml::events::Event::Text(e)) if current_element.is_some() => {
+                    current_text.push_str(&metadata_text_or_raw(&e, "docProps/app.xml")?);
+                }
+                Ok(quick_xml::events::Event::GeneralRef(e)) if current_element.is_some() => {
+                    current_text.push_str(&resolve_general_ref(&e));
+                }
+                Ok(quick_xml::events::Event::End(_)) => {
                     if let Some(ref elem) = current_element {
-                        let text = metadata_text_or_raw(&e, "docProps/app.xml")?;
+                        let text =
+                            normalize_line_endings(Cow::Borrowed(&current_text)).into_owned();
                         match elem.as_str() {
                             "Application" => meta.application = Some(text),
                             "Pages" if meta.page_count.is_none() => {
@@ -468,9 +495,8 @@ impl OoxmlContainer {
                             _ => {}
                         }
                     }
-                }
-                Ok(quick_xml::events::Event::End(_)) => {
                     current_element = None;
+                    current_text.clear();
                 }
                 Ok(quick_xml::events::Event::Eof) => break,
                 Err(e) => {
@@ -577,7 +603,7 @@ pub(crate) fn parse_relationships_xml(content: &str, location: &str) -> Result<R
     }
 
     let mut rels = Relationships::new();
-    let mut reader = quick_xml::Reader::from_str(content);
+    let mut reader = crate::decode::reader_for(content);
     reader.config_mut().trim_text(true);
 
     let mut buf = Vec::new();

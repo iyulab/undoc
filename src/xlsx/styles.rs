@@ -15,7 +15,7 @@ impl Styles {
     /// Parse styles from xl/styles.xml content.
     pub fn parse(xml: &str) -> Self {
         let mut styles = Self::default();
-        let mut reader = quick_xml::Reader::from_str(xml);
+        let mut reader = crate::decode::reader_for(xml);
         reader.config_mut().trim_text(true);
 
         let mut buf = Vec::new();

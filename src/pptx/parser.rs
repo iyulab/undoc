@@ -67,7 +67,7 @@ impl PptxParser {
         let mut slides = Vec::new();
         let xml = container.read_xml("ppt/presentation.xml")?;
 
-        let mut reader = quick_xml::Reader::from_str(&xml);
+        let mut reader = crate::decode::reader_for(&xml);
         reader.config_mut().trim_text(true);
 
         let mut buf = Vec::new();
@@ -328,7 +328,7 @@ impl PptxParser {
     /// Images are in <p:pic> elements with <a:blip r:embed="rIdN"> referencing relationships.
     fn parse_images(&self, xml: &str, rels: &HashMap<String, String>) -> Result<Vec<Block>> {
         let mut images = Vec::new();
-        let mut reader = quick_xml::Reader::from_str(xml);
+        let mut reader = crate::decode::reader_for(xml);
         reader.config_mut().trim_text(true);
 
         let mut buf = Vec::new();
@@ -591,7 +591,7 @@ impl PptxParser {
         rels: &HashMap<String, String>,
     ) -> Result<Vec<Table>> {
         let mut tables = Vec::new();
-        let mut reader = quick_xml::Reader::from_str(xml);
+        let mut reader = crate::decode::reader_for(xml);
         // Don't trim text - preserve whitespace from xml:space="preserve" elements
         reader.config_mut().trim_text(false);
 
@@ -722,6 +722,9 @@ impl PptxParser {
                 Ok(quick_xml::events::Event::Text(ref e)) if in_text => {
                     current_text.push_str(&crate::decode::decode_text_lossy(e));
                 }
+                Ok(quick_xml::events::Event::GeneralRef(ref e)) if in_text => {
+                    current_text.push_str(&crate::decode::resolve_general_ref(e));
+                }
                 Ok(quick_xml::events::Event::End(ref e)) => {
                     let local_name = e.name().local_name();
                     match local_name.as_ref() {
@@ -806,7 +809,7 @@ impl PptxParser {
         inherited_phs: &HashMap<String, Vec<Paragraph>>,
     ) -> Result<Vec<Paragraph>> {
         let mut paragraphs = Vec::new();
-        let mut reader = quick_xml::Reader::from_str(xml);
+        let mut reader = crate::decode::reader_for(xml);
         // Don't trim text - preserve whitespace from xml:space="preserve" elements
         reader.config_mut().trim_text(false);
 
@@ -1005,6 +1008,9 @@ impl PptxParser {
                 Ok(quick_xml::events::Event::Text(ref e)) if in_text && !in_table => {
                     current_text.push_str(&crate::decode::decode_text_lossy(e));
                 }
+                Ok(quick_xml::events::Event::GeneralRef(ref e)) if in_text && !in_table => {
+                    current_text.push_str(&crate::decode::resolve_general_ref(e));
+                }
                 Ok(quick_xml::events::Event::End(ref e)) => {
                     let local_name = e.name().local_name();
                     match local_name.as_ref() {
@@ -1088,7 +1094,7 @@ impl PptxParser {
         rels: &HashMap<String, String>,
     ) -> Result<Vec<Paragraph>> {
         let mut paragraphs = Vec::new();
-        let mut reader = quick_xml::Reader::from_str(xml);
+        let mut reader = crate::decode::reader_for(xml);
         // Don't trim text - preserve whitespace from xml:space="preserve" elements
         reader.config_mut().trim_text(false);
 
@@ -1208,6 +1214,9 @@ impl PptxParser {
                 }
                 Ok(quick_xml::events::Event::Text(ref e)) if in_text => {
                     current_text.push_str(&crate::decode::decode_text_lossy(e));
+                }
+                Ok(quick_xml::events::Event::GeneralRef(ref e)) if in_text => {
+                    current_text.push_str(&crate::decode::resolve_general_ref(e));
                 }
                 Ok(quick_xml::events::Event::End(ref e)) => {
                     let local_name = e.name().local_name();
@@ -1356,7 +1365,7 @@ impl PptxParser {
 fn parse_placeholder_texts_from_xml(xml: &str) -> HashMap<String, Vec<Paragraph>> {
     let mut result: HashMap<String, Vec<Paragraph>> = HashMap::new();
 
-    let mut reader = quick_xml::Reader::from_str(xml);
+    let mut reader = crate::decode::reader_for(xml);
     reader.config_mut().trim_text(false);
     let mut buf = Vec::new();
 
@@ -1461,6 +1470,9 @@ fn parse_placeholder_texts_from_xml(xml: &str) -> HashMap<String, Vec<Paragraph>
             }
             Ok(quick_xml::events::Event::Text(ref e)) if in_text && !in_table => {
                 current_text.push_str(&crate::decode::decode_text_lossy(e));
+            }
+            Ok(quick_xml::events::Event::GeneralRef(ref e)) if in_text && !in_table => {
+                current_text.push_str(&crate::decode::resolve_general_ref(e));
             }
             Ok(quick_xml::events::Event::End(ref e)) => {
                 let local = e.name().local_name();
@@ -1616,6 +1628,55 @@ mod tests {
                 );
             }
         }
+    }
+
+    fn empty_parser() -> PptxParser {
+        use std::io::Cursor;
+        let zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let bytes = zip.finish().unwrap().into_inner();
+        PptxParser {
+            container: OoxmlContainer::from_bytes(bytes).unwrap(),
+            slides: Vec::new(),
+            relationships: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn test_pptx_slide_text_entities_round_trip() {
+        // Slide run text exercising the GeneralRef arm: predefined + numeric refs
+        // decode, a mid-word "AT&amp;T" survives run fragmentation, and an unknown
+        // &bogus; is preserved verbatim.
+        let parser = empty_parser();
+        let xml = r#"<?xml version="1.0"?>
+<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+       xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
+  <p:cSld><p:spTree><p:sp><p:txBody>
+    <a:p><a:r><a:t>AT&amp;T &lt;x&gt; &#48;&#x30; &bogus; end</a:t></a:r></a:p>
+  </p:txBody></p:sp></p:spTree></p:cSld>
+</p:sld>"#;
+
+        let paragraphs = parser.parse_text_content(xml).unwrap();
+        let text: String = paragraphs.iter().map(|p| p.plain_text()).collect();
+        assert_eq!(text, "AT&T <x> 00 &bogus; end");
+    }
+
+    #[test]
+    fn test_pptx_stray_ampersand_does_not_abort() {
+        // A raw `&` (ill-formed) must degrade gracefully rather than abort the slide.
+        let parser = empty_parser();
+        let xml = r#"<?xml version="1.0"?>
+<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+       xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
+  <p:cSld><p:spTree><p:sp><p:txBody>
+    <a:p><a:r><a:t>R&D dept</a:t></a:r></a:p>
+  </p:txBody></p:sp></p:spTree></p:cSld>
+</p:sld>"#;
+
+        let paragraphs = parser
+            .parse_text_content(xml)
+            .expect("stray & must not abort");
+        let text: String = paragraphs.iter().map(|p| p.plain_text()).collect();
+        assert_eq!(text, "R&D dept");
     }
 
     #[test]

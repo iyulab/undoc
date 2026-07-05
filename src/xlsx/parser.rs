@@ -1,6 +1,9 @@
 //! XLSX parser implementation.
 
+use std::borrow::Cow;
+
 use crate::container::OoxmlContainer;
+use crate::decode::{normalize_line_endings, resolve_general_ref};
 use crate::error::{Error, Result};
 use crate::model::{
     Block, Cell, CellAlignment, Document, InlineImage, Metadata, Paragraph, Resource, ResourceType,
@@ -93,7 +96,7 @@ impl XlsxParser {
         let mut sheets = Vec::new();
         let xml = container.read_xml("xl/workbook.xml")?;
 
-        let mut reader = quick_xml::Reader::from_str(&xml);
+        let mut reader = crate::decode::reader_for(&xml);
         reader.config_mut().trim_text(true);
 
         let mut buf = Vec::new();
@@ -294,7 +297,7 @@ impl XlsxParser {
     /// Parse merge cells information from worksheet XML.
     fn parse_merge_cells(xml: &str) -> HashMap<String, (u32, u32)> {
         let mut merge_map = HashMap::new();
-        let mut reader = quick_xml::Reader::from_str(xml);
+        let mut reader = crate::decode::reader_for(xml);
         reader.config_mut().trim_text(true);
 
         let mut buf = Vec::new();
@@ -379,7 +382,7 @@ impl XlsxParser {
         let merge_map = Self::parse_merge_cells(xml);
 
         let mut table = Table::new();
-        let mut reader = quick_xml::Reader::from_str(xml);
+        let mut reader = crate::decode::reader_for(xml);
         // IMPORTANT: Don't trim text - preserve whitespace from xml:space="preserve" elements
         // Excel cell values may contain significant leading/trailing spaces
         reader.config_mut().trim_text(false);
@@ -482,6 +485,12 @@ impl XlsxParser {
                     let text = crate::decode::decode_text_lossy(e);
                     current_cell_value.push_str(&text);
                 }
+                // quick-xml 0.40+ splits entity refs out of Text; without this
+                // arm a cell value like "A &amp; B" or an in-cell "&#10;" break
+                // would silently lose the entity.
+                Ok(quick_xml::events::Event::GeneralRef(ref e)) if in_value => {
+                    current_cell_value.push_str(&resolve_general_ref(e));
+                }
                 Ok(quick_xml::events::Event::End(ref e)) => match e.name().as_ref() {
                     b"row" => {
                         if let Some(row) = current_row.take() {
@@ -491,8 +500,13 @@ impl XlsxParser {
                         is_first_row = false;
                     }
                     b"c" => {
+                        // Collapse CR that re-entered via &#13;/&#xD; refs (Excel
+                        // in-cell breaks). A CRLF pair arrives as two refs, so
+                        // normalize the whole accumulated value once here.
+                        let cell_value =
+                            normalize_line_endings(Cow::Borrowed(&current_cell_value)).into_owned();
                         let mut cell = self.build_sheet_cell(
-                            &current_cell_value,
+                            &cell_value,
                             current_cell_type.as_deref(),
                             current_cell_style,
                             current_cell_ref.as_deref(),
@@ -728,7 +742,7 @@ impl XlsxParser {
         sheet_rels: &HashMap<String, (String, String)>,
     ) -> HashMap<String, String> {
         let mut hyperlinks = HashMap::new();
-        let mut reader = quick_xml::Reader::from_str(xml);
+        let mut reader = crate::decode::reader_for(xml);
         reader.config_mut().trim_text(true);
         let mut buf = Vec::new();
         let mut in_hyperlinks = false;
@@ -806,8 +820,12 @@ impl XlsxParser {
     /// ```
     fn parse_comments_xml(xml: &str) -> HashMap<String, String> {
         let mut comments = HashMap::new();
-        let mut reader = quick_xml::Reader::from_str(xml);
-        reader.config_mut().trim_text(true);
+        let mut reader = crate::decode::reader_for(xml);
+        // Preserve whitespace inside <t>: quick-xml 0.40+ fragments a single <t>
+        // into Text/GeneralRef events, and trimming each fragment would drop the
+        // spaces adjacent to an entity ("Bad &bogus; comment" → "Bad&bogus;comment").
+        // Inter-element indentation is already excluded by the `in_t` guard.
+        reader.config_mut().trim_text(false);
         let mut buf = Vec::new();
 
         let mut in_comment = false;
@@ -837,23 +855,32 @@ impl XlsxParser {
                         }
                         b"t" if in_text => {
                             in_t = true;
+                            // Separate consecutive <t> runs with a space. This must
+                            // happen at the run boundary, not per Text event: under
+                            // quick-xml 0.40+ a single <t> is fragmented into
+                            // Text/GeneralRef events, and joining those with spaces
+                            // would corrupt the text (e.g. "A &amp; B" → "A &  B").
+                            if !current_text.is_empty() {
+                                current_text.push(' ');
+                            }
                         }
                         _ => {}
                     }
                 }
                 Ok(quick_xml::events::Event::Text(ref e)) if in_t => {
-                    let text = crate::decode::decode_text_lossy(e);
-                    if !current_text.is_empty() {
-                        current_text.push(' ');
-                    }
-                    current_text.push_str(&text);
+                    current_text.push_str(&crate::decode::decode_text_lossy(e));
+                }
+                Ok(quick_xml::events::Event::GeneralRef(ref e)) if in_t => {
+                    current_text.push_str(&resolve_general_ref(e));
                 }
                 Ok(quick_xml::events::Event::End(ref e)) => {
                     let local = e.name().local_name();
                     match local.as_ref() {
                         b"comment" => {
                             if !current_ref.is_empty() && !current_text.is_empty() {
-                                comments.insert(current_ref.clone(), current_text.clone());
+                                let text = normalize_line_endings(Cow::Borrowed(&current_text))
+                                    .into_owned();
+                                comments.insert(current_ref.clone(), text);
                             }
                             in_comment = false;
                             in_text = false;
@@ -1047,7 +1074,7 @@ impl XlsxParser {
 
     /// Parse `xl/metadata.xml` into a `vm` (1-based) → rich-value-index map.
     fn parse_value_metadata(xml: &str) -> Result<HashMap<u32, usize>> {
-        let mut reader = quick_xml::Reader::from_str(xml);
+        let mut reader = crate::decode::reader_for(xml);
         reader.config_mut().trim_text(true);
         let mut buf = Vec::new();
 
@@ -1140,7 +1167,7 @@ impl XlsxParser {
     /// Parse `rdrichvaluestructure.xml`: per structure (in order), the
     /// position of the `_rvRel:LocalImageIdentifier` key, if any.
     fn parse_rich_value_structures(xml: &str) -> Result<Vec<Option<usize>>> {
-        let mut reader = quick_xml::Reader::from_str(xml);
+        let mut reader = crate::decode::reader_for(xml);
         reader.config_mut().trim_text(true);
         let mut buf = Vec::new();
 
@@ -1188,8 +1215,11 @@ impl XlsxParser {
 
     /// Parse `rdrichvalue.xml`: ordered rich values as (structure index, v slots).
     fn parse_rich_values(xml: &str) -> Result<Vec<(usize, Vec<String>)>> {
-        let mut reader = quick_xml::Reader::from_str(xml);
-        reader.config_mut().trim_text(true);
+        let mut reader = crate::decode::reader_for(xml);
+        // Preserve intra-<v> whitespace so entity-adjacent spaces survive
+        // quick-xml 0.40+ fragmentation; the `in_v` guard already excludes
+        // inter-element indentation.
+        reader.config_mut().trim_text(false);
         let mut buf = Vec::new();
 
         let mut values: Vec<(usize, Vec<String>)> = Vec::new();
@@ -1222,6 +1252,11 @@ impl XlsxParser {
                         slot.push_str(&crate::decode::decode_text_lossy(e));
                     }
                 }
+                Ok(quick_xml::events::Event::GeneralRef(ref e)) if in_v => {
+                    if let Some(slot) = values.last_mut().and_then(|(_, s)| s.last_mut()) {
+                        slot.push_str(&resolve_general_ref(e));
+                    }
+                }
                 Ok(quick_xml::events::Event::End(ref e))
                     if e.name().local_name().as_ref() == b"v" =>
                 {
@@ -1239,7 +1274,7 @@ impl XlsxParser {
 
     /// Parse `richValueRel.xml`: ordered relationship IDs.
     fn parse_rich_value_rel_ids(xml: &str) -> Result<Vec<String>> {
-        let mut reader = quick_xml::Reader::from_str(xml);
+        let mut reader = crate::decode::reader_for(xml);
         reader.config_mut().trim_text(true);
         let mut buf = Vec::new();
 
@@ -1339,7 +1374,7 @@ impl XlsxParser {
     ///            xdr:pic > xdr:spPr > a:xfrm > a:ext[@cx, @cy]
     fn parse_drawing_images(xml: &str, rels: &HashMap<String, String>) -> Result<Vec<Block>> {
         let mut images = Vec::new();
-        let mut reader = quick_xml::Reader::from_str(xml);
+        let mut reader = crate::decode::reader_for(xml);
         reader.config_mut().trim_text(true);
         let mut buf = Vec::new();
 
@@ -1607,6 +1642,50 @@ mod tests {
         assert_eq!(table.rows[0].cells[0].plain_text(), "left");
         assert_eq!(table.rows[0].cells[1].plain_text(), "");
         assert_eq!(table.rows[0].cells[2].plain_text(), "right");
+    }
+
+    #[test]
+    fn test_parse_sheet_inline_string_entities_and_cr_refs() {
+        // Inline-string cell exercising the cell-value loop's GeneralRef arm and
+        // the flush-point CR normalization: entities decode, a CRLF pair encoded
+        // as two &#13;&#10; refs collapses to a single LF.
+        let parser = test_parser();
+        let sheet_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+            <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+                <sheetData>
+                    <row r="1">
+                        <c r="A1" t="inlineStr"><is><t>a&#13;&#10;b &amp; c &bogus; d</t></is></c>
+                    </row>
+                </sheetData>
+            </worksheet>"#;
+
+        let table = parser
+            .parse_sheet(sheet_xml, &HashMap::new(), &HashMap::new(), &HashMap::new())
+            .unwrap();
+
+        assert_eq!(table.rows[0].cells[0].plain_text(), "a\nb & c &bogus; d");
+    }
+
+    #[test]
+    fn test_parse_sheet_stray_ampersand_in_skipped_element_does_not_abort() {
+        // A raw `&` (ill-formed XML from a non-conforming producer) inside a
+        // <f> formula — which the loop skips — must not abort the whole sheet.
+        // reader_for enables allow_dangling_amp so tokenization degrades
+        // gracefully instead of returning Err(IllFormed(UnclosedReference)).
+        let parser = test_parser();
+        let sheet_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+            <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+                <sheetData>
+                    <row r="1">
+                        <c r="A1"><f>IF(a&b,1,0)</f><v>5</v></c>
+                    </row>
+                </sheetData>
+            </worksheet>"#;
+
+        let table = parser
+            .parse_sheet(sheet_xml, &HashMap::new(), &HashMap::new(), &HashMap::new())
+            .expect("stray & must not abort parsing");
+        assert_eq!(table.rows[0].cells[0].plain_text(), "5");
     }
 
     #[test]

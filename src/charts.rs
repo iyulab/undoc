@@ -74,7 +74,7 @@ fn format_number(n: f64) -> String {
 
 /// Parse chart XML to extract data
 pub fn parse_chart_xml(xml: &str) -> Result<ChartData> {
-    let mut reader = quick_xml::Reader::from_str(xml);
+    let mut reader = crate::decode::reader_for(xml);
     reader.config_mut().trim_text(false);
 
     let mut chart_data = ChartData {
@@ -237,6 +237,11 @@ pub fn parse_chart_xml(xml: &str) -> Result<ChartData> {
             }
             Ok(quick_xml::events::Event::Text(ref e)) if in_text_node => {
                 current_text.push_str(&crate::decode::decode_text_lossy(e));
+            }
+            // quick-xml 0.40+ delivers entity refs as separate events; mirror the
+            // Text arm so a series name like "R&amp;D" keeps its ampersand.
+            Ok(quick_xml::events::Event::GeneralRef(ref e)) if in_text_node => {
+                current_text.push_str(&crate::decode::resolve_general_ref(e));
             }
             Ok(quick_xml::events::Event::Eof) => break,
             Err(e) => return Err(Error::XmlParse(e.to_string())),

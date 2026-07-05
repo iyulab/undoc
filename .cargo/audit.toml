@@ -1,0 +1,25 @@
+# cargo-audit configuration.
+#
+# Advisories listed here are known, reviewed, and accepted. Everything else
+# fails `cargo audit` (see the Security Audit job in .github/workflows/ci.yml).
+
+[advisories]
+ignore = [
+    # quick-xml 0.23 DoS (quadratic attribute scan / unbounded namespace alloc).
+    # Pulled ONLY transitively by self_update (undoc-cli's updater backend):
+    #   quick-xml v0.23.1 └── self_update v0.41.0 └── undoc-cli
+    # The CLI ships the GitHub release backend, and no self_update release
+    # requires quick-xml >= 0.41, so there is no upstream fix to pick up. The
+    # library's own direct quick-xml dependency is pinned at ^0.41 (patched),
+    # so the reachable XML parser — the one that parses untrusted documents —
+    # is not affected.
+    #
+    # WARNING: cargo-audit ignores are global per advisory ID, so this also
+    # masks the SAME advisory on the library's direct dependency. That is
+    # acceptable only because the direct dep is pinned at ^0.41 and cannot
+    # structurally regress into the vulnerable range. Remove these entries once
+    # self_update ships a release requiring quick-xml >= 0.41, restoring full
+    # coverage.
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
+]

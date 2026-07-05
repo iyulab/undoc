@@ -71,7 +71,7 @@ impl NumberingMap {
         }
 
         let mut map = NumberingMap::default();
-        let mut reader = quick_xml::Reader::from_str(xml);
+        let mut reader = crate::decode::reader_for(xml);
         reader.config_mut().trim_text(true);
 
         let mut buf = Vec::new();
@@ -185,7 +185,7 @@ impl NumberingMap {
 
     /// Parse w:num elements.
     fn parse_num_instances(&mut self, xml: &str) -> Result<()> {
-        let mut reader = quick_xml::Reader::from_str(xml);
+        let mut reader = crate::decode::reader_for(xml);
         reader.config_mut().trim_text(true);
 
         let mut buf = Vec::new();

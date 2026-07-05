@@ -4,7 +4,7 @@ resolver = "2"
 
 [package]
 name = "undoc"
-version = "0.5.2"
+version = "0.5.3"
 edition = "2021"
 authors = ["iyulab"]
 description = "High-performance Microsoft Office document extraction to Markdown"
@@ -32,8 +32,11 @@ ffi = []
 # OOXML files exclusively use Deflate; dropping other compression codecs is safe.
 zip = { version = "2.2", default-features = false, features = ["deflate"] }
 
-# XML parsing
-quick-xml = { version = "0.37", features = ["serialize"] }
+# XML parsing. `serialize` feature intentionally omitted — undoc uses only the
+# manual Reader/Event API; serde derives live on undoc's own model types.
+# Pinned at ^0.41 for RUSTSEC-2026-0194/-0195 (DoS) fixes; 0.40+ also emits
+# entity refs as separate Event::GeneralRef events (see src/decode.rs).
+quick-xml = "0.41"
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
