@@ -13,6 +13,7 @@ use crate::model::{
 
 use super::numbering::NumberingMap;
 use super::styles::StyleMap;
+use crate::model::ParagraphOrigin;
 
 /// Parser for DOCX (Word) documents.
 pub struct DocxParser {
@@ -24,6 +25,12 @@ pub struct DocxParser {
     footnotes: HashMap<String, String>,
     /// Endnote id → plain text content
     endnotes: HashMap<String, String>,
+    // Track unique instances per document execution
+    header_counter: usize,
+    footer_counter: usize,
+    textbox_counter: usize,    
+    footnote_counter: usize, 
+    endnote_counter: usize, 
 }
 
 impl DocxParser {
@@ -80,6 +87,13 @@ impl DocxParser {
             relationships,
             footnotes,
             endnotes,
+
+            header_counter: 0,
+            footer_counter: 0,
+            textbox_counter: 0,    
+            footnote_counter: 0, 
+            endnote_counter: 0,  
+        
         })
     }
 
@@ -110,13 +124,18 @@ impl DocxParser {
             });
             for id in ids {
                 if let Some(text) = self.footnotes.get(id) {
-                    let para = Paragraph::with_text(format!("[^{}]: {}", id, text));
+                    let mut para = Paragraph::with_text(format!("[^{}]: {}", id, text));
+                    
+                    self.footnote_counter += 1; // increment the counter per distinct note entry
+                    
+                    para.origin = ParagraphOrigin::Footnote;
+                    para.origin_id = Some(self.footnote_counter); // assign the ID
                     main_section.add_block(Block::Paragraph(para));
                 }
             }
-        }
+        }        
 
-        // Append endnote definitions at end of section
+        // // Append endnote definitions at end of section
         if !self.endnotes.is_empty() {
             let mut ids: Vec<&String> = self.endnotes.keys().collect();
             ids.sort_by(|a, b| {
@@ -126,11 +145,16 @@ impl DocxParser {
             });
             for id in ids {
                 if let Some(text) = self.endnotes.get(id) {
-                    let para = Paragraph::with_text(format!("[^e{}]: {}", id, text));
+                    let mut para = Paragraph::with_text(format!("[^e{}]: {}", id, text));
+                    
+                    self.endnote_counter += 1; // increment the counter per distinct note entry
+                    
+                    para.origin = ParagraphOrigin::Endnote;
+                    para.origin_id = Some(self.endnote_counter); // assign the ID
                     main_section.add_block(Block::Paragraph(para));
                 }
             }
-        }
+        }        
 
         doc.add_section(main_section);
 
@@ -292,13 +316,36 @@ impl DocxParser {
         let mut para_depth: u32 = 0; // Track nested w:p depth (for text boxes)
         let mut table_depth: u32 = 0; // Track nested table depth
         let mut in_sect_pr = false; // Track w:sectPr for header/footer references
-        let mut default_header_rid: Option<String> = None;
-        let mut default_footer_rid: Option<String> = None;
+
+        // let mut default_header_rid: Option<String> = None;
+        // let mut default_footer_rid: Option<String> = None;
+        let mut header_rids: Vec<String> = Vec::new();
+        let mut footer_rids: Vec<String> = Vec::new();        
 
         loop {
             match reader.read_event_into(&mut buf) {
                 Ok(quick_xml::events::Event::Start(ref e)) => {
                     let name = e.name();
+
+
+                    // catch start-tag variants
+                    if name.as_ref() == b"w:headerReference" || name.as_ref() == b"w:footerReference" {
+                        let mut r_id = String::new();
+                        for attr in e.attributes().flatten() {
+                            if attr.key.as_ref() == b"r:id" {
+                                r_id = String::from_utf8_lossy(&attr.value).to_string();
+                            }
+                        }
+                        if !r_id.is_empty() {
+                            if name.as_ref() == b"w:headerReference" {
+                                header_rids.push(r_id);
+                            } else {
+                                footer_rids.push(r_id);
+                            }
+                        }
+                    }
+
+
                     match name.as_ref() {
                         b"w:body" => {
                             in_body = true;
@@ -359,35 +406,52 @@ impl DocxParser {
                     }
                 }
                 Ok(quick_xml::events::Event::Empty(ref e)) => {
-                    // Handle header/footer references inside w:sectPr
+                    let name = e.name();
+    
+                    // catch references even if buried inside paragraphs
+                    if name.as_ref() == b"w:headerReference" || name.as_ref() == b"w:footerReference" {
+                        let mut r_id = String::new();
+                        for attr in e.attributes().flatten() {
+                            if attr.key.as_ref() == b"r:id" {
+                                r_id = String::from_utf8_lossy(&attr.value).to_string();
+                            }
+                        }
+                        if !r_id.is_empty() {
+                            if name.as_ref() == b"w:headerReference" {
+                                header_rids.push(r_id);
+                            } else {
+                                footer_rids.push(r_id);
+                            }
+                        }
+                    }                    
+
                     if in_sect_pr {
                         let name = e.name();
                         match name.as_ref() {
                             b"w:headerReference" | b"w:footerReference" => {
-                                let mut ref_type = String::new();
+                                let mut _ref_type = String::new();
                                 let mut r_id = String::new();
                                 for attr in e.attributes().flatten() {
                                     match attr.key.as_ref() {
-                                        b"w:type" => {
-                                            ref_type =
-                                                String::from_utf8_lossy(&attr.value).to_string();
-                                        }
-                                        b"r:id" => {
-                                            r_id = String::from_utf8_lossy(&attr.value).to_string();
-                                        }
+                                        b"w:type" => _ref_type = String::from_utf8_lossy(&attr.value).to_string(),
+                                        b"r:id" => r_id = String::from_utf8_lossy(&attr.value).to_string(),
                                         _ => {}
                                     }
                                 }
-                                if ref_type == "default" && !r_id.is_empty() {
+                                
+                                if !r_id.is_empty() {
+                                    
                                     if name.as_ref() == b"w:headerReference" {
-                                        default_header_rid = Some(r_id);
+                                        header_rids.push(r_id);
                                     } else {
-                                        default_footer_rid = Some(r_id);
+                                        footer_rids.push(r_id);
                                     }
                                 }
                             }
                             _ => {}
                         }
+
+
                     } else if in_paragraph {
                         let name = e.name();
                         paragraph_xml.push('<');
@@ -432,19 +496,33 @@ impl DocxParser {
                         b"w:sectPr" if in_sect_pr => {
                             in_sect_pr = false;
                         }
+
                         b"w:p" if in_paragraph && table_depth == 0 && para_depth == 0 => {
                             paragraph_xml.push_str("</w:p>");
+                            
                             // Extract text box paragraphs before parsing the main paragraph
                             let textbox_paras = self.extract_textbox_paragraphs(&paragraph_xml);
+                            
                             if let Ok(para) = self.parse_paragraph(&paragraph_xml) {
                                 section.add_block(Block::Paragraph(para));
                             }
-                            // Add text box paragraphs as separate blocks
-                            for tb_para in textbox_paras {
-                                section.add_block(Block::Paragraph(tb_para));
+                            
+                            // only increment the counter if we actually found text box paragraphs
+                            if !textbox_paras.is_empty() {
+                                self.textbox_counter += 1;
+                                
+                                // Add text box paragraphs as separate blocks
+                                for mut tb_para in textbox_paras {
+                                    tb_para.origin = ParagraphOrigin::TextBox;
+                                    tb_para.origin_id = Some(self.textbox_counter); // assign the shared local ID
+                                    section.add_block(Block::Paragraph(tb_para));
+                                }
                             }
+                            
                             in_paragraph = false;
                         }
+
+
                         b"w:tbl" if table_depth > 0 => {
                             table_xml.push_str("</w:tbl>");
                             table_depth -= 1;
@@ -485,21 +563,42 @@ impl DocxParser {
         }
 
         // Resolve and parse header/footer from sectPr references
-        if let Some(rid) = default_header_rid {
-            if let Some(paragraphs) = self.parse_header_footer_by_rid(&rid)? {
-                if !paragraphs.is_empty() {
-                    section.header = Some(paragraphs);
+
+        header_rids.sort();
+        header_rids.dedup();
+        footer_rids.sort();
+        footer_rids.dedup();        
+
+        // 
+        for rid in header_rids {
+            match self.parse_header_footer_by_rid(&rid) {
+                Ok(Some(paragraphs)) => {
+                    self.header_counter += 1; // increment only when we successfully get paragraphs
+                    for mut para in paragraphs {
+                        para.origin = ParagraphOrigin::Header;
+                        para.origin_id = Some(self.header_counter); // assign the local ID
+                        section.add_block(Block::Paragraph(para));
+                    }
                 }
-            }
-        }
-        if let Some(rid) = default_footer_rid {
-            if let Some(paragraphs) = self.parse_header_footer_by_rid(&rid)? {
-                if !paragraphs.is_empty() {
-                    section.footer = Some(paragraphs);
-                }
+                Ok(None) => println!("DEBUG B: Header ID {} returned Ok(None) - File missing or relationship blank.", rid),
+                Err(e) => println!("DEBUG B: Header ID {} failed with error: {}", rid, e),
             }
         }
 
+        for rid in footer_rids {
+            match self.parse_header_footer_by_rid(&rid) {
+                Ok(Some(paragraphs)) => {
+                    self.footer_counter += 1; // increment only when we successfully get paragraphs
+                    for mut para in paragraphs {
+                        para.origin = ParagraphOrigin::Footer;
+                        para.origin_id = Some(self.footer_counter); // assign the local ID
+                        section.add_block(Block::Paragraph(para));
+                    }
+                }
+                Ok(None) => println!("DEBUG B: Footer ID {} returned Ok(None).", rid),
+                Err(e) => println!("DEBUG B: Footer ID {} failed with error: {}", rid, e),
+            }
+        }        
         Ok(section)
     }
 
@@ -1863,6 +1962,12 @@ mod tests {
             relationships: crate::container::Relationships::default(),
             footnotes: HashMap::new(),
             endnotes: HashMap::new(),
+
+            header_counter: 0,
+            footer_counter: 0,
+            textbox_counter: 0,
+            footnote_counter: 0,
+            endnote_counter: 0,            
         };
 
         let para = parser.parse_paragraph(xml).unwrap();
@@ -1901,6 +2006,12 @@ mod tests {
             relationships: crate::container::Relationships::default(),
             footnotes: HashMap::new(),
             endnotes: HashMap::new(),
+
+            header_counter: 0,
+            footer_counter: 0,
+            textbox_counter: 0,
+            footnote_counter: 0,
+            endnote_counter: 0,            
         };
 
         let para = parser.parse_paragraph(xml).unwrap();
@@ -1941,6 +2052,11 @@ mod tests {
             relationships: crate::container::Relationships::default(),
             footnotes: HashMap::new(),
             endnotes: HashMap::new(),
+            header_counter: 0,
+            footer_counter: 0,
+            textbox_counter: 0,
+            footnote_counter: 0,
+            endnote_counter: 0,            
         };
 
         let para = parser.parse_paragraph(xml).unwrap();
@@ -1977,6 +2093,12 @@ mod tests {
             relationships: crate::container::Relationships::default(),
             footnotes: HashMap::new(),
             endnotes: HashMap::new(),
+
+            header_counter: 0,
+            footer_counter: 0,
+            textbox_counter: 0,
+            footnote_counter: 0,
+            endnote_counter: 0,            
         };
 
         let para = parser.parse_paragraph(xml).unwrap();
@@ -2013,6 +2135,12 @@ mod tests {
             relationships: crate::container::Relationships::default(),
             footnotes: HashMap::new(),
             endnotes: HashMap::new(),
+
+            header_counter: 0,
+            footer_counter: 0,
+            textbox_counter: 0,
+            footnote_counter: 0,
+            endnote_counter: 0,            
         };
 
         let para = parser.parse_paragraph(xml).unwrap();
@@ -2045,6 +2173,12 @@ mod tests {
             relationships: crate::container::Relationships::default(),
             footnotes: HashMap::new(),
             endnotes: HashMap::new(),
+
+            header_counter: 0,
+            footer_counter: 0,
+            textbox_counter: 0,
+            footnote_counter: 0,
+            endnote_counter: 0,            
         };
 
         let para = parser.parse_paragraph(xml).unwrap();
@@ -2090,6 +2224,12 @@ mod tests {
             relationships: crate::container::Relationships::default(),
             footnotes: HashMap::new(),
             endnotes: HashMap::new(),
+
+            header_counter: 0,
+            footer_counter: 0,
+            textbox_counter: 0,
+            footnote_counter: 0,
+            endnote_counter: 0,            
         };
 
         let para = parser.parse_paragraph(xml).unwrap();
@@ -2138,6 +2278,12 @@ mod tests {
             relationships: crate::container::Relationships::default(),
             footnotes: HashMap::new(),
             endnotes: HashMap::new(),
+
+            header_counter: 0,
+            footer_counter: 0,
+            textbox_counter: 0,
+            footnote_counter: 0,
+            endnote_counter: 0,            
         };
 
         let para = parser.parse_paragraph(xml).unwrap();
@@ -2274,6 +2420,12 @@ mod tests {
             relationships: crate::container::Relationships::default(),
             footnotes,
             endnotes: HashMap::new(),
+
+            header_counter: 0,
+            footer_counter: 0,
+            textbox_counter: 0,
+            footnote_counter: 0,
+            endnote_counter: 0,            
         };
 
         let para = parser.parse_paragraph(xml).unwrap();
@@ -2314,6 +2466,11 @@ mod tests {
             relationships: crate::container::Relationships::default(),
             footnotes: HashMap::new(),
             endnotes,
+            header_counter: 0,
+            footer_counter: 0,
+            textbox_counter: 0,
+            footnote_counter: 0,
+            endnote_counter: 0,            
         };
 
         let para = parser.parse_paragraph(xml).unwrap();
@@ -2346,6 +2503,12 @@ mod tests {
             relationships: crate::container::Relationships::default(),
             footnotes: HashMap::new(), // No footnotes
             endnotes: HashMap::new(),
+
+            header_counter: 0,
+            footer_counter: 0,
+            textbox_counter: 0,
+            footnote_counter: 0,
+            endnote_counter: 0,            
         };
 
         let para = parser.parse_paragraph(xml).unwrap();

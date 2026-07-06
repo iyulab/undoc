@@ -13,3 +13,5 @@ pub use document::*;
 pub use paragraph::*;
 pub use resource::*;
 pub use table::*;
+
+pub use self::paragraph::{Paragraph, TextRun, ParagraphOrigin};

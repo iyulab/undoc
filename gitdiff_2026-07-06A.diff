@@ -1,0 +1,713 @@
+diff --git a/build_rust.bat b/build_rust.bat
+new file mode 100644
+index 0000000..cbb5f77
+--- /dev/null
++++ b/build_rust.bat
+@@ -0,0 +1,13 @@
++@echo off
++set CARGO_TARGET_DIR=F:\Elements_only\ephem\apps\rust\auto_generated\undoc_workspace
++
++echo ====================================================
++echo BUILDING UNDOC Crate
++echo ====================================================
++
++:: Build the project incrementally using standard cargo
++cargo build
++
++:: If you ever need to build a production release version, 
++:: you can uncomment the line below:
++:: cargo build --release
+\ No newline at end of file
+diff --git a/runtests.py b/runtests.py
+new file mode 100644
+index 0000000..911e3a8
+--- /dev/null
++++ b/runtests.py
+@@ -0,0 +1,28 @@
++import logging
++
++logging.basicConfig(format='%(asctime)s.%(msecs)03d %(levelname)-8s [%(filename)s:%(lineno)d] %(message)s',
++        datefmt='%H:%M:%S', level=logging.DEBUG)
++basic_logger = logging.getLogger('BASIC')
++basic_logger.info(f'start {__file__}')
++
++import sys
++import subprocess
++
++# Redirect massive cargo build artifacts to the D: drive
++test_target_dir = r"D:/Elements_only/ephem/apps/rust/auto_generated/undoc_testing"
++
++# Pass through any filtering arguments (e.g., specific test names or extra flags)
++extra_args = sys.argv[1:]
++
++# Core command running standard cargo test with the explicit target directory
++command = [
++    "uv", "run", "cargo", "test",
++    "--target-dir", test_target_dir
++] + extra_args
++
++print("=" * 56)
++print(f"RUNNING UNDOC TESTS: {' '.join(command)}")
++print("=" * 56)
++
++# Execute the test suite
++subprocess.run(command)
+\ No newline at end of file
+diff --git a/src/docx/parser.rs b/src/docx/parser.rs
+index 11c75d7..4984c52 100644
+--- a/src/docx/parser.rs
++++ b/src/docx/parser.rs
+@@ -13,6 +13,7 @@ use crate::model::{
+ 
+ use super::numbering::NumberingMap;
+ use super::styles::StyleMap;
++use crate::model::ParagraphOrigin;
+ 
+ /// Parser for DOCX (Word) documents.
+ pub struct DocxParser {
+@@ -24,6 +25,14 @@ pub struct DocxParser {
+     footnotes: HashMap<String, String>,
+     /// Endnote id → plain text content
+     endnotes: HashMap<String, String>,
++
++
++    // Track unique instances per document execution
++    header_counter: usize,
++    footer_counter: usize,
++    textbox_counter: usize,    
++    footnote_counter: usize, 
++    endnote_counter: usize, 
+ }
+ 
+ impl DocxParser {
+@@ -80,6 +89,14 @@ impl DocxParser {
+             relationships,
+             footnotes,
+             endnotes,
++
++            header_counter: 0,
++            footer_counter: 0,
++            textbox_counter: 0,    
++
++            footnote_counter: 0, 
++            endnote_counter: 0,  
++        
+         })
+     }
+ 
+@@ -101,6 +118,22 @@ impl DocxParser {
+         }
+ 
+         // Append footnote definitions at end of section
++        // if !self.footnotes.is_empty() {
++        //     let mut ids: Vec<&String> = self.footnotes.keys().collect();
++        //     ids.sort_by(|a, b| {
++        //         a.parse::<u64>()
++        //             .unwrap_or(u64::MAX)
++        //             .cmp(&b.parse::<u64>().unwrap_or(u64::MAX))
++        //     });
++        //     for id in ids {
++        //         if let Some(text) = self.footnotes.get(id) {
++        //             let mut para = Paragraph::with_text(format!("[^{}]: {}", id, text));
++        //             // para.origin = Some("Footnote".to_string());
++        //             para.origin = ParagraphOrigin::Footnote;
++        //             main_section.add_block(Block::Paragraph(para));
++        //         }
++        //     }
++        // }
+         if !self.footnotes.is_empty() {
+             let mut ids: Vec<&String> = self.footnotes.keys().collect();
+             ids.sort_by(|a, b| {
+@@ -110,13 +143,35 @@ impl DocxParser {
+             });
+             for id in ids {
+                 if let Some(text) = self.footnotes.get(id) {
+-                    let para = Paragraph::with_text(format!("[^{}]: {}", id, text));
++                    let mut para = Paragraph::with_text(format!("[^{}]: {}", id, text));
++                    
++                    self.footnote_counter += 1; // 💡 Increment the counter per distinct note entry
++                    
++                    para.origin = ParagraphOrigin::Footnote;
++                    para.origin_id = Some(self.footnote_counter); // 💡 Assign the ID
+                     main_section.add_block(Block::Paragraph(para));
+                 }
+             }
+-        }
++        }        
++
++        // // Append endnote definitions at end of section
++        // if !self.endnotes.is_empty() {
++        //     let mut ids: Vec<&String> = self.endnotes.keys().collect();
++        //     ids.sort_by(|a, b| {
++        //         a.parse::<u64>()
++        //             .unwrap_or(u64::MAX)
++        //             .cmp(&b.parse::<u64>().unwrap_or(u64::MAX))
++        //     });
++        //     for id in ids {
++        //         if let Some(text) = self.endnotes.get(id) {
++        //             let mut para = Paragraph::with_text(format!("[^e{}]: {}", id, text));
++        //             // para.origin = Some("Endnote".to_string());
++        //             para.origin = ParagraphOrigin::Endnote;
++        //             main_section.add_block(Block::Paragraph(para));
++        //         }
++        //     }
++        // }
+ 
+-        // Append endnote definitions at end of section
+         if !self.endnotes.is_empty() {
+             let mut ids: Vec<&String> = self.endnotes.keys().collect();
+             ids.sort_by(|a, b| {
+@@ -126,11 +181,16 @@ impl DocxParser {
+             });
+             for id in ids {
+                 if let Some(text) = self.endnotes.get(id) {
+-                    let para = Paragraph::with_text(format!("[^e{}]: {}", id, text));
++                    let mut para = Paragraph::with_text(format!("[^e{}]: {}", id, text));
++                    
++                    self.endnote_counter += 1; // 💡 Increment the counter per distinct note entry
++                    
++                    para.origin = ParagraphOrigin::Endnote;
++                    para.origin_id = Some(self.endnote_counter); // 💡 Assign the ID
+                     main_section.add_block(Block::Paragraph(para));
+                 }
+             }
+-        }
++        }        
+ 
+         doc.add_section(main_section);
+ 
+@@ -292,13 +352,36 @@ impl DocxParser {
+         let mut para_depth: u32 = 0; // Track nested w:p depth (for text boxes)
+         let mut table_depth: u32 = 0; // Track nested table depth
+         let mut in_sect_pr = false; // Track w:sectPr for header/footer references
+-        let mut default_header_rid: Option<String> = None;
+-        let mut default_footer_rid: Option<String> = None;
++
++        // let mut default_header_rid: Option<String> = None;
++        // let mut default_footer_rid: Option<String> = None;
++        let mut header_rids: Vec<String> = Vec::new();
++        let mut footer_rids: Vec<String> = Vec::new();        
+ 
+         loop {
+             match reader.read_event_into(&mut buf) {
+                 Ok(quick_xml::events::Event::Start(ref e)) => {
+                     let name = e.name();
++
++
++                    // 🔥 GLOBAL HOOK: Catch start-tag variants
++                    if name.as_ref() == b"w:headerReference" || name.as_ref() == b"w:footerReference" {
++                        let mut r_id = String::new();
++                        for attr in e.attributes().flatten() {
++                            if attr.key.as_ref() == b"r:id" {
++                                r_id = String::from_utf8_lossy(&attr.value).to_string();
++                            }
++                        }
++                        if !r_id.is_empty() {
++                            if name.as_ref() == b"w:headerReference" {
++                                header_rids.push(r_id);
++                            } else {
++                                footer_rids.push(r_id);
++                            }
++                        }
++                    }
++
++
+                     match name.as_ref() {
+                         b"w:body" => {
+                             in_body = true;
+@@ -360,6 +443,77 @@ impl DocxParser {
+                 }
+                 Ok(quick_xml::events::Event::Empty(ref e)) => {
+                     // Handle header/footer references inside w:sectPr
++                    // if in_sect_pr {
++                    //     let name = e.name();
++                    //     println!("+++++++++++++++++++ parser.rs l 368");
++                    //     match name.as_ref() {
++                    //         // b"w:headerReference" | b"w:footerReference" => {
++                    //         //     let mut ref_type = String::new();
++                    //         //     let mut r_id = String::new();
++                    //         //     for attr in e.attributes().flatten() {
++                    //         //         match attr.key.as_ref() {
++                    //         //             b"w:type" => {
++                    //         //                 ref_type =
++                    //         //                     String::from_utf8_lossy(&attr.value).to_string();
++                    //         //             }
++                    //         //             b"r:id" => {
++                    //         //                 r_id = String::from_utf8_lossy(&attr.value).to_string();
++                    //         //             }
++                    //         //             _ => {}
++                    //         //         }
++                    //         //     }
++                    //         //     if ref_type == "default" && !r_id.is_empty() {
++                    //         //         if name.as_ref() == b"w:headerReference" {
++                    //         //             default_header_rid = Some(r_id);
++                    //         //         } else {
++                    //         //             default_footer_rid = Some(r_id);
++                    //         //         }
++                    //         //     }
++                    //         // }
++
++
++                    //         b"w:headerReference" | b"w:footerReference" => {
++                    //             let mut r_id = String::new();
++                    //             for attr in e.attributes().flatten() {
++                    //                 if attr.key.as_ref() == b"r:id" {
++                    //                     r_id = String::from_utf8_lossy(&attr.value).to_string();
++                    //                 }
++                    //             }
++                                
++                    //             // Snag every single reference ID regardless of layout type
++                    //             if !r_id.is_empty() {
++                    //                 if name.as_ref() == b"w:headerReference" {
++                    //                     header_rids.push(r_id);
++                    //                 } else {
++                    //                     footer_rids.push(r_id);
++                    //                 }
++                    //             }
++                    //         }
++
++
++                    //         _ => {}
++                    //     }
++
++
++                    let name = e.name();
++    
++                    // 🔥 GLOBAL HOOK: Catch references even if buried inside paragraphs
++                    if name.as_ref() == b"w:headerReference" || name.as_ref() == b"w:footerReference" {
++                        let mut r_id = String::new();
++                        for attr in e.attributes().flatten() {
++                            if attr.key.as_ref() == b"r:id" {
++                                r_id = String::from_utf8_lossy(&attr.value).to_string();
++                            }
++                        }
++                        if !r_id.is_empty() {
++                            if name.as_ref() == b"w:headerReference" {
++                                header_rids.push(r_id);
++                            } else {
++                                footer_rids.push(r_id);
++                            }
++                        }
++                    }                    
++
+                     if in_sect_pr {
+                         let name = e.name();
+                         match name.as_ref() {
+@@ -368,26 +522,25 @@ impl DocxParser {
+                                 let mut r_id = String::new();
+                                 for attr in e.attributes().flatten() {
+                                     match attr.key.as_ref() {
+-                                        b"w:type" => {
+-                                            ref_type =
+-                                                String::from_utf8_lossy(&attr.value).to_string();
+-                                        }
+-                                        b"r:id" => {
+-                                            r_id = String::from_utf8_lossy(&attr.value).to_string();
+-                                        }
++                                        b"w:type" => ref_type = String::from_utf8_lossy(&attr.value).to_string(),
++                                        b"r:id" => r_id = String::from_utf8_lossy(&attr.value).to_string(),
+                                         _ => {}
+                                     }
+                                 }
+-                                if ref_type == "default" && !r_id.is_empty() {
++                                
++                                if !r_id.is_empty() {
++                                    println!("DEBUG A: Found reference! Type: {}, ID: {}", ref_type, r_id);
+                                     if name.as_ref() == b"w:headerReference" {
+-                                        default_header_rid = Some(r_id);
++                                        header_rids.push(r_id);
+                                     } else {
+-                                        default_footer_rid = Some(r_id);
++                                        footer_rids.push(r_id);
+                                     }
+                                 }
+                             }
+                             _ => {}
+                         }
++
++
+                     } else if in_paragraph {
+                         let name = e.name();
+                         paragraph_xml.push('<');
+@@ -432,19 +585,49 @@ impl DocxParser {
+                         b"w:sectPr" if in_sect_pr => {
+                             in_sect_pr = false;
+                         }
++                        // b"w:p" if in_paragraph && table_depth == 0 && para_depth == 0 => {
++                        //     paragraph_xml.push_str("</w:p>");
++                        //     // Extract text box paragraphs before parsing the main paragraph
++                        //     let textbox_paras = self.extract_textbox_paragraphs(&paragraph_xml);
++                        //     if let Ok(para) = self.parse_paragraph(&paragraph_xml) {
++                        //         section.add_block(Block::Paragraph(para));
++                        //     }
++                        //     // Add text box paragraphs as separate blocks
++                        //     for mut tb_para in textbox_paras {
++                        //         // tb_para.origin = Some("TextBox".to_string());
++                        //         // para.origin = ParagraphOrigin::TextBox;
++                        //         tb_para.origin = ParagraphOrigin::TextBox;
++                        //         section.add_block(Block::Paragraph(tb_para));
++                        //     }
++                        //     in_paragraph = false;
++                        // }
++
+                         b"w:p" if in_paragraph && table_depth == 0 && para_depth == 0 => {
+                             paragraph_xml.push_str("</w:p>");
++                            
+                             // Extract text box paragraphs before parsing the main paragraph
+                             let textbox_paras = self.extract_textbox_paragraphs(&paragraph_xml);
++                            
+                             if let Ok(para) = self.parse_paragraph(&paragraph_xml) {
+                                 section.add_block(Block::Paragraph(para));
+                             }
+-                            // Add text box paragraphs as separate blocks
+-                            for tb_para in textbox_paras {
+-                                section.add_block(Block::Paragraph(tb_para));
++                            
++                            // 💡 Only increment the counter if we actually found text box paragraphs
++                            if !textbox_paras.is_empty() {
++                                self.textbox_counter += 1;
++                                
++                                // Add text box paragraphs as separate blocks
++                                for mut tb_para in textbox_paras {
++                                    tb_para.origin = ParagraphOrigin::TextBox;
++                                    tb_para.origin_id = Some(self.textbox_counter); // 💡 Assign the shared local ID
++                                    section.add_block(Block::Paragraph(tb_para));
++                                }
+                             }
++                            
+                             in_paragraph = false;
+                         }
++
++
+                         b"w:tbl" if table_depth > 0 => {
+                             table_xml.push_str("</w:tbl>");
+                             table_depth -= 1;
+@@ -484,23 +667,101 @@ impl DocxParser {
+             buf.clear();
+         }
+ 
+-        // Resolve and parse header/footer from sectPr references
+-        if let Some(rid) = default_header_rid {
+-            if let Some(paragraphs) = self.parse_header_footer_by_rid(&rid)? {
+-                if !paragraphs.is_empty() {
+-                    section.header = Some(paragraphs);
++        // // Resolve and parse header/footer from sectPr references
++        // if let Some(rid) = default_header_rid {
++        //     if let Some(paragraphs) = self.parse_header_footer_by_rid(&rid)? {
++        //         if !paragraphs.is_empty() {
++        //             section.header = Some(paragraphs);
++        //         }
++        //     }
++        // }
++        // if let Some(rid) = default_footer_rid {
++        //     if let Some(paragraphs) = self.parse_header_footer_by_rid(&rid)? {
++        //         if !paragraphs.is_empty() {
++        //             section.footer = Some(paragraphs);
++        //         }
++        //     }
++        // }
++
++        // Ok(section)
++
++
++        header_rids.sort();
++        header_rids.dedup();
++        footer_rids.sort();
++        footer_rids.dedup();        
++
++        // --- AT THE BOTTOM OF THE FUNCTION ---
++        println!("DEBUG B: Starting resolution. Headers count: {}, Footers count: {}", header_rids.len(), footer_rids.len());
++
++        // for rid in header_rids {
++        //     match self.parse_header_footer_by_rid(&rid) {
++        //         Ok(Some(paragraphs)) => {
++        //             println!("DEBUG B: Header ID {} yielded {} paragraphs.", rid, paragraphs.len());
++        //             for mut para in paragraphs {
++        //                 // para.origin = Some("Header".to_string());
++        //                 para.origin = ParagraphOrigin::Header;
++        //                 section.add_block(Block::Paragraph(para));
++        //             }
++        //         }
++        //         Ok(None) => println!("DEBUG B: Header ID {} returned Ok(None) - File missing or relationship blank.", rid),
++        //         Err(e) => println!("DEBUG B: Header ID {} failed with error: {}", rid, e),
++        //     }
++        // }
++        for rid in header_rids {
++            match self.parse_header_footer_by_rid(&rid) {
++                Ok(Some(paragraphs)) => {
++                    println!("DEBUG B: Header ID {} yielded {} paragraphs.", rid, paragraphs.len());
++                    
++                    self.header_counter += 1; // 💡 Increment only when we successfully get paragraphs
++                    
++                    for mut para in paragraphs {
++                        para.origin = ParagraphOrigin::Header;
++                        para.origin_id = Some(self.header_counter); // 💡 Assign the local ID
++                        section.add_block(Block::Paragraph(para));
++                    }
+                 }
++                Ok(None) => println!("DEBUG B: Header ID {} returned Ok(None) - File missing or relationship blank.", rid),
++                Err(e) => println!("DEBUG B: Header ID {} failed with error: {}", rid, e),
+             }
+         }
+-        if let Some(rid) = default_footer_rid {
+-            if let Some(paragraphs) = self.parse_header_footer_by_rid(&rid)? {
+-                if !paragraphs.is_empty() {
+-                    section.footer = Some(paragraphs);
++
++
++        // for rid in footer_rids {
++        //     match self.parse_header_footer_by_rid(&rid) {
++        //         Ok(Some(paragraphs)) => {
++        //             println!("DEBUG B: Footer ID {} yielded {} paragraphs.", rid, paragraphs.len());
++        //             for mut para in paragraphs {
++        //                 // para.origin = Some("Footer".to_string());
++        //                 para.origin = ParagraphOrigin::Footer;
++        //                 section.add_block(Block::Paragraph(para));
++        //             }
++        //         }
++        //         Ok(None) => println!("DEBUG B: Footer ID {} returned Ok(None).", rid),
++        //         Err(e) => println!("DEBUG B: Footer ID {} failed with error: {}", rid, e),
++        //     }
++        // }
++
++        for rid in footer_rids {
++            match self.parse_header_footer_by_rid(&rid) {
++                Ok(Some(paragraphs)) => {
++                    println!("DEBUG B: Footer ID {} yielded {} paragraphs.", rid, paragraphs.len());
++                    
++                    self.footer_counter += 1; // 💡 Increment only when we successfully get paragraphs
++                    
++                    for mut para in paragraphs {
++                        para.origin = ParagraphOrigin::Footer;
++                        para.origin_id = Some(self.footer_counter); // 💡 Assign the local ID
++                        section.add_block(Block::Paragraph(para));
++                    }
+                 }
++                Ok(None) => println!("DEBUG B: Footer ID {} returned Ok(None).", rid),
++                Err(e) => println!("DEBUG B: Footer ID {} failed with error: {}", rid, e),
+             }
+-        }
++        }        
+ 
+         Ok(section)
++        
+     }
+ 
+     /// Resolve a relationship ID to a header/footer XML path and parse its paragraphs.
+@@ -1645,6 +1906,10 @@ fn parse_header_footer_xml(xml: &str) -> Vec<Paragraph> {
+                 _ => {}
+             },
+             Ok(quick_xml::events::Event::Text(ref e)) if in_paragraph && in_text => {
++
++                let decoded = crate::decode::decode_text_lossy(e);
++                println!("DEBUG C: Extracted text run raw string: ->{}<-", decoded);
++
+                 current_text.push_str(&crate::decode::decode_text_lossy(e));
+             }
+             Ok(quick_xml::events::Event::End(ref e)) => match e.name().as_ref() {
+@@ -1863,6 +2128,12 @@ mod tests {
+             relationships: crate::container::Relationships::default(),
+             footnotes: HashMap::new(),
+             endnotes: HashMap::new(),
++
++            header_counter: 0,
++            footer_counter: 0,
++            textbox_counter: 0,
++            footnote_counter: 0,
++            endnote_counter: 0,            
+         };
+ 
+         let para = parser.parse_paragraph(xml).unwrap();
+@@ -1901,6 +2172,12 @@ mod tests {
+             relationships: crate::container::Relationships::default(),
+             footnotes: HashMap::new(),
+             endnotes: HashMap::new(),
++
++            header_counter: 0,
++            footer_counter: 0,
++            textbox_counter: 0,
++            footnote_counter: 0,
++            endnote_counter: 0,            
+         };
+ 
+         let para = parser.parse_paragraph(xml).unwrap();
+@@ -1941,6 +2218,11 @@ mod tests {
+             relationships: crate::container::Relationships::default(),
+             footnotes: HashMap::new(),
+             endnotes: HashMap::new(),
++            header_counter: 0,
++            footer_counter: 0,
++            textbox_counter: 0,
++            footnote_counter: 0,
++            endnote_counter: 0,            
+         };
+ 
+         let para = parser.parse_paragraph(xml).unwrap();
+@@ -1977,6 +2259,12 @@ mod tests {
+             relationships: crate::container::Relationships::default(),
+             footnotes: HashMap::new(),
+             endnotes: HashMap::new(),
++
++            header_counter: 0,
++            footer_counter: 0,
++            textbox_counter: 0,
++            footnote_counter: 0,
++            endnote_counter: 0,            
+         };
+ 
+         let para = parser.parse_paragraph(xml).unwrap();
+@@ -2013,6 +2301,12 @@ mod tests {
+             relationships: crate::container::Relationships::default(),
+             footnotes: HashMap::new(),
+             endnotes: HashMap::new(),
++
++            header_counter: 0,
++            footer_counter: 0,
++            textbox_counter: 0,
++            footnote_counter: 0,
++            endnote_counter: 0,            
+         };
+ 
+         let para = parser.parse_paragraph(xml).unwrap();
+@@ -2045,6 +2339,12 @@ mod tests {
+             relationships: crate::container::Relationships::default(),
+             footnotes: HashMap::new(),
+             endnotes: HashMap::new(),
++
++            header_counter: 0,
++            footer_counter: 0,
++            textbox_counter: 0,
++            footnote_counter: 0,
++            endnote_counter: 0,            
+         };
+ 
+         let para = parser.parse_paragraph(xml).unwrap();
+@@ -2090,6 +2390,12 @@ mod tests {
+             relationships: crate::container::Relationships::default(),
+             footnotes: HashMap::new(),
+             endnotes: HashMap::new(),
++
++            header_counter: 0,
++            footer_counter: 0,
++            textbox_counter: 0,
++            footnote_counter: 0,
++            endnote_counter: 0,            
+         };
+ 
+         let para = parser.parse_paragraph(xml).unwrap();
+@@ -2138,6 +2444,12 @@ mod tests {
+             relationships: crate::container::Relationships::default(),
+             footnotes: HashMap::new(),
+             endnotes: HashMap::new(),
++
++            header_counter: 0,
++            footer_counter: 0,
++            textbox_counter: 0,
++            footnote_counter: 0,
++            endnote_counter: 0,            
+         };
+ 
+         let para = parser.parse_paragraph(xml).unwrap();
+@@ -2274,6 +2586,12 @@ mod tests {
+             relationships: crate::container::Relationships::default(),
+             footnotes,
+             endnotes: HashMap::new(),
++
++            header_counter: 0,
++            footer_counter: 0,
++            textbox_counter: 0,
++            footnote_counter: 0,
++            endnote_counter: 0,            
+         };
+ 
+         let para = parser.parse_paragraph(xml).unwrap();
+@@ -2314,6 +2632,11 @@ mod tests {
+             relationships: crate::container::Relationships::default(),
+             footnotes: HashMap::new(),
+             endnotes,
++            header_counter: 0,
++            footer_counter: 0,
++            textbox_counter: 0,
++            footnote_counter: 0,
++            endnote_counter: 0,            
+         };
+ 
+         let para = parser.parse_paragraph(xml).unwrap();
+@@ -2346,6 +2669,12 @@ mod tests {
+             relationships: crate::container::Relationships::default(),
+             footnotes: HashMap::new(), // No footnotes
+             endnotes: HashMap::new(),
++
++            header_counter: 0,
++            footer_counter: 0,
++            textbox_counter: 0,
++            footnote_counter: 0,
++            endnote_counter: 0,            
+         };
+ 
+         let para = parser.parse_paragraph(xml).unwrap();
+diff --git a/src/model/mod.rs b/src/model/mod.rs
+index 1530007..c36f72e 100644
+--- a/src/model/mod.rs
++++ b/src/model/mod.rs
+@@ -13,3 +13,6 @@ pub use document::*;
+ pub use paragraph::*;
+ pub use resource::*;
+ pub use table::*;
++
++
++pub use self::paragraph::{Paragraph, TextRun, ParagraphOrigin};
+diff --git a/src/model/paragraph.rs b/src/model/paragraph.rs
+index 4382b79..89e12e1 100644
+--- a/src/model/paragraph.rs
++++ b/src/model/paragraph.rs
+@@ -84,6 +84,29 @@ pub enum RevisionType {
+     Deleted,
+ }
+ 
++
++// Add this Enum right below your other enums (like RevisionType)
++/// Origin of the paragraph content for indexing segmentation.
++#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "lowercase")]
++pub enum ParagraphOrigin {
++    #[default]
++    Body,
++    Header,
++    Footer,
++    TextBox,
++    Footnote,
++    Endnote,
++}
++
++impl ParagraphOrigin {
++    /// Helper helper for Serde to skip serialization if it's standard body text
++    pub fn is_body(&self) -> bool {
++        matches!(self, Self::Body)
++    }
++}
++
++
+ /// List information for a paragraph.
+ #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+ pub struct ListInfo {
+@@ -322,7 +345,18 @@ pub struct Paragraph {
+     /// Indentation level
+     #[serde(default, skip_serializing_if = "is_zero")]
+     pub indent_level: u8,
+-}
++
++
++    // // 💡 Add this field:
++    // #[serde(skip_serializing_if = "Option::is_none")] // So standard body text stays clean
++    // pub origin: Option<String>,    
++    /// Origin of the paragraph content
++    // #[serde(default, skip_serializing_if = "ParagraphOrigin::is_body")] 
++    #[serde(default)] 
++    pub origin: ParagraphOrigin,    
++    pub origin_id: Option<usize>, 
++}    
++
+ 
+ fn is_default_alignment(a: &TextAlignment) -> bool {
+     *a == TextAlignment::Left

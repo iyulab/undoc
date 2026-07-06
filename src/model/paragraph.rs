@@ -84,6 +84,21 @@ pub enum RevisionType {
     Deleted,
 }
 
+
+// Enum for "origin" structural element
+/// Origin of the paragraph content for indexing segmentation.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ParagraphOrigin {
+    #[default]
+    Body,
+    Header,
+    Footer,
+    TextBox,
+    Footnote,
+    Endnote,
+}
+
 /// List information for a paragraph.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ListInfo {
@@ -322,7 +337,15 @@ pub struct Paragraph {
     /// Indentation level
     #[serde(default, skip_serializing_if = "is_zero")]
     pub indent_level: u8,
-}
+
+
+    // fields for identifying structural element where text originates from, and number of this structural element
+    // i.e. "text box #3", "footer #2", etc.
+    #[serde(default)] 
+    pub origin: ParagraphOrigin,    
+    pub origin_id: Option<usize>, 
+}    
+
 
 fn is_default_alignment(a: &TextAlignment) -> bool {
     *a == TextAlignment::Left
