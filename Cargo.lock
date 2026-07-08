@@ -1894,7 +1894,7 @@ checksum = "40ce102ab67701b8526c123c1bab5cbe42d7040ccfd0f64af1a385808d2f43de"
 
 [[package]]
 name = "undoc"
-version = "0.5.3"
+version = "0.5.4"
 dependencies = [
  "criterion",
  "quick-xml 0.41.0",
@@ -1910,7 +1910,7 @@ dependencies = [
 
 [[package]]
 name = "undoc-cli"
-version = "0.5.3"
+version = "0.5.4"
 dependencies = [
  "clap",
  "colored",
@@ -1923,7 +1923,7 @@ dependencies = [
 
 [[package]]
 name = "undoc-wasm"
-version = "0.5.3"
+version = "0.5.4"
 dependencies = [
  "js-sys",
  "serde_json",
