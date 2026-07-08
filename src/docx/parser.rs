@@ -292,8 +292,9 @@ impl DocxParser {
         let mut para_depth: u32 = 0; // Track nested w:p depth (for text boxes)
         let mut table_depth: u32 = 0; // Track nested table depth
         let mut in_sect_pr = false; // Track w:sectPr for header/footer references
-        let mut default_header_rid: Option<String> = None;
-        let mut default_footer_rid: Option<String> = None;
+                                    // Every header/footer reference (default / first / even), in document order.
+        let mut header_rids: Vec<String> = Vec::new();
+        let mut footer_rids: Vec<String> = Vec::new();
 
         loop {
             match reader.read_event_into(&mut buf) {
@@ -364,25 +365,20 @@ impl DocxParser {
                         let name = e.name();
                         match name.as_ref() {
                             b"w:headerReference" | b"w:footerReference" => {
-                                let mut ref_type = String::new();
+                                // Collect every reference type (default/first/even);
+                                // dropping non-default ones silently loses first-page
+                                // and even-page header/footer text.
                                 let mut r_id = String::new();
                                 for attr in e.attributes().flatten() {
-                                    match attr.key.as_ref() {
-                                        b"w:type" => {
-                                            ref_type =
-                                                String::from_utf8_lossy(&attr.value).to_string();
-                                        }
-                                        b"r:id" => {
-                                            r_id = String::from_utf8_lossy(&attr.value).to_string();
-                                        }
-                                        _ => {}
+                                    if attr.key.as_ref() == b"r:id" {
+                                        r_id = String::from_utf8_lossy(&attr.value).to_string();
                                     }
                                 }
-                                if ref_type == "default" && !r_id.is_empty() {
+                                if !r_id.is_empty() {
                                     if name.as_ref() == b"w:headerReference" {
-                                        default_header_rid = Some(r_id);
+                                        header_rids.push(r_id);
                                     } else {
-                                        default_footer_rid = Some(r_id);
+                                        footer_rids.push(r_id);
                                     }
                                 }
                             }
@@ -496,21 +492,11 @@ impl DocxParser {
             buf.clear();
         }
 
-        // Resolve and parse header/footer from sectPr references
-        if let Some(rid) = default_header_rid {
-            if let Some(paragraphs) = self.parse_header_footer_by_rid(&rid)? {
-                if !paragraphs.is_empty() {
-                    section.header = Some(paragraphs);
-                }
-            }
-        }
-        if let Some(rid) = default_footer_rid {
-            if let Some(paragraphs) = self.parse_header_footer_by_rid(&rid)? {
-                if !paragraphs.is_empty() {
-                    section.footer = Some(paragraphs);
-                }
-            }
-        }
+        // Resolve and parse header/footer from sectPr references. A single part
+        // can be referenced by multiple section types, so parse each part once
+        // (preserving document order) and merge the paragraphs into one list.
+        section.header = self.resolve_header_footer_parts(&header_rids)?;
+        section.footer = self.resolve_header_footer_parts(&footer_rids)?;
 
         Ok(section)
     }
@@ -520,15 +506,187 @@ impl DocxParser {
     /// Returns `Ok(None)` when the relationship is absent or the target part is
     /// missing, but surfaces malformed content (e.g. `Error::Encoding`) so that
     /// corrupted header/footer parts are not silently dropped.
-    fn parse_header_footer_by_rid(&self, rid: &str) -> Result<Option<Vec<Paragraph>>> {
+    /// Resolve a set of header/footer relationship IDs (in document order) into a
+    /// single merged paragraph list. Duplicate IDs (the same part referenced by
+    /// several section types) are parsed only once. Returns `None` when nothing
+    /// resolves to non-empty content, keeping `section.header/footer` absent.
+    fn resolve_header_footer_parts(&mut self, rids: &[String]) -> Result<Option<Vec<Paragraph>>> {
+        let mut seen = std::collections::HashSet::new();
+        let mut merged: Vec<Paragraph> = Vec::new();
+        for rid in rids {
+            if !seen.insert(rid.as_str()) {
+                continue;
+            }
+            if let Some(paragraphs) = self.parse_header_footer_by_rid(rid)? {
+                merged.extend(paragraphs);
+            }
+        }
+        Ok((!merged.is_empty()).then_some(merged))
+    }
+
+    fn parse_header_footer_by_rid(&mut self, rid: &str) -> Result<Option<Vec<Paragraph>>> {
         let Some(rel) = self.relationships.get(rid) else {
             return Ok(None);
         };
         let path = OoxmlContainer::resolve_path("word/document.xml", &rel.target);
-        match self.container.read_xml_optional(&path)? {
-            Some(xml) => Ok(Some(parse_header_footer_xml(&xml))),
-            None => Ok(None),
+        let Some(xml) = self.container.read_xml_optional(&path)? else {
+            return Ok(None);
+        };
+
+        // A header/footer part has its OWN relationships namespace
+        // (e.g. word/_rels/header1.xml.rels), independently numbered from the
+        // body's. Swap them in while parsing so hyperlink/image r:ids resolve
+        // against the correct part and can't collide with document.xml's rIds.
+        let part_rels = self.container.read_optional_relationships_for_part(&path)?;
+        let saved = std::mem::replace(&mut self.relationships, part_rels);
+        let paragraphs = self.parse_header_footer_xml(&xml);
+        self.relationships = saved;
+
+        Ok(Some(paragraphs))
+    }
+
+    /// Parse a header or footer XML part (`w:hdr` / `w:ftr`) into a flat list of
+    /// paragraphs.
+    ///
+    /// Header/footer XML shares the document body's structure, so this reuses the
+    /// same building blocks as the body parser rather than a divergent text-only
+    /// scan: [`Self::parse_paragraph`] for run text and formatting,
+    /// [`Self::extract_textbox_paragraphs`] for text boxes (kept as separate
+    /// paragraphs, matching body behaviour), and [`Self::parse_table`] for tables
+    /// (cells flattened into loose paragraphs so their text survives even though
+    /// the flat header/footer model cannot hold table structure).
+    fn parse_header_footer_xml(&mut self, xml: &str) -> Vec<Paragraph> {
+        let mut paragraphs = Vec::new();
+        let mut reader = crate::decode::reader_for(xml);
+        // Preserve whitespace (xml:space="preserve"), consistent with the body parser.
+        reader.config_mut().trim_text(false);
+
+        let mut buf = Vec::new();
+        let mut paragraph_xml = String::new();
+        let mut table_xml = String::new();
+        let mut in_paragraph = false;
+        let mut para_depth: u32 = 0; // Nested w:p depth (text boxes)
+        let mut table_depth: u32 = 0;
+
+        loop {
+            match reader.read_event_into(&mut buf) {
+                Ok(quick_xml::events::Event::Start(ref e)) => {
+                    let name = e.name();
+                    match name.as_ref() {
+                        b"w:p" if !in_paragraph && table_depth == 0 => {
+                            in_paragraph = true;
+                            para_depth = 0;
+                            paragraph_xml.clear();
+                            push_start_tag(&mut paragraph_xml, e);
+                        }
+                        b"w:tbl" if !in_paragraph => {
+                            if table_depth == 0 {
+                                table_xml.clear();
+                            }
+                            table_depth += 1;
+                            table_xml.push_str("<w:tbl>");
+                        }
+                        _ => {
+                            if in_paragraph {
+                                if name.as_ref() == b"w:p" {
+                                    para_depth += 1;
+                                }
+                                push_start_tag(&mut paragraph_xml, e);
+                            } else if table_depth > 0 {
+                                push_start_tag(&mut table_xml, e);
+                            }
+                        }
+                    }
+                }
+                Ok(quick_xml::events::Event::Empty(ref e)) => {
+                    if in_paragraph {
+                        push_empty_tag(&mut paragraph_xml, e);
+                    } else if table_depth > 0 {
+                        push_empty_tag(&mut table_xml, e);
+                    }
+                }
+                Ok(quick_xml::events::Event::Text(ref e)) => {
+                    let text = crate::decode::decode_text_lossy(e);
+                    if in_paragraph {
+                        paragraph_xml.push_str(&escape_xml(&text));
+                    } else if table_depth > 0 {
+                        table_xml.push_str(&escape_xml(&text));
+                    }
+                }
+                // Re-emit resolved entities through escape_xml; the re-parse of this
+                // buffer decodes them again (mirrors the body parser).
+                Ok(quick_xml::events::Event::GeneralRef(ref e)) => {
+                    let decoded = crate::decode::resolve_general_ref(e);
+                    if in_paragraph {
+                        paragraph_xml.push_str(&escape_xml(&decoded));
+                    } else if table_depth > 0 {
+                        table_xml.push_str(&escape_xml(&decoded));
+                    }
+                }
+                Ok(quick_xml::events::Event::End(ref e)) => {
+                    let name = e.name();
+                    match name.as_ref() {
+                        b"w:p" if in_paragraph && table_depth == 0 && para_depth == 0 => {
+                            paragraph_xml.push_str("</w:p>");
+                            // Text boxes are pulled out first, as separate paragraphs.
+                            let textbox_paras = self.extract_textbox_paragraphs(&paragraph_xml);
+                            if let Ok(para) = self.parse_paragraph(&paragraph_xml) {
+                                // Skip blank lines (e.g. spacer paragraphs), but keep
+                                // internal whitespace intact — consistent with the body parser.
+                                if !para.plain_text().trim().is_empty() {
+                                    paragraphs.push(para);
+                                }
+                            }
+                            paragraphs.extend(textbox_paras);
+                            in_paragraph = false;
+                        }
+                        b"w:tbl" if table_depth > 0 => {
+                            table_xml.push_str("</w:tbl>");
+                            table_depth -= 1;
+                            if table_depth == 0 {
+                                // Flatten the table's cells into loose paragraphs: the
+                                // flat model cannot hold structure, but text is kept.
+                                if let Ok(table) = self.parse_table(&table_xml) {
+                                    for row in table.rows {
+                                        for cell in row.cells {
+                                            paragraphs.extend(
+                                                cell.content
+                                                    .into_iter()
+                                                    .filter(|p| !p.plain_text().trim().is_empty()),
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        _ => {
+                            if in_paragraph {
+                                if name.as_ref() == b"w:p" {
+                                    para_depth = para_depth.saturating_sub(1);
+                                }
+                                push_end_tag(&mut paragraph_xml, name.as_ref());
+                            } else if table_depth > 0 {
+                                push_end_tag(&mut table_xml, name.as_ref());
+                            }
+                        }
+                    }
+                }
+                Ok(quick_xml::events::Event::Eof) => break,
+                Err(_) => break,
+                _ => {}
+            }
+            buf.clear();
         }
+
+        // Header/footer text is auxiliary: it must not enter the document heading
+        // outline (a Heading paragraph style here would otherwise emit a stray `#`
+        // in the rendered header/footer and mislead structure-aware consumers).
+        // Run-level formatting (bold/italic/hyperlinks) is preserved.
+        for para in &mut paragraphs {
+            para.heading = crate::model::HeadingLevel::None;
+        }
+
+        paragraphs
     }
 
     /// Parse a single paragraph element.
@@ -1695,62 +1853,6 @@ fn parse_notes_xml(xml: &str, note_tag: &[u8]) -> HashMap<String, String> {
     notes
 }
 
-/// Parse a header or footer XML file (w:hdr or w:ftr) into a list of paragraphs.
-///
-/// Header/footer XML has the same structure as the document body:
-/// `<w:hdr>` or `<w:ftr>` containing `<w:p>` paragraphs with `<w:r>` runs and `<w:t>` text.
-/// This function extracts plain text only (no styles or formatting).
-fn parse_header_footer_xml(xml: &str) -> Vec<Paragraph> {
-    let mut paragraphs = Vec::new();
-    let mut reader = crate::decode::reader_for(xml);
-    reader.config_mut().trim_text(false);
-
-    let mut buf = Vec::new();
-    let mut in_paragraph = false;
-    let mut in_text = false;
-    let mut current_text = String::new();
-
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(quick_xml::events::Event::Start(ref e)) => match e.name().as_ref() {
-                b"w:p" => {
-                    in_paragraph = true;
-                    current_text.clear();
-                }
-                b"w:t" if in_paragraph => {
-                    in_text = true;
-                }
-                _ => {}
-            },
-            Ok(quick_xml::events::Event::Text(ref e)) if in_paragraph && in_text => {
-                current_text.push_str(&crate::decode::decode_text_lossy(e));
-            }
-            Ok(quick_xml::events::Event::GeneralRef(ref e)) if in_paragraph && in_text => {
-                current_text.push_str(&crate::decode::resolve_general_ref(e));
-            }
-            Ok(quick_xml::events::Event::End(ref e)) => match e.name().as_ref() {
-                b"w:p" if in_paragraph => {
-                    let trimmed = current_text.trim().to_string();
-                    if !trimmed.is_empty() {
-                        paragraphs.push(Paragraph::with_text(trimmed));
-                    }
-                    in_paragraph = false;
-                }
-                b"w:t" => {
-                    in_text = false;
-                }
-                _ => {}
-            },
-            Ok(quick_xml::events::Event::Eof) => break,
-            Err(_) => break,
-            _ => {}
-        }
-        buf.clear();
-    }
-
-    paragraphs
-}
-
 /// Build an `InlineImage` from a VML `v:imagedata` element, if it carries an
 /// `r:id` relationship reference. `o:title` supplies the alt text.
 ///
@@ -1785,6 +1887,43 @@ fn get_bool_attr(e: &quick_xml::events::BytesStart, key: &[u8]) -> Option<bool> 
         }
     }
     None
+}
+
+/// Append a re-serialized start tag (`<name attr="val">`) to a buffer that will
+/// be parsed a second time. Text/attribute values are already-decoded, so they
+/// are re-escaped here for the re-parse.
+fn push_start_tag(buf: &mut String, e: &quick_xml::events::BytesStart) {
+    buf.push('<');
+    buf.push_str(&String::from_utf8_lossy(e.name().as_ref()));
+    for attr in e.attributes().flatten() {
+        buf.push_str(&format!(
+            " {}=\"{}\"",
+            String::from_utf8_lossy(attr.key.as_ref()),
+            String::from_utf8_lossy(&attr.value)
+        ));
+    }
+    buf.push('>');
+}
+
+/// Append a re-serialized empty-element tag (`<name attr="val"/>`) to a buffer.
+fn push_empty_tag(buf: &mut String, e: &quick_xml::events::BytesStart) {
+    buf.push('<');
+    buf.push_str(&String::from_utf8_lossy(e.name().as_ref()));
+    for attr in e.attributes().flatten() {
+        buf.push_str(&format!(
+            " {}=\"{}\"",
+            String::from_utf8_lossy(attr.key.as_ref()),
+            String::from_utf8_lossy(&attr.value)
+        ));
+    }
+    buf.push_str("/>");
+}
+
+/// Append a re-serialized end tag (`</name>`) to a buffer.
+fn push_end_tag(buf: &mut String, name: &[u8]) {
+    buf.push_str("</");
+    buf.push_str(&String::from_utf8_lossy(name));
+    buf.push('>');
 }
 
 /// Escape XML special characters.
@@ -2472,7 +2611,7 @@ mod tests {
             </w:p>
         </w:hdr>"#;
 
-        let paragraphs = parse_header_footer_xml(xml);
+        let paragraphs = empty_test_parser().parse_header_footer_xml(xml);
         assert_eq!(paragraphs.len(), 2);
         assert_eq!(paragraphs[0].plain_text(), "Company Name");
         assert_eq!(paragraphs[1].plain_text(), "Confidential");
@@ -2491,7 +2630,7 @@ mod tests {
             </w:p>
         </w:ftr>"#;
 
-        let paragraphs = parse_header_footer_xml(xml);
+        let paragraphs = empty_test_parser().parse_header_footer_xml(xml);
         assert_eq!(paragraphs.len(), 1);
         assert_eq!(paragraphs[0].plain_text(), "Page 1");
     }
@@ -2506,7 +2645,7 @@ mod tests {
             </w:p>
         </w:hdr>"#;
 
-        let paragraphs = parse_header_footer_xml(xml);
+        let paragraphs = empty_test_parser().parse_header_footer_xml(xml);
         assert_eq!(paragraphs.len(), 1);
         assert_eq!(paragraphs[0].plain_text(), "Draft - Do Not Distribute");
     }
@@ -2518,7 +2657,7 @@ mod tests {
             <w:p><w:r><w:t>Footer &bogus; text</w:t></w:r></w:p>
         </w:ftr>"#;
 
-        let paragraphs = parse_header_footer_xml(xml);
+        let paragraphs = empty_test_parser().parse_header_footer_xml(xml);
         assert_eq!(paragraphs.len(), 1);
         assert_eq!(paragraphs[0].plain_text(), "Footer &bogus; text");
     }
@@ -2529,7 +2668,7 @@ mod tests {
         <w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
         </w:hdr>"#;
 
-        let paragraphs = parse_header_footer_xml(xml);
+        let paragraphs = empty_test_parser().parse_header_footer_xml(xml);
         assert!(paragraphs.is_empty());
     }
 
@@ -3520,6 +3659,328 @@ mod tests {
         assert!(
             section_text.contains("Stream me"),
             "section text missing, got: {section_text}"
+        );
+    }
+
+    fn hf_text(paras: &[Paragraph]) -> String {
+        paras
+            .iter()
+            .map(|p| p.plain_text())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    // Bug #3 (verify): text inside a table in a header must be extracted.
+    #[test]
+    fn header_extracts_table_cell_text() {
+        let xml = r#"<?xml version="1.0"?>
+<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:tbl>
+    <w:tr>
+      <w:tc><w:p><w:r><w:t>CellLeft</w:t></w:r></w:p></w:tc>
+      <w:tc><w:p><w:r><w:t>CellRight</w:t></w:r></w:p></w:tc>
+    </w:tr>
+  </w:tbl>
+</w:hdr>"#;
+        let paras = empty_test_parser().parse_header_footer_xml(xml);
+        let text = hf_text(&paras);
+        assert!(text.contains("CellLeft"), "missing CellLeft, got: {text:?}");
+        assert!(
+            text.contains("CellRight"),
+            "missing CellRight, got: {text:?}"
+        );
+    }
+
+    // Bug #2 (verify): a text box nested inside a header paragraph must not
+    // swallow the surrounding paragraph's own text, and its text must appear.
+    #[test]
+    fn header_textbox_does_not_swallow_surrounding_text() {
+        let xml = r#"<?xml version="1.0"?>
+<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:p>
+    <w:r><w:t>AnchorBefore</w:t></w:r>
+    <w:r><w:pict><v:shape><v:textbox><w:txbxContent>
+      <w:p><w:r><w:t>BoxInside</w:t></w:r></w:p>
+    </w:txbxContent></v:textbox></v:shape></w:pict></w:r>
+    <w:r><w:t>AnchorAfter</w:t></w:r>
+  </w:p>
+</w:hdr>"#;
+        let paras = empty_test_parser().parse_header_footer_xml(xml);
+        let text = hf_text(&paras);
+        assert!(
+            text.contains("AnchorBefore") && text.contains("AnchorAfter"),
+            "anchor text lost, got: {text:?}"
+        );
+        assert!(
+            text.contains("BoxInside"),
+            "textbox text lost, got: {text:?}"
+        );
+    }
+
+    // Baseline: plain header paragraph text still works.
+    #[test]
+    fn header_extracts_plain_paragraph_text() {
+        let xml = r#"<?xml version="1.0"?>
+<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:p><w:r><w:t>PlainHeader</w:t></w:r></w:p>
+</w:hdr>"#;
+        let paras = empty_test_parser().parse_header_footer_xml(xml);
+        assert_eq!(hf_text(&paras), "PlainHeader");
+    }
+
+    /// Build a minimal DOCX with a document.xml.rels and arbitrary extra parts
+    /// (e.g. header/footer XML parts referenced from the body's sectPr).
+    fn create_docx_with_parts(
+        document_xml: &str,
+        document_rels_xml: &str,
+        extra_parts: &[(&str, &str)],
+    ) -> Vec<u8> {
+        use std::io::{Cursor, Write};
+        let buf = Cursor::new(Vec::new());
+        let mut zip = zip::ZipWriter::new(buf);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+
+        zip.start_file("[Content_Types].xml", options).unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>"#).unwrap();
+
+        zip.start_file("_rels/.rels", options).unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>"#).unwrap();
+
+        zip.start_file("word/_rels/document.xml.rels", options)
+            .unwrap();
+        zip.write_all(document_rels_xml.as_bytes()).unwrap();
+
+        zip.start_file("word/document.xml", options).unwrap();
+        zip.write_all(document_xml.as_bytes()).unwrap();
+
+        for (path, content) in extra_parts {
+            zip.start_file(*path, options).unwrap();
+            zip.write_all(content.as_bytes()).unwrap();
+        }
+
+        zip.finish().unwrap().into_inner()
+    }
+
+    fn section_header_text(section: &crate::model::Section) -> String {
+        section
+            .header
+            .as_deref()
+            .unwrap_or(&[])
+            .iter()
+            .map(|p| p.plain_text())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    // Bug #1: header references of every type (default / first / even) must be
+    // extracted, not just the "default" one. Previously only `w:type="default"`
+    // was captured, silently dropping first-page and even-page header text.
+    #[test]
+    fn extracts_first_and_even_header_references() {
+        let document_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+            xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <w:body>
+    <w:p><w:r><w:t>Body</w:t></w:r></w:p>
+    <w:sectPr>
+      <w:headerReference w:type="default" r:id="rIdHDef"/>
+      <w:headerReference w:type="first" r:id="rIdHFirst"/>
+      <w:headerReference w:type="even" r:id="rIdHEven"/>
+    </w:sectPr>
+  </w:body>
+</w:document>"#;
+        let rels = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rIdHDef" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/>
+  <Relationship Id="rIdHFirst" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header2.xml"/>
+  <Relationship Id="rIdHEven" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header3.xml"/>
+</Relationships>"#;
+        let hdr = |text: &str| {
+            format!(
+                r#"<?xml version="1.0"?><w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:r><w:t>{text}</w:t></w:r></w:p></w:hdr>"#
+            )
+        };
+        let data = create_docx_with_parts(
+            document_xml,
+            rels,
+            &[
+                ("word/header1.xml", &hdr("DefaultHeader")),
+                ("word/header2.xml", &hdr("FirstPageHeader")),
+                ("word/header3.xml", &hdr("EvenPageHeader")),
+            ],
+        );
+
+        let mut parser = DocxParser::from_bytes(data).unwrap();
+        let doc = parser.parse().unwrap();
+        let text = section_header_text(&doc.sections[0]);
+
+        assert!(
+            text.contains("DefaultHeader"),
+            "missing default, got: {text:?}"
+        );
+        assert!(
+            text.contains("FirstPageHeader"),
+            "missing first-page, got: {text:?}"
+        );
+        assert!(
+            text.contains("EvenPageHeader"),
+            "missing even-page, got: {text:?}"
+        );
+    }
+
+    // A single header referenced by several section types (default + first) must
+    // be parsed once, not duplicated.
+    #[test]
+    fn deduplicates_shared_header_reference() {
+        let document_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+            xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <w:body>
+    <w:p><w:r><w:t>Body</w:t></w:r></w:p>
+    <w:sectPr>
+      <w:headerReference w:type="default" r:id="rIdShared"/>
+      <w:headerReference w:type="first" r:id="rIdShared"/>
+    </w:sectPr>
+  </w:body>
+</w:document>"#;
+        let rels = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rIdShared" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/>
+</Relationships>"#;
+        let data = create_docx_with_parts(
+            document_xml,
+            rels,
+            &[(
+                "word/header1.xml",
+                r#"<?xml version="1.0"?><w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:r><w:t>SharedHeader</w:t></w:r></w:p></w:hdr>"#,
+            )],
+        );
+
+        let mut parser = DocxParser::from_bytes(data).unwrap();
+        let doc = parser.parse().unwrap();
+        let text = section_header_text(&doc.sections[0]);
+
+        assert_eq!(
+            text, "SharedHeader",
+            "shared header must appear exactly once"
+        );
+    }
+
+    // A header's relationship IDs live in its own rels part
+    // (word/_rels/header1.xml.rels), independently numbered from the body's.
+    // A hyperlink r:id must resolve against the header's rels, not document.xml's
+    // — otherwise a colliding rId silently yields the wrong URL.
+    #[test]
+    fn header_hyperlink_resolves_against_its_own_rels() {
+        let document_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+            xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <w:body>
+    <w:p><w:r><w:t>Body</w:t></w:r></w:p>
+    <w:sectPr>
+      <w:headerReference w:type="default" r:id="rIdHeaderPart"/>
+    </w:sectPr>
+  </w:body>
+</w:document>"#;
+        // document.xml.rels: rId1 is a DECOY that points at a body URL.
+        let doc_rels = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rIdHeaderPart" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/>
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://body-url.example/" TargetMode="External"/>
+</Relationships>"#;
+        let header_xml = r#"<?xml version="1.0"?>
+<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+       xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <w:p><w:hyperlink r:id="rId1"><w:r><w:t>HeaderLink</w:t></w:r></w:hyperlink></w:p>
+</w:hdr>"#;
+        // header1.xml.rels: the SAME rId1 points at the correct header URL.
+        let header_rels = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://header-url.example/" TargetMode="External"/>
+</Relationships>"#;
+
+        let data = create_docx_with_parts(
+            document_xml,
+            doc_rels,
+            &[
+                ("word/header1.xml", header_xml),
+                ("word/_rels/header1.xml.rels", header_rels),
+            ],
+        );
+
+        let mut parser = DocxParser::from_bytes(data).unwrap();
+        let doc = parser.parse().unwrap();
+        let header = doc.sections[0].header.as_ref().expect("header present");
+        let link = header
+            .iter()
+            .flat_map(|p| p.runs.iter())
+            .find_map(|r| r.hyperlink.clone())
+            .expect("header hyperlink resolved");
+
+        assert_eq!(
+            link, "https://header-url.example/",
+            "header hyperlink must resolve against the header's own rels"
+        );
+    }
+
+    // Header/footer text is auxiliary and must not enter the document heading
+    // outline, even when it carries a Heading paragraph style — otherwise it
+    // would emit a stray `#` inside the rendered header blockquote and mislead
+    // structure-aware consumers.
+    #[test]
+    fn header_paragraph_is_not_treated_as_a_heading() {
+        let document_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+            xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <w:body>
+    <w:p><w:r><w:t>Body</w:t></w:r></w:p>
+    <w:sectPr>
+      <w:headerReference w:type="default" r:id="rIdHdr"/>
+    </w:sectPr>
+  </w:body>
+</w:document>"#;
+        let rels = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rIdHdr" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/>
+</Relationships>"#;
+        let styles = r#"<?xml version="1.0" encoding="UTF-8"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:style w:type="paragraph" w:styleId="Heading1">
+    <w:name w:val="Heading 1"/>
+    <w:pPr><w:outlineLvl w:val="0"/></w:pPr>
+  </w:style>
+</w:styles>"#;
+        let header_xml = r#"<?xml version="1.0"?>
+<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>HeaderTitle</w:t></w:r></w:p>
+</w:hdr>"#;
+        let data = create_docx_with_parts(
+            document_xml,
+            rels,
+            &[
+                ("word/styles.xml", styles),
+                ("word/header1.xml", header_xml),
+            ],
+        );
+
+        let mut parser = DocxParser::from_bytes(data).unwrap();
+        let doc = parser.parse().unwrap();
+        let header = doc.sections[0].header.as_ref().expect("header present");
+
+        assert_eq!(header[0].plain_text(), "HeaderTitle");
+        assert!(
+            !header[0].heading.is_heading(),
+            "header paragraph must not be a document heading, got {:?}",
+            header[0].heading
         );
     }
 }
