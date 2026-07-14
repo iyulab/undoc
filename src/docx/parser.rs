@@ -291,8 +291,7 @@ impl DocxParser {
         let mut in_paragraph = false;
         let mut para_depth: u32 = 0; // Track nested w:p depth (for text boxes)
         let mut table_depth: u32 = 0; // Track nested table depth
-        let mut in_sect_pr = false; // Track w:sectPr for header/footer references
-                                    // Every header/footer reference (default / first / even), in document order.
+                                      // Every header/footer reference (default / first / even), in document order.
         let mut header_rids: Vec<String> = Vec::new();
         let mut footer_rids: Vec<String> = Vec::new();
 
@@ -317,10 +316,12 @@ impl DocxParser {
                             }
                             paragraph_xml.push('>');
                         }
-                        b"w:sectPr" if in_body && !in_paragraph && table_depth == 0 => {
-                            in_sect_pr = true;
-                        }
-                        b"w:tbl" if in_body => {
+                        // Only body-level tables enter table mode. A table nested
+                        // inside a text box lives within a paragraph; it must stay
+                        // in paragraph_xml so the text-box path extracts its text,
+                        // otherwise table mode collects an empty shell (cell text is
+                        // captured separately) and emits a spurious empty table.
+                        b"w:tbl" if in_body && !in_paragraph => {
                             if table_depth == 0 {
                                 // Start collecting table XML
                                 table_xml.clear();
@@ -360,32 +361,31 @@ impl DocxParser {
                     }
                 }
                 Ok(quick_xml::events::Event::Empty(ref e)) => {
-                    // Handle header/footer references inside w:sectPr
-                    if in_sect_pr {
-                        let name = e.name();
-                        match name.as_ref() {
-                            b"w:headerReference" | b"w:footerReference" => {
-                                // Collect every reference type (default/first/even);
-                                // dropping non-default ones silently loses first-page
-                                // and even-page header/footer text.
-                                let mut r_id = String::new();
-                                for attr in e.attributes().flatten() {
-                                    if attr.key.as_ref() == b"r:id" {
-                                        r_id = String::from_utf8_lossy(&attr.value).to_string();
-                                    }
-                                }
-                                if !r_id.is_empty() {
-                                    if name.as_ref() == b"w:headerReference" {
-                                        header_rids.push(r_id);
-                                    } else {
-                                        footer_rids.push(r_id);
-                                    }
-                                }
+                    let name = e.name();
+                    // Header/footer references live inside a w:sectPr, which may be
+                    // either the final body-level sectPr OR a section-break sectPr
+                    // nested in a paragraph's w:pPr. Collect them wherever they
+                    // appear in the body (every type: default/first/even) so
+                    // multi-section documents don't lose every section's
+                    // header/footer text but the last.
+                    if in_body
+                        && table_depth == 0
+                        && matches!(name.as_ref(), b"w:headerReference" | b"w:footerReference")
+                    {
+                        let mut r_id = String::new();
+                        for attr in e.attributes().flatten() {
+                            if attr.key.as_ref() == b"r:id" {
+                                r_id = String::from_utf8_lossy(&attr.value).to_string();
                             }
-                            _ => {}
+                        }
+                        if !r_id.is_empty() {
+                            if name.as_ref() == b"w:headerReference" {
+                                header_rids.push(r_id);
+                            } else {
+                                footer_rids.push(r_id);
+                            }
                         }
                     } else if in_paragraph {
-                        let name = e.name();
                         paragraph_xml.push('<');
                         paragraph_xml.push_str(&String::from_utf8_lossy(name.as_ref()));
                         for attr in e.attributes().flatten() {
@@ -397,7 +397,6 @@ impl DocxParser {
                         }
                         paragraph_xml.push_str("/>");
                     } else if table_depth > 0 {
-                        let name = e.name();
                         table_xml.push('<');
                         table_xml.push_str(&String::from_utf8_lossy(name.as_ref()));
                         for attr in e.attributes().flatten() {
@@ -436,9 +435,6 @@ impl DocxParser {
                     match name.as_ref() {
                         b"w:body" => {
                             in_body = false;
-                        }
-                        b"w:sectPr" if in_sect_pr => {
-                            in_sect_pr = false;
                         }
                         b"w:p" if in_paragraph && table_depth == 0 && para_depth == 0 => {
                             paragraph_xml.push_str("</w:p>");
@@ -550,11 +546,16 @@ impl DocxParser {
     ///
     /// Header/footer XML shares the document body's structure, so this reuses the
     /// same building blocks as the body parser rather than a divergent text-only
-    /// scan: [`Self::parse_paragraph`] for run text and formatting,
+    /// scan: [`Self::parse_paragraph`] for run text and formatting and
     /// [`Self::extract_textbox_paragraphs`] for text boxes (kept as separate
-    /// paragraphs, matching body behaviour), and [`Self::parse_table`] for tables
-    /// (cells flattened into loose paragraphs so their text survives even though
-    /// the flat header/footer model cannot hold table structure).
+    /// paragraphs, matching body behaviour).
+    ///
+    /// The flat header/footer model (`Vec<Paragraph>`) cannot hold table
+    /// structure, so tables are treated transparently: their structural tags
+    /// (`w:tbl`/`w:tr`/`w:tc` and props) are skipped and each cell's paragraphs
+    /// become loose paragraphs in document order. Because tables are transparent
+    /// rather than parsed as a unit, *nested* tables recurse naturally and their
+    /// text is never dropped.
     fn parse_header_footer_xml(&mut self, xml: &str) -> Vec<Paragraph> {
         let mut paragraphs = Vec::new();
         let mut reader = crate::decode::reader_for(xml);
@@ -563,28 +564,22 @@ impl DocxParser {
 
         let mut buf = Vec::new();
         let mut paragraph_xml = String::new();
-        let mut table_xml = String::new();
         let mut in_paragraph = false;
         let mut para_depth: u32 = 0; // Nested w:p depth (text boxes)
-        let mut table_depth: u32 = 0;
 
         loop {
             match reader.read_event_into(&mut buf) {
                 Ok(quick_xml::events::Event::Start(ref e)) => {
                     let name = e.name();
                     match name.as_ref() {
-                        b"w:p" if !in_paragraph && table_depth == 0 => {
+                        // A paragraph at any nesting depth (top level or inside a
+                        // table cell). Table wrappers are transparent, so cell
+                        // paragraphs start here just like top-level ones.
+                        b"w:p" if !in_paragraph => {
                             in_paragraph = true;
                             para_depth = 0;
                             paragraph_xml.clear();
                             push_start_tag(&mut paragraph_xml, e);
-                        }
-                        b"w:tbl" if !in_paragraph => {
-                            if table_depth == 0 {
-                                table_xml.clear();
-                            }
-                            table_depth += 1;
-                            table_xml.push_str("<w:tbl>");
                         }
                         _ => {
                             if in_paragraph {
@@ -592,41 +587,31 @@ impl DocxParser {
                                     para_depth += 1;
                                 }
                                 push_start_tag(&mut paragraph_xml, e);
-                            } else if table_depth > 0 {
-                                push_start_tag(&mut table_xml, e);
                             }
+                            // Outside a paragraph, table structural tags are
+                            // ignored (descended into transparently).
                         }
                     }
                 }
-                Ok(quick_xml::events::Event::Empty(ref e)) => {
-                    if in_paragraph {
-                        push_empty_tag(&mut paragraph_xml, e);
-                    } else if table_depth > 0 {
-                        push_empty_tag(&mut table_xml, e);
-                    }
+                // Content events only matter inside a paragraph; outside one (e.g.
+                // between table cells) they are ignored.
+                Ok(quick_xml::events::Event::Empty(ref e)) if in_paragraph => {
+                    push_empty_tag(&mut paragraph_xml, e);
                 }
-                Ok(quick_xml::events::Event::Text(ref e)) => {
+                Ok(quick_xml::events::Event::Text(ref e)) if in_paragraph => {
                     let text = crate::decode::decode_text_lossy(e);
-                    if in_paragraph {
-                        paragraph_xml.push_str(&escape_xml(&text));
-                    } else if table_depth > 0 {
-                        table_xml.push_str(&escape_xml(&text));
-                    }
+                    paragraph_xml.push_str(&escape_xml(&text));
                 }
                 // Re-emit resolved entities through escape_xml; the re-parse of this
                 // buffer decodes them again (mirrors the body parser).
-                Ok(quick_xml::events::Event::GeneralRef(ref e)) => {
+                Ok(quick_xml::events::Event::GeneralRef(ref e)) if in_paragraph => {
                     let decoded = crate::decode::resolve_general_ref(e);
-                    if in_paragraph {
-                        paragraph_xml.push_str(&escape_xml(&decoded));
-                    } else if table_depth > 0 {
-                        table_xml.push_str(&escape_xml(&decoded));
-                    }
+                    paragraph_xml.push_str(&escape_xml(&decoded));
                 }
                 Ok(quick_xml::events::Event::End(ref e)) => {
                     let name = e.name();
                     match name.as_ref() {
-                        b"w:p" if in_paragraph && table_depth == 0 && para_depth == 0 => {
+                        b"w:p" if in_paragraph && para_depth == 0 => {
                             paragraph_xml.push_str("</w:p>");
                             // Text boxes are pulled out first, as separate paragraphs.
                             let textbox_paras = self.extract_textbox_paragraphs(&paragraph_xml);
@@ -640,33 +625,12 @@ impl DocxParser {
                             paragraphs.extend(textbox_paras);
                             in_paragraph = false;
                         }
-                        b"w:tbl" if table_depth > 0 => {
-                            table_xml.push_str("</w:tbl>");
-                            table_depth -= 1;
-                            if table_depth == 0 {
-                                // Flatten the table's cells into loose paragraphs: the
-                                // flat model cannot hold structure, but text is kept.
-                                if let Ok(table) = self.parse_table(&table_xml) {
-                                    for row in table.rows {
-                                        for cell in row.cells {
-                                            paragraphs.extend(
-                                                cell.content
-                                                    .into_iter()
-                                                    .filter(|p| !p.plain_text().trim().is_empty()),
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                        }
                         _ => {
                             if in_paragraph {
                                 if name.as_ref() == b"w:p" {
                                     para_depth = para_depth.saturating_sub(1);
                                 }
                                 push_end_tag(&mut paragraph_xml, name.as_ref());
-                            } else if table_depth > 0 {
-                                push_end_tag(&mut table_xml, name.as_ref());
                             }
                         }
                     }
@@ -2849,6 +2813,54 @@ mod tests {
         );
     }
 
+    // A table nested inside a text box (which lives inside a paragraph) must not
+    // be treated as a body-level table. Its text is extracted via the text-box
+    // path; entering table mode for it left an empty table shell (all cells
+    // blank, since the cell text was captured separately) as a spurious block.
+    #[test]
+    fn test_textbox_with_table_does_not_emit_empty_body_table() {
+        let doc_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+            xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
+  <w:body>
+    <w:p>
+      <w:r>
+        <w:drawing>
+          <wps:wsp>
+            <wps:txbx>
+              <w:txbxContent>
+                <w:tbl>
+                  <w:tr><w:tc><w:p><w:r><w:t>TextboxTableCell</w:t></w:r></w:p></w:tc></w:tr>
+                </w:tbl>
+              </w:txbxContent>
+            </wps:txbx>
+          </wps:wsp>
+        </w:drawing>
+      </w:r>
+    </w:p>
+  </w:body>
+</w:document>"#;
+
+        let data = create_minimal_docx(doc_xml);
+        let mut parser = DocxParser::from_bytes(data).unwrap();
+        let doc = parser.parse().unwrap();
+
+        assert!(
+            doc.plain_text().contains("TextboxTableCell"),
+            "text box table text lost, got: {:?}",
+            doc.plain_text()
+        );
+        let table_blocks = doc.sections[0]
+            .content
+            .iter()
+            .filter(|b| matches!(b, crate::model::Block::Table(_)))
+            .count();
+        assert_eq!(
+            table_blocks, 0,
+            "text-box table must not surface as a body table block"
+        );
+    }
+
     #[test]
     fn test_docx_allows_missing_document_relationships_when_unused() {
         let doc_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -3834,6 +3846,98 @@ mod tests {
         assert!(
             text.contains("EvenPageHeader"),
             "missing even-page, got: {text:?}"
+        );
+    }
+
+    // Bug: header/footer references inside a *section-break* sectPr (nested in a
+    // paragraph's `w:pPr`) were dropped — only the final body-level `w:sectPr`
+    // was read. Multi-section documents place each section's header/footer refs
+    // in the paragraph-level sectPr that terminates that section, so all but the
+    // last section's header/footer text was silently lost.
+    #[test]
+    fn extracts_header_footer_from_section_break_sectpr() {
+        let document_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+            xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <w:body>
+    <w:p><w:r><w:t>Section one body</w:t></w:r></w:p>
+    <w:p>
+      <w:pPr>
+        <w:sectPr>
+          <w:headerReference w:type="default" r:id="rIdH1"/>
+          <w:footerReference w:type="default" r:id="rIdF1"/>
+        </w:sectPr>
+      </w:pPr>
+    </w:p>
+    <w:p><w:r><w:t>Section two body</w:t></w:r></w:p>
+    <w:sectPr>
+      <w:headerReference w:type="default" r:id="rIdH2"/>
+    </w:sectPr>
+  </w:body>
+</w:document>"#;
+        let rels = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rIdH1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/>
+  <Relationship Id="rIdF1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer1.xml"/>
+  <Relationship Id="rIdH2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header2.xml"/>
+</Relationships>"#;
+        let hdr = |tag: &str, text: &str| {
+            format!(
+                r#"<?xml version="1.0"?><w:{tag} xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:r><w:t>{text}</w:t></w:r></w:p></w:{tag}>"#
+            )
+        };
+        let data = create_docx_with_parts(
+            document_xml,
+            rels,
+            &[
+                ("word/header1.xml", &hdr("hdr", "SectionOneHeader")),
+                ("word/footer1.xml", &hdr("ftr", "SectionOneFooter")),
+                ("word/header2.xml", &hdr("hdr", "SectionTwoHeader")),
+            ],
+        );
+
+        let mut parser = DocxParser::from_bytes(data).unwrap();
+        let doc = parser.parse().unwrap();
+        let section = &doc.sections[0];
+        let header = section_header_text(section);
+        let footer = section
+            .footer
+            .as_deref()
+            .unwrap_or(&[])
+            .iter()
+            .map(|p| p.plain_text())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(
+            header.contains("SectionOneHeader"),
+            "section-break header dropped, got: {header:?}"
+        );
+        assert!(
+            header.contains("SectionTwoHeader"),
+            "body-level header dropped, got: {header:?}"
+        );
+        assert!(
+            footer.contains("SectionOneFooter"),
+            "section-break footer dropped, got: {footer:?}"
+        );
+    }
+
+    // A header/footer whose text lives in a *nested* table must not lose the
+    // inner table's text. The flat header/footer model discards table structure
+    // (by design), but every cell's text — at any nesting depth — must survive.
+    #[test]
+    fn extracts_nested_table_text_in_header() {
+        let inner = r#"<?xml version="1.0"?><w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:tbl><w:tr><w:tc><w:p><w:r><w:t>OuterCellText</w:t></w:r></w:p><w:tbl><w:tr><w:tc><w:p><w:r><w:t>InnerCellText</w:t></w:r></w:p></w:tc></w:tr></w:tbl></w:tc></w:tr></w:tbl></w:hdr>"#;
+        let paras = empty_test_parser().parse_header_footer_xml(inner);
+        let text = hf_text(&paras);
+        assert!(
+            text.contains("OuterCellText"),
+            "outer cell text dropped, got: {text:?}"
+        );
+        assert!(
+            text.contains("InnerCellText"),
+            "nested table text dropped, got: {text:?}"
         );
     }
 
