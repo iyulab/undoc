@@ -505,7 +505,7 @@ impl PptxParser {
         let mut tables = Vec::new();
 
         // Find chart relationships (target contains "chart")
-        for (_rel_id, target) in rels.iter() {
+        for target in rels.values() {
             if !target.contains("chart") {
                 continue;
             }
@@ -533,30 +533,26 @@ impl PptxParser {
 
             // Read and parse chart XML
             let chart_xml = self.container.read_xml(&chart_path)?;
-            match charts::parse_chart_xml(&chart_xml) {
-                Ok(chart_data) => {
-                    if !chart_data.is_empty() {
-                        let mut table = chart_data.to_table();
-                        // Add chart title as caption if available
-                        if let Some(ref title) = chart_data.title {
-                            if !title.is_empty() {
-                                // Update first header cell to include chart title
-                                if let Some(first_row) = table.rows.first_mut() {
-                                    if let Some(first_cell) = first_row.cells.first_mut() {
-                                        let original = first_cell.plain_text();
-                                        first_cell.content.clear();
-                                        first_cell.content.push(Paragraph::with_text(format!(
-                                            "{} ({})",
-                                            original, title
-                                        )));
-                                    }
-                                }
+            let chart_data = charts::parse_chart_xml(&chart_xml)?;
+            if !chart_data.is_empty() {
+                let mut table = chart_data.to_table();
+                // Add chart title as caption if available
+                if let Some(ref title) = chart_data.title {
+                    if !title.is_empty() {
+                        // Update first header cell to include chart title
+                        if let Some(first_row) = table.rows.first_mut() {
+                            if let Some(first_cell) = first_row.cells.first_mut() {
+                                let original = first_cell.plain_text();
+                                first_cell.content.clear();
+                                first_cell.content.push(Paragraph::with_text(format!(
+                                    "{} ({})",
+                                    original, title
+                                )));
                             }
                         }
-                        tables.push(table);
                     }
                 }
-                Err(e) => return Err(e),
+                tables.push(table);
             }
         }
 
