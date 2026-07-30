@@ -32,6 +32,11 @@ ffi = []
 # OOXML files exclusively use Deflate; dropping other compression codecs is safe.
 zip = { version = "2.2", default-features = false, features = ["deflate"] }
 
+# OLE/CFB container inspection. Only used by format detection, to tell an ECMA-376
+# encrypted OOXML package (a CFB holding `EncryptedPackage`) apart from a legacy binary
+# Office file — both arrive with the same header. Pure Rust, so it builds for wasm32.
+cfb = "0.10"
+
 # XML parsing. `serialize` feature intentionally omitted — undoc uses only the
 # manual Reader/Event API; serde derives live on undoc's own model types.
 # Pinned at ^0.41 for RUSTSEC-2026-0194/-0195 (DoS) fixes; 0.40+ also emits

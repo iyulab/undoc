@@ -18,11 +18,16 @@ const ZIP_MAGIC: [u8; 4] = [0x50, 0x4B, 0x03, 0x04];
 ///
 /// Two kinds of file arrive with this header: the legacy binary Office formats
 /// (.doc/.xls/.ppt) and an OOXML document protected with ECMA-376 encryption, whose ZIP
-/// package is wrapped inside a CFB container. Telling those two apart means walking the
-/// CFB directory for an `EncryptedPackage` stream, which this library does not do — so
-/// report only what is certain: this is an Office container we cannot open. That is a
-/// different and more useful answer than "unrecognised file".
+/// package is wrapped inside a CFB container. The header alone cannot tell them apart —
+/// [`classify_cfb_container`] walks the directory, because the two answers send a caller
+/// in opposite directions: one looks for a converter, the other for a password.
 const CFB_MAGIC: [u8; 8] = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
+
+/// Stream that marks a CFB container as an ECMA-376 encrypted OOXML package.
+///
+/// Such a file also carries `EncryptionInfo` (the key derivation data), but the payload
+/// stream is the one that says "there is a document in here, behind a password".
+const ENCRYPTED_PACKAGE_STREAM: &str = "/EncryptedPackage";
 
 /// Content type for DOCX main document part.
 const DOCX_CONTENT_TYPE: &str =
@@ -128,11 +133,7 @@ fn classify_container_magic<R: Read + Seek>(reader: &mut R) -> Result<()> {
     reader.seek(std::io::SeekFrom::Start(0))?;
 
     if filled == CFB_MAGIC.len() && head == CFB_MAGIC {
-        return Err(Error::UnsupportedFormat(
-            "OLE/CFB container — a legacy binary Office format (.doc/.xls/.ppt) or an \
-             ECMA-376 encrypted document"
-                .to_string(),
-        ));
+        return Err(classify_cfb_container(reader));
     }
 
     if filled < ZIP_MAGIC.len() || head[..ZIP_MAGIC.len()] != ZIP_MAGIC {
@@ -140,6 +141,56 @@ fn classify_container_magic<R: Read + Seek>(reader: &mut R) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Say which kind of CFB container this is, having established that it is one.
+///
+/// An ECMA-376 encrypted OOXML document is a CFB wrapper around the encrypted ZIP
+/// package; a legacy binary Office file is a CFB holding its own well-known streams. The
+/// header is identical, so only the directory distinguishes them — and the distinction is
+/// the whole point: `Encrypted` tells the caller to supply a password, while
+/// `UnsupportedFormat` tells them to convert the file. Reporting the disjunction leaves
+/// them to guess.
+///
+/// Never returns `Ok`: neither kind can be opened by this library. The naming of the
+/// legacy format is best-effort — an unrecognised CFB is still reported as unsupported,
+/// which is what the header proved.
+fn classify_cfb_container<R: Read + Seek>(reader: &mut R) -> Error {
+    let container = match cfb::CompoundFile::open(reader) {
+        Ok(container) => container,
+        // A CFB header whose directory will not parse. Still an Office container, still
+        // unopenable; guessing which kind would claim more than was established.
+        Err(_) => {
+            return Error::UnsupportedFormat(
+                "OLE/CFB container whose directory could not be read — a legacy binary \
+                 Office format (.doc/.xls/.ppt) or an ECMA-376 encrypted document"
+                    .to_string(),
+            )
+        }
+    };
+
+    if container.exists(ENCRYPTED_PACKAGE_STREAM) {
+        return Error::Encrypted;
+    }
+
+    // Well-known root streams of the pre-2007 binary formats. Checked only to make the
+    // message specific; absence of all three does not make the file openable.
+    let legacy = if container.exists("/WordDocument") {
+        Some("Word 97-2003 (.doc)")
+    } else if container.exists("/Workbook") || container.exists("/Book") {
+        Some("Excel 97-2003 (.xls)")
+    } else if container.exists("/PowerPoint Document") {
+        Some("PowerPoint 97-2003 (.ppt)")
+    } else {
+        None
+    };
+
+    Error::UnsupportedFormat(match legacy {
+        Some(format) => format!("legacy binary Office format: {format}"),
+        None => "OLE/CFB container that is not a recognised Office document or encrypted \
+             OOXML package"
+            .to_string(),
+    })
 }
 
 /// Detect the format type from a reader.
@@ -249,6 +300,68 @@ mod tests {
         data.extend_from_slice(&[0u8; 64]);
 
         let err = detect_format_from_bytes(&data).unwrap_err();
+
+        assert_eq!(
+            err.kind(),
+            crate::ErrorKind::UnsupportedFormat,
+            "got: {err}"
+        );
+    }
+
+    /// Build a CFB container holding the named root streams, and nothing else.
+    fn cfb_with_streams(names: &[&str]) -> Vec<u8> {
+        let mut container = cfb::CompoundFile::create(std::io::Cursor::new(Vec::new()))
+            .expect("create CFB container");
+        for name in names {
+            container.create_stream(name).expect("create stream");
+        }
+        container.flush().expect("flush CFB container");
+        container.into_inner().into_inner()
+    }
+
+    /// The distinction this branch exists for. Both files carry the CFB header, and the
+    /// two answers send the caller in opposite directions — a password versus a
+    /// converter — so reporting the disjunction leaves them to guess.
+    #[test]
+    fn test_ecma376_encrypted_package_is_encrypted_not_unsupported() {
+        let data = cfb_with_streams(&["/EncryptedPackage", "/EncryptionInfo"]);
+
+        // Same header as a legacy binary file, so the directory is what decides.
+        assert_eq!(data[..CFB_MAGIC.len()], CFB_MAGIC);
+
+        let err = detect_format_from_bytes(&data).unwrap_err();
+
+        assert_eq!(err.kind(), crate::ErrorKind::Encrypted, "got: {err}");
+        assert!(matches!(err, Error::Encrypted));
+    }
+
+    #[test]
+    fn test_legacy_binary_office_names_the_format_it_found() {
+        for (stream, expected) in [
+            ("/WordDocument", "Word 97-2003"),
+            ("/Workbook", "Excel 97-2003"),
+            ("/PowerPoint Document", "PowerPoint 97-2003"),
+        ] {
+            let err = detect_format_from_bytes(&cfb_with_streams(&[stream])).unwrap_err();
+
+            assert_eq!(
+                err.kind(),
+                crate::ErrorKind::UnsupportedFormat,
+                "{stream} got: {err}"
+            );
+            let message = err.to_string();
+            assert!(
+                message.contains(expected),
+                "{stream} should be named in: {message}"
+            );
+        }
+    }
+
+    /// A CFB that is neither encrypted OOXML nor a format we can name stays unsupported.
+    /// Naming is best-effort; the header is what was proved.
+    #[test]
+    fn test_unrecognised_cfb_is_still_unsupported() {
+        let err = detect_format_from_bytes(&cfb_with_streams(&["/SomethingElse"])).unwrap_err();
 
         assert_eq!(
             err.kind(),

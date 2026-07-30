@@ -31,11 +31,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   archive, an unsupported one, a password-protected one, an absent part, an I/O failure
   and an encoding failure are now distinguishable — reported through the existing error
   variants, with no new kind numbers.
-- OLE/CFB containers (legacy binary `.doc`/`.xls`/`.ppt`, and OOXML documents protected
-  with ECMA-376 encryption) are now reported as an unsupported format instead of
-  surfacing as a damaged ZIP archive or an unrecognised file. Detection happens for both
-  the path- and byte-based entry points.
+- OLE/CFB containers no longer surface as a damaged ZIP archive or an unrecognised file,
+  and the two kinds that share that header are now told apart. An OOXML document
+  protected with ECMA-376 encryption is a CFB wrapping the encrypted package, so its
+  directory is walked for the `EncryptedPackage` stream:
+  - Found → reported as **encrypted**, which tells the caller to supply a password.
+  - Not found → reported as an **unsupported format**, naming the legacy binary format
+    when its well-known stream identifies it (`Word 97-2003 (.doc)`,
+    `Excel 97-2003 (.xls)`, `PowerPoint 97-2003 (.ppt)`).
+  - A CFB whose directory cannot be read stays unsupported and says so, rather than
+    guessing which kind it was.
+
+  Previously both were reported as unsupported, which sent a caller holding a
+  password-protected document looking for a file-format converter. Detection happens for
+  both the path- and byte-based entry points, and no new kind numbers were needed.
 - A password-protected entry inside a container is now reported as encrypted.
+- Dependency: added `cfb` 0.10 (with `byteorder`, `fnv`, `uuid`) for the CFB directory
+  walk above. Used by format detection only. Pure Rust, so the wasm32 build is unaffected.
 
 ### Fixed
 - JSON serialization failures were reported as XML parse errors, pointing callers at the
