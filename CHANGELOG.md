@@ -7,6 +7,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-30
+
+### Added
+- **Structured error classification.** Failures now carry a machine-readable reason
+  alongside their message, so consumers can branch on *why* a call failed instead of
+  matching on message text.
+  - Rust: `ErrorKind` (`#[repr(i32)]`) and `Error::kind()`.
+  - C ABI: `undoc_last_error_kind()` and the `UndocErrorKind` enum in `include/undoc.h`.
+    Written and cleared in lockstep with `undoc_last_error()`, so a message is never
+    paired with a stale reason.
+  - C#: `UndocException.Kind` and `UndocErrorKind`.
+  - Python: `UndocError.kind` and `ErrorKind`.
+  - WebAssembly: the thrown `Error` carries a numeric `kind` property.
+  - The numbers are a stable ABI contract: a new reason takes the next free number and
+    existing ones are never reused or renumbered, so an unrecognised value can safely be
+    treated as a generic failure. Unknown values pass through unchanged in every binding
+    rather than being collapsed or rejected.
+
+### Changed
+- Container and XML failures are no longer flattened into a single reason. A damaged
+  archive, an unsupported one, a password-protected one, an absent part, an I/O failure
+  and an encoding failure are now distinguishable — reported through the existing error
+  variants, with no new kind numbers.
+- OLE/CFB containers (legacy binary `.doc`/`.xls`/`.ppt`, and OOXML documents protected
+  with ECMA-376 encryption) are now reported as an unsupported format instead of
+  surfacing as a damaged ZIP archive or an unrecognised file. Detection happens for both
+  the path- and byte-based entry points.
+- A password-protected entry inside a container is now reported as encrypted.
+
+### Fixed
+- JSON serialization failures were reported as XML parse errors, pointing callers at the
+  input document for a problem in output rendering. They are now render failures.
+- `read_xml_optional` silently degraded a part that exists but cannot be read into
+  "part absent", contrary to its documented behaviour: every failure to open an entry
+  was treated as a missing component. Only a genuinely absent entry is now treated as
+  absent.
+- `undoc_get_title` / `undoc_get_author` returned NULL with no recorded reason when the
+  value existed but held an interior NUL byte, indistinguishable from "not set". The two
+  cases are now distinguishable.
+- `undoc_section_count` / `undoc_resource_count` did not clear a previous failure, so a
+  successful call could leave a stale error recorded.
+- The README's C# examples documented an API that does not exist in the published
+  package (wrong namespace, wrong method names, wrong return types) and pointed at a
+  legacy wrapper file that was not part of any build. The examples now match the shipped
+  package, and the unused file has been removed.
+- The Python package reported a stale version from `undoc.__version__`. CI now verifies
+  it alongside the other version-bearing files.
+
+## [0.5.5] - 2026-07-15
+
+### Fixed
+- DOCX header/footer and text-box content could be lost during extraction, including
+  table text inside those parts.
+- Dependency: crossbeam-epoch 0.9.18 → 0.9.20 (RUSTSEC-2026-0204).
+
+## [0.5.4] - 2026-07-08
+
+### Added
+- DOCX headers and footers are now extracted, including first-page and even-page
+  variants and content inside text boxes.
+
+## [0.5.3] - 2026-07-05
+
+### Fixed
+- Dependency: quick-xml → 0.41 (RUSTSEC-2026-0194, RUSTSEC-2026-0195). quick-xml 0.40+
+  emits entity references as separate events, which silently dropped every entity
+  (`&amp;`, `&#13;`, …) across text accumulation sites. Entity references are now
+  resolved and preserved, with graceful degradation on a stray `&`.
+
 ## [0.5.2] - 2026-06-12
 
 ### Added

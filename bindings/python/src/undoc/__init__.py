@@ -7,4 +7,4 @@ DOCX, XLSX, and PPTX documents into structured Markdown with assets.
 from .undoc import ErrorKind, Undoc, UndocError, parse_file, parse_bytes, version
 
 __all__ = ["ErrorKind", "Undoc", "UndocError", "parse_file", "parse_bytes", "version"]
-__version__ = "0.5.5"
+__version__ = "0.6.0"
