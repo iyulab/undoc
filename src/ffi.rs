@@ -986,6 +986,37 @@ mod tests {
         }
     }
 
+    /// `out_len` is written only once the call has reached the point of producing a
+    /// buffer. A rejected argument leaves the caller's variable alone, so a caller that
+    /// seeded it can tell "not attempted" from "attempted and produced nothing".
+    #[test]
+    fn test_rejected_arguments_leave_out_len_untouched() {
+        let doc = Box::into_raw(Box::new(UndocDocument {
+            inner: Document::new(),
+        }));
+        let id = CString::new("rId1").unwrap();
+        const SEEDED: usize = 0xDEAD;
+
+        let mut out_len: usize = SEEDED;
+        assert!(
+            unsafe { undoc_get_resource_data(ptr::null(), id.as_ptr(), &mut out_len) }.is_null()
+        );
+        assert_eq!(out_len, SEEDED, "a null document must not write out_len");
+
+        assert!(unsafe { undoc_get_resource_data(doc, ptr::null(), &mut out_len) }.is_null());
+        assert_eq!(out_len, SEEDED, "a null resource_id must not write out_len");
+
+        // A resource that is merely absent *is* looked up, so the length is zeroed.
+        assert!(unsafe { undoc_get_resource_data(doc, id.as_ptr(), &mut out_len) }.is_null());
+        assert_eq!(out_len, 0, "a lookup that failed reports zero length");
+        assert_eq!(
+            undoc_last_error_kind(),
+            ErrorKind::ResourceNotFound as c_int
+        );
+
+        unsafe { undoc_free_document(doc) };
+    }
+
     #[test]
     fn test_free_null() {
         // Should not crash
