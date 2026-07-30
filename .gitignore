@@ -33,6 +33,7 @@ bindings/python/src/undoc/lib/
 bindings/python/dist/
 bindings/python/build/
 bindings/python/*.egg-info/
+bindings/python/src/*.egg-info/
 __pycache__/
 *.pyc
 
