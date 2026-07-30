@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-07-31
+
 ### Fixed
 - **Cleanup deleted list items whose text was a number.** A leading dash was treated as
   page-number decoration, so `- 5` and `- 2026` were removed as page furniture — while
