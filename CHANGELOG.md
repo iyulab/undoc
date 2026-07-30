@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Nested lists were flattened by whitespace normalization.** The final cleanup stage
+  collapsed every run of whitespace, including the indentation at the start of a line —
+  and in Markdown that indentation is the only expression of list nesting, so sub-items
+  came back out at the top level. The renderer emits two spaces per level for exactly this
+  purpose, so cleanup was undoing it. Leading whitespace is now preserved; only trailing
+  whitespace and runs inside a line are normalized.
+
 ## [0.6.1] - 2026-07-31
 
 ### Fixed

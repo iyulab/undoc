@@ -289,14 +289,28 @@ fn filter_structure(text: &str) -> String {
 }
 
 /// Final whitespace normalization.
+///
+/// Leading whitespace is preserved verbatim: in CommonMark it is the only way a document
+/// expresses list nesting, so collapsing it flattens the hierarchy. Only trailing
+/// whitespace and runs *inside* a line are normalized.
 fn final_normalize(text: &str) -> String {
-    let mut result = String::new();
+    let mut lines: Vec<String> = Vec::new();
 
     for line in text.lines() {
-        let mut normalized_line = String::new();
-        let mut prev_space = false;
+        let without_trailing = line.trim_end();
+        let content = without_trailing.trim_start();
 
-        for c in line.chars() {
+        if content.is_empty() {
+            lines.push(String::new());
+            continue;
+        }
+
+        let indent = &without_trailing[..without_trailing.len() - content.len()];
+        let mut normalized_line = String::with_capacity(without_trailing.len());
+        normalized_line.push_str(indent);
+
+        let mut prev_space = false;
+        for c in content.chars() {
             if c.is_whitespace() {
                 if !prev_space {
                     normalized_line.push(' ');
@@ -308,16 +322,20 @@ fn final_normalize(text: &str) -> String {
             }
         }
 
-        // Trim trailing whitespace from each line
-        let trimmed = normalized_line.trim_end();
-        if !result.is_empty() {
-            result.push('\n');
-        }
-        result.push_str(trimmed);
+        lines.push(normalized_line);
     }
 
-    // Trim leading/trailing whitespace from entire document
-    result.trim().to_string()
+    // Drop leading/trailing blank lines. Trimming the joined string instead would strip the
+    // indentation of the first line, which is exactly what this function must not do.
+    let Some(end) = lines.iter().rposition(|line| !line.is_empty()) else {
+        return String::new();
+    };
+    let start = lines
+        .iter()
+        .position(|line| !line.is_empty())
+        .unwrap_or_default();
+
+    lines[start..=end].join("\n")
 }
 
 /// Detect potential mojibake patterns (for reporting, not fixing).
@@ -556,6 +574,46 @@ mod tests {
         let input = "Multiple   spaces   here";
         let result = final_normalize(input);
         assert_eq!(result, "Multiple spaces here");
+    }
+
+    #[test]
+    fn test_final_normalize_preserves_nested_list_indent() {
+        let input = "- top\n  - nested\n    - deeper";
+        let result = final_normalize(input);
+        assert_eq!(result, "- top\n  - nested\n    - deeper");
+    }
+
+    #[test]
+    fn test_final_normalize_collapses_interior_only() {
+        let input = "  - nested   item   \n";
+        let result = final_normalize(input);
+        assert_eq!(result, "  - nested item");
+    }
+
+    /// The markdown renderer emits two spaces per nesting level for list items, so a cleanup
+    /// pass that trims leading whitespace silently flattens every nested list it is given.
+    #[test]
+    fn test_clean_text_keeps_nested_list_indent() {
+        let options = CleanupOptions {
+            normalize_strings: true,
+            clean_lines: true,
+            filter_structure: true,
+            final_normalize: true,
+            remove_pua: true,
+            detect_mojibake: false,
+            preserve_frontmatter: true,
+        };
+
+        let input = "- top\n  - nested\n    - deeper";
+        assert_eq!(
+            clean_text(input, &options),
+            "- top\n  - nested\n    - deeper"
+        );
+    }
+
+    #[test]
+    fn test_final_normalize_blank_only_input() {
+        assert_eq!(final_normalize("\n   \n\n"), "");
     }
 
     #[test]
