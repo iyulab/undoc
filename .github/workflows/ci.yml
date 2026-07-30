@@ -23,14 +23,18 @@ jobs:
       - name: Verify all package versions match
         shell: bash
         run: |
-          # Extract version strings from the five canonical files listed in
-          # CLAUDE.md's "Version Bump Checklist". CI fails fast when any are
-          # out of sync — a full release can't ship mismatched versions.
+          # Extract version strings from the canonical version-bearing files.
+          # CI fails fast when any are out of sync — a full release can't ship
+          # mismatched versions.
           root=$(grep -m1 '^version = ' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
           cli=$(grep -m1 '^version = ' cli/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
           wasm=$(grep -m1 '^version = ' undoc-wasm/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
           py=$(grep -m1 '^version = ' bindings/python/pyproject.toml | sed 's/.*"\(.*\)".*/\1/')
           cs=$(grep -oE '<Version>[^<]+</Version>' bindings/csharp/Undoc/Undoc.csproj | head -1 | sed 's/<[^>]*>//g')
+
+          # The Python package also reports its own version at runtime via
+          # undoc.__version__, so it has to agree too — it is what consumers see.
+          pyinit=$(grep -m1 '^__version__ = ' bindings/python/src/undoc/__init__.py | sed 's/.*"\(.*\)".*/\1/')
 
           # Also verify cli/Cargo.toml's undoc dep points at the same version
           # so consumers of the published crate aren't broken.
@@ -41,17 +45,18 @@ jobs:
           echo "undoc-wasm/Cargo.toml:              $wasm"
           echo "bindings/python/pyproject.toml:     $py"
           echo "bindings/csharp/Undoc/Undoc.csproj: $cs"
+          echo "bindings/python/src/undoc/__init__.py: $pyinit"
           echo "cli -> undoc dep version:            $dep"
 
           fail=0
-          for v in "$cli" "$wasm" "$py" "$cs" "$dep"; do
+          for v in "$cli" "$wasm" "$py" "$cs" "$pyinit" "$dep"; do
             if [ "$v" != "$root" ]; then
               fail=1
             fi
           done
 
           if [ $fail -eq 1 ]; then
-            echo "::error::Version mismatch — update all five canonical files AND cli's undoc dep together per CLAUDE.md Version Bump Checklist."
+            echo "::error::Version mismatch — update every canonical version file (including bindings/python/src/undoc/__init__.py) AND cli's undoc dep together."
             exit 1
           fi
           echo "All versions match: $root"
