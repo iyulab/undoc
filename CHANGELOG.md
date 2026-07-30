@@ -7,13 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
-- Internal: the FFI last-error/panic-guard plumbing now runs on the shared `uncore`
-  crate (thread-local slot, panic guard, boundary-reason helpers) instead of a
-  hand-rolled implementation duplicated across the `un*` extraction family. No
-  observable change — every `ErrorKind` discriminant, every exported C symbol's name
-  and signature, and every failure message stay exactly as they were.
-
 ## [0.6.0] - 2026-07-30
 
 ### Added
@@ -55,6 +48,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A password-protected entry inside a container is now reported as encrypted.
 - Dependency: added `cfb` 0.10 (with `byteorder`, `fnv`, `uuid`) for the CFB directory
   walk above. Used by format detection only. Pure Rust, so the wasm32 build is unaffected.
+- Internal: the FFI last-error/panic-guard plumbing now runs on the shared `uncore`
+  crate (thread-local slot, panic guard, boundary-reason helpers) instead of a
+  hand-rolled implementation duplicated across the `un*` extraction family. No
+  observable change — every `ErrorKind` discriminant, every exported C symbol's name
+  and signature, and every failure message stay exactly as they were.
 
 ### Fixed
 - JSON serialization failures were reported as XML parse errors, pointing callers at the
