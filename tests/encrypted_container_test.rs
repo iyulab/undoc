@@ -15,6 +15,10 @@ use undoc::{parse_bytes, Error, ErrorKind};
 ///
 /// A real encrypted package also carries the ciphertext; the classification depends on
 /// the directory, not the payload, so the streams are left empty on purpose.
+///
+/// Reaches `cfb` through the crate's unconditional `[dependencies]` entry rather than a
+/// dev-dependency. If that ever moves behind a feature, this file stops compiling — add
+/// the dev-dependency then, rather than wondering where the crate went.
 fn cfb_with_streams(names: &[&str]) -> Vec<u8> {
     let mut container =
         cfb::CompoundFile::create(std::io::Cursor::new(Vec::new())).expect("create CFB container");
