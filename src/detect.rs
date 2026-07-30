@@ -143,6 +143,12 @@ fn classify_container_magic<R: Read + Seek>(reader: &mut R) -> Result<()> {
 }
 
 /// Detect the format type from a reader.
+///
+/// The leading bytes are inspected before the ZIP layer is involved, so the reader is
+/// rewound to absolute position 0 rather than continued from wherever the caller left
+/// it, and the container must *begin* with a recognised signature — a ZIP archive with
+/// data prepended to it (a self-extracting stub, say) is reported as
+/// [`Error::UnknownFormat`] instead of being recovered from its central directory.
 pub fn detect_format_from_reader<R: Read + Seek>(reader: R) -> Result<FormatType> {
     let mut reader = reader;
     classify_container_magic(&mut reader)?;

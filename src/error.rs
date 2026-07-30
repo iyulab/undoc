@@ -19,7 +19,13 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// Values `100` and above are reserved for FFI-boundary reasons that have no core
 /// `Error` counterpart (null arguments, caught panics, output that cannot cross the
 /// ABI); see the `UNDOC_ERROR_*` constants in the `ffi` module.
+///
+/// This enum is `#[non_exhaustive]`: match it with a `_ =>` arm and treat an unfamiliar
+/// reason as a generic failure. That is the same contract the C, C# and Python surfaces
+/// document, and it is what lets a later release name a new reason without breaking
+/// callers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 #[repr(i32)]
 pub enum ErrorKind {
     /// A failure with no more specific classification.

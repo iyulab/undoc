@@ -23,7 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - The numbers are a stable ABI contract: a new reason takes the next free number and
     existing ones are never reused or renumbered, so an unrecognised value can safely be
     treated as a generic failure. Unknown values pass through unchanged in every binding
-    rather than being collapsed or rejected.
+    rather than being collapsed or rejected. `ErrorKind` is `#[non_exhaustive]`, so Rust
+    callers should match it with a `_ =>` arm for the same reason.
 
 ### Changed
 - Container and XML failures are no longer flattened into a single reason. A damaged
