@@ -221,6 +221,17 @@ internal static class NativeMethods
     public static extern IntPtr undoc_last_error();
 
     /// <summary>
+    /// Classify the last error without parsing its message.
+    /// </summary>
+    /// <remarks>
+    /// Returns an <see cref="UndocErrorKind"/> value as a raw <c>int</c>, deliberately:
+    /// a newer native library may report a number this build does not know, and it has
+    /// to survive the trip rather than fail to marshal.
+    /// </remarks>
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern int undoc_last_error_kind();
+
+    /// <summary>
     /// Parse a document from a file path.
     /// </summary>
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]

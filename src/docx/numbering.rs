@@ -1,6 +1,6 @@
 //! DOCX numbering (list) parsing.
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::model::ListType;
 use std::collections::HashMap;
 
@@ -171,7 +171,7 @@ impl NumberingMap {
                     _ => {}
                 },
                 Ok(quick_xml::events::Event::Eof) => break,
-                Err(e) => return Err(Error::XmlParse(e.to_string())),
+                Err(e) => return Err(e.into()),
                 _ => {}
             }
             buf.clear();

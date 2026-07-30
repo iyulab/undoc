@@ -58,7 +58,7 @@ public class Utf8InteropTests
         var value = UndocDocument.CopyAndFreeRequiredNativeUtf8String(
             ptr,
             "Failed to get plain text",
-            () => "ignored",
+            op => new UndocException($"{op}: ignored"),
             p =>
             {
                 Assert.Equal(ptr, p);
@@ -77,10 +77,11 @@ public class Utf8InteropTests
             UndocDocument.CopyAndFreeRequiredNativeUtf8String(
                 IntPtr.Zero,
                 "Failed to get plain text",
-                () => "native null",
+                op => new UndocException($"{op}: native null", UndocErrorKind.ZipArchive),
                 _ => throw new InvalidOperationException("free should not run")));
 
         Assert.Equal("Failed to get plain text: native null", ex.Message);
+        Assert.Equal(UndocErrorKind.ZipArchive, ex.Kind);
     }
 
     [Fact]
@@ -91,7 +92,7 @@ public class Utf8InteropTests
 
         var resourceIds = UndocDocument.ParseResourceIdsFromNativeJson(
             ptr,
-            () => "ignored",
+            op => new UndocException($"{op}: ignored"),
             p =>
             {
                 Assert.Equal(ptr, p);
@@ -109,10 +110,143 @@ public class Utf8InteropTests
         var ex = Assert.Throws<UndocException>(() =>
             UndocDocument.ParseResourceIdsFromNativeJson(
                 IntPtr.Zero,
-                () => "native null",
+                op => new UndocException($"{op}: native null", UndocErrorKind.MissingComponent),
                 _ => throw new InvalidOperationException("free should not run")));
 
         Assert.Equal("Failed to get resource IDs: native null", ex.Message);
+        Assert.Equal(UndocErrorKind.MissingComponent, ex.Kind);
+    }
+}
+
+public class ErrorKindTests
+{
+    /// <summary>
+    /// A message-only exception did not come from the native library, so it carries no
+    /// classification — but it must not read as success either.
+    /// </summary>
+    [Fact]
+    public void MessageOnlyException_IsOther_NotNone()
+    {
+        var ex = new UndocException("wrapper-side failure");
+
+        Assert.Equal(UndocErrorKind.Other, ex.Kind);
+        Assert.NotEqual(UndocErrorKind.None, ex.Kind);
+    }
+
+    [Fact]
+    public void InnerExceptionConstructor_IsOther()
+    {
+        var ex = new UndocException("wrapped", new InvalidOperationException("inner"));
+
+        Assert.Equal(UndocErrorKind.Other, ex.Kind);
+    }
+
+    /// <summary>
+    /// Forward compatibility: a newer native library may report a reason this build has
+    /// no name for. The number has to survive rather than throw or collapse.
+    /// </summary>
+    [Fact]
+    public void UnknownKindValue_PassesThroughAndKeepsItsNumber()
+    {
+        var ex = new UndocException("from the future", (UndocErrorKind)9999);
+
+        Assert.Equal(9999, (int)ex.Kind);
+        Assert.Equal("9999", ex.Kind.ToString());
+    }
+
+    /// <summary>
+    /// The C# numbering is only useful if it agrees with the native ABI, so pin it here
+    /// too — these values are what cross the boundary.
+    /// </summary>
+    [Fact]
+    public void Discriminants_MatchTheNativeAbi()
+    {
+        Assert.Equal(0, (int)UndocErrorKind.None);
+        Assert.Equal(1, (int)UndocErrorKind.Other);
+        Assert.Equal(2, (int)UndocErrorKind.Io);
+        Assert.Equal(3, (int)UndocErrorKind.UnknownFormat);
+        Assert.Equal(4, (int)UndocErrorKind.UnsupportedFormat);
+        Assert.Equal(5, (int)UndocErrorKind.ZipArchive);
+        Assert.Equal(6, (int)UndocErrorKind.XmlParse);
+        Assert.Equal(7, (int)UndocErrorKind.InvalidData);
+        Assert.Equal(8, (int)UndocErrorKind.MissingComponent);
+        Assert.Equal(9, (int)UndocErrorKind.Encoding);
+        Assert.Equal(10, (int)UndocErrorKind.StyleNotFound);
+        Assert.Equal(11, (int)UndocErrorKind.ResourceNotFound);
+        Assert.Equal(12, (int)UndocErrorKind.Encrypted);
+        Assert.Equal(13, (int)UndocErrorKind.Render);
+        Assert.Equal(100, (int)UndocErrorKind.InvalidArgument);
+        Assert.Equal(101, (int)UndocErrorKind.Panic);
+        Assert.Equal(102, (int)UndocErrorKind.InvalidOutput);
+    }
+}
+
+public class NativeErrorKindTests
+{
+    /// <summary>
+    /// The whole point of the feature, end to end: a damaged container must be
+    /// recognisable from the exception without reading its message.
+    /// </summary>
+    [Fact]
+    public void ParseBytes_CorruptedArchive_ReportsZipArchive()
+    {
+        NativeTestSupport.EnsureNativeLibraryPrepared();
+
+        var corrupted = new byte[] { 0x50, 0x4B, 0x03, 0x04 }
+            .Concat(Encoding.UTF8.GetBytes("truncated garbage with no central directory"))
+            .ToArray();
+
+        var ex = Assert.Throws<UndocException>(() => UndocDocument.ParseBytes(corrupted));
+
+        Assert.Equal(UndocErrorKind.ZipArchive, ex.Kind);
+        Assert.NotEmpty(ex.Message);
+    }
+
+    [Fact]
+    public void ParseBytes_NotAnOfficeDocument_ReportsUnknownFormat()
+    {
+        NativeTestSupport.EnsureNativeLibraryPrepared();
+
+        var ex = Assert.Throws<UndocException>(() =>
+            UndocDocument.ParseBytes(Encoding.UTF8.GetBytes("not an office document at all")));
+
+        Assert.Equal(UndocErrorKind.UnknownFormat, ex.Kind);
+    }
+
+    /// <summary>
+    /// Distinct inputs must land on distinct kinds — otherwise the channel exists but
+    /// carries no information a caller could act on.
+    /// </summary>
+    [Fact]
+    public void DifferentFailures_ReportDifferentKinds()
+    {
+        NativeTestSupport.EnsureNativeLibraryPrepared();
+
+        var corrupted = new byte[] { 0x50, 0x4B, 0x03, 0x04 }
+            .Concat(Encoding.UTF8.GetBytes("garbage"))
+            .ToArray();
+
+        var damaged = Assert.Throws<UndocException>(() => UndocDocument.ParseBytes(corrupted));
+        var foreign = Assert.Throws<UndocException>(() =>
+            UndocDocument.ParseBytes(Encoding.UTF8.GetBytes("plain text file")));
+
+        Assert.NotEqual(damaged.Kind, foreign.Kind);
+    }
+
+    /// <summary>
+    /// A successful call must leave no classification behind for the next failure check
+    /// to pick up.
+    /// </summary>
+    [Fact]
+    public void SuccessfulCall_LeavesNoRecordedKind()
+    {
+        NativeTestSupport.EnsureNativeLibraryPrepared();
+
+        using var doc = UndocDocument.ParseBytes(
+            NativeTestSupport.CreateMinimalDocxBytes("hello"));
+        _ = doc.ToMarkdown();
+
+        Assert.Equal(0, NativeMethods.undoc_last_error_kind());
     }
 }
 

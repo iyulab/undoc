@@ -79,7 +79,7 @@ pub use detect::detect_format_from_bytes;
 #[cfg(not(target_arch = "wasm32"))]
 pub use detect::detect_format_from_path;
 pub use detect::FormatType;
-pub use error::{Error, Result};
+pub use error::{Error, ErrorKind, Result};
 pub use model::{
     Block, Cell, CellAlignment, Document, HeadingLevel, ListInfo, ListType, Metadata, Paragraph,
     Resource, ResourceType, Row, Section, Table, TextAlignment, TextRun, TextStyle,

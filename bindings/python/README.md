@@ -88,6 +88,35 @@ print(f"Sections: {doc.section_count}")
 print(f"Resources: {doc.resource_count}")
 ```
 
+### Handling Failures
+
+`UndocError.kind` says *why* a call failed, so you can react to the reason instead of
+matching on message text:
+
+```python
+from undoc import ErrorKind, UndocError, parse_file
+
+try:
+    doc = parse_file(path)
+    print(doc.to_markdown())
+except UndocError as err:
+    if err.kind is ErrorKind.ZIP_ARCHIVE:
+        print("The file is damaged.")
+    elif err.kind in (ErrorKind.UNKNOWN_FORMAT, ErrorKind.UNSUPPORTED_FORMAT):
+        print("Not a supported Office document.")
+    elif err.kind is ErrorKind.ENCRYPTED:
+        print("The document is encrypted.")
+    else:
+        # Also the right branch for a reason this build has no name for.
+        print(f"Extraction failed ({err.kind}): {err}")
+```
+
+The numbers behind `ErrorKind` are a stable ABI contract: a new reason takes the next free
+number and existing ones are never renumbered. Always keep a final `else` — an
+unrecognised value arrives as a plain `int` rather than an `ErrorKind`, so that a newer
+native library stays usable. `kind` is `ErrorKind.OTHER` for failures raised by the wrapper
+itself, and never `ErrorKind.NONE` (which means success).
+
 ## Supported Formats
 
 - **DOCX** - Microsoft Word documents

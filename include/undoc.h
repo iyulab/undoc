@@ -31,6 +31,35 @@ typedef struct UndocDocument UndocDocument;
 #define UNDOC_JSON_COMPACT  1  /* Compact JSON without whitespace */
 
 /**
+ * Why the last call failed, as returned by undoc_last_error_kind().
+ *
+ * Values 1..=13 mirror the library's own failure reasons; values 100+ are raised at
+ * the FFI boundary and have no library-side counterpart. These numbers are a stable
+ * ABI contract: a new reason takes the next free number and existing ones are never
+ * reused or renumbered. Treat an unrecognised value as a generic failure rather than
+ * as an error, so that a newer library stays usable by older callers.
+ */
+typedef enum UndocErrorKind {
+    UNDOC_ERROR_NONE               = 0,   /* The last call succeeded */
+    UNDOC_ERROR_OTHER              = 1,   /* Failure with no more specific reason */
+    UNDOC_ERROR_IO                 = 2,   /* Missing or unreadable file */
+    UNDOC_ERROR_UNKNOWN_FORMAT     = 3,   /* Not a recognised Office document */
+    UNDOC_ERROR_UNSUPPORTED_FORMAT = 4,   /* Recognised but not supported */
+    UNDOC_ERROR_ZIP_ARCHIVE        = 5,   /* The OOXML container could not be read */
+    UNDOC_ERROR_XML_PARSE          = 6,   /* XML content could not be parsed */
+    UNDOC_ERROR_INVALID_DATA       = 7,   /* Malformed data inside the document */
+    UNDOC_ERROR_MISSING_COMPONENT  = 8,   /* A required document part is absent */
+    UNDOC_ERROR_ENCODING           = 9,   /* Text encoding conversion failed */
+    UNDOC_ERROR_STYLE_NOT_FOUND    = 10,  /* A referenced style is absent */
+    UNDOC_ERROR_RESOURCE_NOT_FOUND = 11,  /* A referenced resource is absent */
+    UNDOC_ERROR_ENCRYPTED          = 12,  /* The document is encrypted */
+    UNDOC_ERROR_RENDER             = 13,  /* Rendering the output failed */
+    UNDOC_ERROR_INVALID_ARGUMENT   = 100, /* An argument was NULL or not valid UTF-8 */
+    UNDOC_ERROR_PANIC              = 101, /* A panic was caught at the boundary */
+    UNDOC_ERROR_INVALID_OUTPUT     = 102  /* Output holds a NUL byte, cannot cross ABI */
+} UndocErrorKind;
+
+/**
  * Get the library version.
  *
  * @return Static version string (do not free)
@@ -45,6 +74,17 @@ const char* undoc_version(void);
  * @return Error message or NULL if no error. Do not free.
  */
 const char* undoc_last_error(void);
+
+/**
+ * Classify the last error without parsing its message.
+ *
+ * Returns UNDOC_ERROR_NONE (0) when the last call on this thread succeeded. Written
+ * and cleared in lockstep with undoc_last_error(), so a message is never paired with
+ * a stale kind.
+ *
+ * @return A UndocErrorKind value; treat an unrecognised value as a generic failure.
+ */
+int undoc_last_error_kind(void);
 
 /**
  * Parse a document from a file path.

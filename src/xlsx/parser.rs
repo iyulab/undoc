@@ -134,7 +134,7 @@ impl XlsxParser {
                     }
                 }
                 Ok(quick_xml::events::Event::Eof) => break,
-                Err(e) => return Err(Error::XmlParse(e.to_string())),
+                Err(e) => return Err(e.into()),
                 _ => {}
             }
             buf.clear();
@@ -543,7 +543,7 @@ impl XlsxParser {
                     _ => {}
                 },
                 Ok(quick_xml::events::Event::Eof) => break,
-                Err(e) => return Err(Error::XmlParse(e.to_string())),
+                Err(e) => return Err(e.into()),
                 _ => {}
             }
             buf.clear();
@@ -1520,7 +1520,7 @@ impl XlsxParser {
                     }
                 }
                 Ok(quick_xml::events::Event::Eof) => break,
-                Err(e) => return Err(Error::XmlParse(e.to_string())),
+                Err(e) => return Err(e.into()),
                 _ => {}
             }
             buf.clear();

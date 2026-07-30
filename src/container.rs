@@ -13,6 +13,20 @@ use std::io::BufReader;
 use std::io::{Cursor, Read, Seek};
 use std::path::Path;
 
+/// Classify a failure to open an entry inside the archive.
+///
+/// Only a genuinely absent entry is a missing component — that is the case
+/// [`OoxmlContainer::read_xml_optional`] turns into `Ok(None)`. Every other reason (a
+/// damaged container, one that needs a password) has to keep its own classification,
+/// or the optional-part path silently degrades a broken file into a valid-empty
+/// result — exactly what that method promises not to do.
+fn entry_error(path: &str, err: zip::result::ZipError) -> Error {
+    match err {
+        zip::result::ZipError::FileNotFound => Error::MissingComponent(path.to_string()),
+        other => Error::from(other),
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RelationshipPolicy {
     Required,
@@ -259,9 +273,7 @@ impl OoxmlContainer {
     /// - UTF-16 BE (with BOM: FE FF)
     pub fn read_xml(&self, path: &str) -> Result<String> {
         let mut archive = self.archive.borrow_mut();
-        let mut file = archive
-            .by_name(path)
-            .map_err(|_| Error::MissingComponent(path.to_string()))?;
+        let mut file = archive.by_name(path).map_err(|e| entry_error(path, e))?;
 
         // Read raw bytes first
         let mut bytes = Vec::new();
@@ -289,9 +301,7 @@ impl OoxmlContainer {
     /// Read a binary file from the archive.
     pub fn read_binary(&self, path: &str) -> Result<Vec<u8>> {
         let mut archive = self.archive.borrow_mut();
-        let mut file = archive
-            .by_name(path)
-            .map_err(|_| Error::MissingComponent(path.to_string()))?;
+        let mut file = archive.by_name(path).map_err(|e| entry_error(path, e))?;
         let mut data = Vec::new();
         file.read_to_end(&mut data)?;
         Ok(data)
@@ -733,6 +743,77 @@ mod tests {
         }
 
         OoxmlContainer::from_bytes(zip.finish().unwrap().into_inner()).unwrap()
+    }
+
+    /// Build a ZIP whose entry is flagged as password-protected.
+    ///
+    /// Bit 0 of the general-purpose bit flag marks an entry encrypted, and it lives in
+    /// both the local header and the central directory. Flipping it is enough for the
+    /// ZIP layer to refuse the entry as needing a password — which is the condition we
+    /// need to reproduce, without pulling in a crypto feature just to write one.
+    fn create_password_protected_zip_bytes(path: &str) -> Vec<u8> {
+        use std::io::{Cursor, Write};
+
+        let buf = Cursor::new(Vec::new());
+        let mut zip = zip::ZipWriter::new(buf);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        zip.start_file(path, options).unwrap();
+        zip.write_all(b"<Types/>").unwrap();
+        let mut bytes = zip.finish().unwrap().into_inner();
+
+        // Local file header: signature at 0, flag at offset 6.
+        bytes[6] |= 1;
+        // Central directory header: flag at offset 8 from its signature.
+        let cd = bytes
+            .windows(4)
+            .position(|w| w == [0x50, 0x4B, 0x01, 0x02])
+            .expect("central directory header");
+        bytes[cd + 8] |= 1;
+
+        bytes
+    }
+
+    /// A container that needs a password must not be reported as one that is merely
+    /// missing the part we asked for — the two call for completely different responses
+    /// from whoever is handling the failure.
+    #[test]
+    fn test_password_protected_entry_is_reported_as_encrypted() {
+        let bytes = create_password_protected_zip_bytes("word/document.xml");
+        let container = OoxmlContainer::from_bytes(bytes).unwrap();
+
+        let err = container.read_xml("word/document.xml").unwrap_err();
+
+        assert_eq!(err.kind(), crate::ErrorKind::Encrypted, "got: {err}");
+    }
+
+    /// The other half of the same contract: a genuinely absent part stays a missing
+    /// component, so `read_xml_optional` keeps treating it as "not there".
+    #[test]
+    fn test_absent_entry_is_still_a_missing_component() {
+        let container = create_container_with_files(&[("word/document.xml", "<w:document/>")]);
+
+        let err = container.read_xml("word/styles.xml").unwrap_err();
+        assert_eq!(err.kind(), crate::ErrorKind::MissingComponent);
+        assert!(matches!(
+            container.read_xml_optional("word/styles.xml"),
+            Ok(None)
+        ));
+    }
+
+    /// And the promise `read_xml_optional` makes in its own doc comment: a part that
+    /// exists but cannot be read is not silently downgraded to "absent".
+    #[test]
+    fn test_optional_part_does_not_swallow_an_unreadable_entry() {
+        let bytes = create_password_protected_zip_bytes("word/styles.xml");
+        let container = OoxmlContainer::from_bytes(bytes).unwrap();
+
+        let result = container.read_xml_optional("word/styles.xml");
+
+        assert!(
+            matches!(&result, Err(e) if e.kind() == crate::ErrorKind::Encrypted),
+            "expected the failure to surface, got: {result:?}"
+        );
     }
 
     #[test]

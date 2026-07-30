@@ -6,6 +6,56 @@ use thiserror::Error;
 /// Result type alias for undoc operations.
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// Stable classification of an [`Error`], for consumers that must branch on the
+/// *reason* a call failed rather than match on its message text.
+///
+/// Every [`Error`] variant maps onto one of these, so the mapping needs no judgement
+/// and stays obvious as the error type grows. The discriminants are explicit and part
+/// of the public contract: they cross the C-ABI boundary as `undoc_last_error_kind`
+/// return values, so **existing values must never be renumbered** — a new failure
+/// reason takes the next free number instead. Treat an unrecognised value as a
+/// generic failure rather than as an error.
+///
+/// Values `100` and above are reserved for FFI-boundary reasons that have no core
+/// `Error` counterpart (null arguments, caught panics, output that cannot cross the
+/// ABI); see the `UNDOC_ERROR_*` constants in the `ffi` module.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(i32)]
+pub enum ErrorKind {
+    /// A failure with no more specific classification.
+    ///
+    /// [`Error::kind`] never returns this — no core variant maps to it. It exists so
+    /// that bindings and consumers have a value for a failure that did not come from
+    /// this library and therefore carries no classification. It must not be confused
+    /// with success, which is the absence of an error (`0`).
+    Other = 1,
+    /// [`Error::Io`]
+    Io = 2,
+    /// [`Error::UnknownFormat`]
+    UnknownFormat = 3,
+    /// [`Error::UnsupportedFormat`]
+    UnsupportedFormat = 4,
+    /// [`Error::ZipArchive`]
+    ZipArchive = 5,
+    /// [`Error::XmlParse`] and [`Error::XmlParseWithContext`] — the same reason,
+    /// differing only in whether location context was available.
+    XmlParse = 6,
+    /// [`Error::InvalidData`]
+    InvalidData = 7,
+    /// [`Error::MissingComponent`]
+    MissingComponent = 8,
+    /// [`Error::Encoding`]
+    Encoding = 9,
+    /// [`Error::StyleNotFound`]
+    StyleNotFound = 10,
+    /// [`Error::ResourceNotFound`]
+    ResourceNotFound = 11,
+    /// [`Error::Encrypted`]
+    Encrypted = 12,
+    /// [`Error::Render`]
+    Render = 13,
+}
+
 /// Errors that can occur during document processing.
 #[derive(Error, Debug)]
 pub enum Error {
@@ -68,14 +118,45 @@ pub enum Error {
 }
 
 impl From<zip::result::ZipError> for Error {
+    /// Preserve the reason the container could not be read.
+    ///
+    /// The ZIP layer already distinguishes a damaged archive from an unsupported one,
+    /// from a missing entry, from one that needs a password. Collapsing all of them
+    /// into a single variant would throw that away here, at the one place it is still
+    /// known — and no amount of work further up could recover it.
     fn from(err: zip::result::ZipError) -> Self {
-        Error::ZipArchive(err.to_string())
+        use zip::result::ZipError;
+
+        match err {
+            ZipError::Io(e) => Error::Io(e),
+            ZipError::InvalidPassword => Error::Encrypted,
+            // The ZIP spec has no dedicated "encrypted" status: a password-protected
+            // entry surfaces as an unsupported archive with this specific message.
+            ZipError::UnsupportedArchive(ZipError::PASSWORD_REQUIRED) => Error::Encrypted,
+            ZipError::UnsupportedArchive(what) => Error::UnsupportedFormat(what.to_string()),
+            ZipError::FileNotFound => {
+                Error::MissingComponent("entry not present in archive".to_string())
+            }
+            ZipError::InvalidArchive(what) => Error::ZipArchive(what.to_string()),
+            // `ZipError` is not `#[non_exhaustive]` today, but treat an unfamiliar
+            // variant as a damaged container rather than failing to compile a
+            // consumer's build on a dependency bump.
+            other => Error::ZipArchive(other.to_string()),
+        }
     }
 }
 
 impl From<quick_xml::Error> for Error {
+    /// Preserve whether the XML failed to *arrive*, to *decode*, or to *parse*.
+    ///
+    /// These are three different problems for whoever has to act on the failure, and
+    /// only this conversion still knows which one happened.
     fn from(err: quick_xml::Error) -> Self {
-        Error::XmlParse(err.to_string())
+        match err {
+            quick_xml::Error::Io(e) => Error::Io(io::Error::new(e.kind(), e.to_string())),
+            quick_xml::Error::Encoding(e) => Error::Encoding(e.to_string()),
+            other => Error::XmlParse(other.to_string()),
+        }
     }
 }
 
@@ -94,6 +175,37 @@ impl Error {
         Error::XmlParseWithContext {
             message: message.into(),
             location: location.into(),
+        }
+    }
+
+    /// Classify this error into a stable [`ErrorKind`].
+    ///
+    /// Lets a caller branch on *why* an operation failed without matching on the
+    /// message text. The message stays the human-readable diagnostic; the kind is
+    /// additive.
+    ///
+    /// # Example
+    /// ```
+    /// use undoc::{Error, ErrorKind};
+    ///
+    /// let err = Error::UnknownFormat;
+    /// assert_eq!(err.kind(), ErrorKind::UnknownFormat);
+    /// ```
+    pub fn kind(&self) -> ErrorKind {
+        match self {
+            Error::Io(_) => ErrorKind::Io,
+            Error::UnknownFormat => ErrorKind::UnknownFormat,
+            Error::UnsupportedFormat(_) => ErrorKind::UnsupportedFormat,
+            Error::ZipArchive(_) => ErrorKind::ZipArchive,
+            Error::XmlParseWithContext { .. } => ErrorKind::XmlParse,
+            Error::XmlParse(_) => ErrorKind::XmlParse,
+            Error::InvalidData(_) => ErrorKind::InvalidData,
+            Error::MissingComponent(_) => ErrorKind::MissingComponent,
+            Error::Encoding(_) => ErrorKind::Encoding,
+            Error::StyleNotFound(_) => ErrorKind::StyleNotFound,
+            Error::ResourceNotFound(_) => ErrorKind::ResourceNotFound,
+            Error::Encrypted => ErrorKind::Encrypted,
+            Error::Render(_) => ErrorKind::Render,
         }
     }
 }
@@ -116,5 +228,141 @@ mod tests {
         let io_err = io::Error::new(io::ErrorKind::NotFound, "file not found");
         let err: Error = io_err.into();
         assert!(matches!(err, Error::Io(_)));
+    }
+
+    #[test]
+    fn test_error_kind_mapping() {
+        let io_err = io::Error::new(io::ErrorKind::NotFound, "file not found");
+        assert_eq!(Error::from(io_err).kind(), ErrorKind::Io);
+        assert_eq!(Error::UnknownFormat.kind(), ErrorKind::UnknownFormat);
+        assert_eq!(
+            Error::UnsupportedFormat("legacy .doc".into()).kind(),
+            ErrorKind::UnsupportedFormat
+        );
+        assert_eq!(
+            Error::ZipArchive("bad central directory".into()).kind(),
+            ErrorKind::ZipArchive
+        );
+        assert_eq!(
+            Error::InvalidData("bad".into()).kind(),
+            ErrorKind::InvalidData
+        );
+        assert_eq!(
+            Error::MissingComponent("[Content_Types].xml".into()).kind(),
+            ErrorKind::MissingComponent
+        );
+        assert_eq!(
+            Error::Encoding("bad utf-8".into()).kind(),
+            ErrorKind::Encoding
+        );
+        assert_eq!(
+            Error::StyleNotFound("Heading1".into()).kind(),
+            ErrorKind::StyleNotFound
+        );
+        assert_eq!(
+            Error::ResourceNotFound("rId1".into()).kind(),
+            ErrorKind::ResourceNotFound
+        );
+        assert_eq!(Error::Encrypted.kind(), ErrorKind::Encrypted);
+        assert_eq!(Error::Render("bad table".into()).kind(), ErrorKind::Render);
+    }
+
+    /// Both XML variants are the same failure reason, so they must share one number —
+    /// otherwise the ABI carries two values for one reason.
+    #[test]
+    fn test_xml_parse_variants_share_one_kind() {
+        assert_eq!(
+            Error::XmlParse("unexpected eof".into()).kind(),
+            ErrorKind::XmlParse
+        );
+        assert_eq!(
+            Error::xml_parse_with_context("unexpected eof", "word/document.xml").kind(),
+            ErrorKind::XmlParse
+        );
+    }
+
+    /// The ZIP layer knows more than "something went wrong with the archive", and this
+    /// is the only place that knowledge still exists. Constructing the `ZipError`
+    /// values directly tests every branch without having to fabricate an archive that
+    /// provokes each one — including the password cases, which are otherwise awkward to
+    /// produce.
+    #[test]
+    fn test_zip_error_reasons_are_not_collapsed() {
+        use zip::result::ZipError;
+
+        assert_eq!(
+            Error::from(ZipError::InvalidArchive("no central directory")).kind(),
+            ErrorKind::ZipArchive,
+            "a damaged container stays a damaged container"
+        );
+        assert_eq!(
+            Error::from(ZipError::UnsupportedArchive("zip64 with disks")).kind(),
+            ErrorKind::UnsupportedFormat,
+            "unsupported is not the same problem as damaged"
+        );
+        assert_eq!(
+            Error::from(ZipError::InvalidPassword).kind(),
+            ErrorKind::Encrypted
+        );
+        assert_eq!(
+            Error::from(ZipError::UnsupportedArchive(ZipError::PASSWORD_REQUIRED)).kind(),
+            ErrorKind::Encrypted,
+            "the ZIP spec reports a password-protected entry as unsupported"
+        );
+        assert_eq!(
+            Error::from(ZipError::FileNotFound).kind(),
+            ErrorKind::MissingComponent
+        );
+        assert_eq!(
+            Error::from(ZipError::Io(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "eof"
+            )))
+            .kind(),
+            ErrorKind::Io
+        );
+    }
+
+    /// XML that fails to arrive, to decode, and to parse are three different problems.
+    #[test]
+    fn test_xml_error_reasons_are_not_collapsed() {
+        let io_backed: Error = quick_xml::Error::Io(std::sync::Arc::new(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "eof mid-element",
+        )))
+        .into();
+        assert_eq!(io_backed.kind(), ErrorKind::Io);
+
+        let malformed: Error =
+            quick_xml::Error::Syntax(quick_xml::errors::SyntaxError::UnclosedTag).into();
+        assert_eq!(malformed.kind(), ErrorKind::XmlParse);
+    }
+
+    /// Serializing output is rendering. Reporting it as an XML parse failure sent a
+    /// caller looking at the input document for a problem that is not there.
+    #[test]
+    fn test_json_serialization_failure_is_classified_as_render() {
+        let err = Error::Render("JSON serialization: recursion limit".to_string());
+        assert_eq!(err.kind(), ErrorKind::Render);
+    }
+
+    /// The discriminants are a public ABI contract: they cross the C boundary as
+    /// `undoc_last_error_kind` values. Pinning every one of them here is what makes
+    /// an accidental renumbering a test failure instead of a silent consumer break.
+    #[test]
+    fn test_error_kind_discriminants_are_stable() {
+        assert_eq!(ErrorKind::Other as i32, 1);
+        assert_eq!(ErrorKind::Io as i32, 2);
+        assert_eq!(ErrorKind::UnknownFormat as i32, 3);
+        assert_eq!(ErrorKind::UnsupportedFormat as i32, 4);
+        assert_eq!(ErrorKind::ZipArchive as i32, 5);
+        assert_eq!(ErrorKind::XmlParse as i32, 6);
+        assert_eq!(ErrorKind::InvalidData as i32, 7);
+        assert_eq!(ErrorKind::MissingComponent as i32, 8);
+        assert_eq!(ErrorKind::Encoding as i32, 9);
+        assert_eq!(ErrorKind::StyleNotFound as i32, 10);
+        assert_eq!(ErrorKind::ResourceNotFound as i32, 11);
+        assert_eq!(ErrorKind::Encrypted as i32, 12);
+        assert_eq!(ErrorKind::Render as i32, 13);
     }
 }

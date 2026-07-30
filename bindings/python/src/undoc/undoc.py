@@ -1,6 +1,7 @@
 """Main undoc API for Python."""
 
 import json
+from enum import IntEnum
 from pathlib import Path
 from typing import Dict, List, Optional, Union
 
@@ -15,10 +16,53 @@ from ._native import (
 import ctypes
 
 
-class UndocError(Exception):
-    """Exception raised when undoc operations fail."""
+class ErrorKind(IntEnum):
+    """Why an undoc call failed, so callers can branch on the reason.
 
-    pass
+    Values 1-13 mirror the library's own failure reasons; values 100+ are raised at
+    the interop boundary and have no library-side counterpart. The numbers are part
+    of the native ABI (``UndocErrorKind`` in ``undoc.h``): a new reason takes the next
+    free number and existing ones are never renumbered, so an unrecognised value is
+    kept as a plain :class:`int` rather than rejected.
+    """
+
+    NONE = 0
+    OTHER = 1
+    IO = 2
+    UNKNOWN_FORMAT = 3
+    UNSUPPORTED_FORMAT = 4
+    ZIP_ARCHIVE = 5
+    XML_PARSE = 6
+    INVALID_DATA = 7
+    MISSING_COMPONENT = 8
+    ENCODING = 9
+    STYLE_NOT_FOUND = 10
+    RESOURCE_NOT_FOUND = 11
+    ENCRYPTED = 12
+    RENDER = 13
+    INVALID_ARGUMENT = 100
+    PANIC = 101
+    INVALID_OUTPUT = 102
+
+
+class UndocError(Exception):
+    """Exception raised when undoc operations fail.
+
+    Attributes:
+        kind: An :class:`ErrorKind`, or the raw integer if the native library reported
+            a reason this build does not know about. Never :attr:`ErrorKind.NONE`,
+            which means success. Defaults to :attr:`ErrorKind.OTHER` for failures that
+            did not come from the native library.
+    """
+
+    def __init__(self, message: str, kind: int = ErrorKind.OTHER) -> None:
+        super().__init__(message)
+        try:
+            self.kind: int = ErrorKind(kind)
+        except ValueError:
+            # Forward compatibility: a newer native library may report a number this
+            # build has no name for. Keep it rather than losing the classification.
+            self.kind = kind
 
 
 def _decode_utf8_ptr(ptr: int) -> str:
@@ -45,11 +89,33 @@ def _get_last_error(lib=None) -> str:
     return "Unknown error"
 
 
+def _get_last_error_kind(lib=None) -> int:
+    """Get the classification of the last error from the native library.
+
+    An unrecognised number passes through unchanged so a newer native library stays
+    usable. Zero is the one value that cannot stand: it means success, and we only ask
+    while building a failure.
+    """
+    lib = lib or get_library()
+    kind = lib.undoc_last_error_kind()
+    return ErrorKind.OTHER if kind == ErrorKind.NONE else kind
+
+
+def _native_failure(action: str, lib=None) -> UndocError:
+    """Build the error for a failed native call, with both message and classification.
+
+    Every native failure goes through here so no raise site can quietly drop the
+    classification and leave the caller with ``OTHER``.
+    """
+    lib = lib or get_library()
+    return UndocError(f"{action}: {_get_last_error(lib)}", _get_last_error_kind(lib))
+
+
 def _require_result_ptr(lib, ptr: Optional[int], action: str) -> int:
     """Require a non-null native result pointer for operations that signal failure via NULL."""
     if ptr:
         return ptr
-    raise UndocError(f"{action}: {_get_last_error(lib)}")
+    raise _native_failure(action, lib)
 
 
 def version() -> str:
@@ -79,7 +145,7 @@ def parse_file(path: Union[str, Path]) -> "Undoc":
     lib = get_library()
     handle = lib.undoc_parse_file(str(path).encode("utf-8"))
     if not handle:
-        raise UndocError(f"Failed to parse {path}: {_get_last_error()}")
+        raise _native_failure(f"Failed to parse {path}")
 
     return Undoc(handle)
 
@@ -100,7 +166,7 @@ def parse_bytes(data: bytes) -> "Undoc":
     data_ptr = (ctypes.c_uint8 * len(data)).from_buffer_copy(data)
     handle = lib.undoc_parse_bytes(data_ptr, len(data))
     if not handle:
-        raise UndocError(f"Failed to parse bytes: {_get_last_error()}")
+        raise _native_failure("Failed to parse bytes")
 
     return Undoc(handle)
 
@@ -164,7 +230,7 @@ class Undoc:
 
         result = self._lib.undoc_to_markdown(self._handle, flags)
         if not result:
-            raise UndocError(f"Failed to convert to markdown: {_get_last_error()}")
+            raise _native_failure("Failed to convert to markdown")
 
         return _copy_and_free_utf8_ptr(self._lib, result)
 
@@ -179,7 +245,7 @@ class Undoc:
         """
         result = self._lib.undoc_to_text(self._handle)
         if not result:
-            raise UndocError(f"Failed to convert to text: {_get_last_error()}")
+            raise _native_failure("Failed to convert to text")
 
         return _copy_and_free_utf8_ptr(self._lib, result)
 
@@ -198,7 +264,7 @@ class Undoc:
         fmt = UNDOC_JSON_COMPACT if compact else UNDOC_JSON_PRETTY
         result = self._lib.undoc_to_json(self._handle, fmt)
         if not result:
-            raise UndocError(f"Failed to convert to JSON: {_get_last_error()}")
+            raise _native_failure("Failed to convert to JSON")
 
         return _copy_and_free_utf8_ptr(self._lib, result)
 
@@ -213,7 +279,7 @@ class Undoc:
         """
         result = self._lib.undoc_plain_text(self._handle)
         if not result:
-            raise UndocError(f"Failed to get plain text: {_get_last_error()}")
+            raise _native_failure("Failed to get plain text")
 
         return _copy_and_free_utf8_ptr(self._lib, result)
 
@@ -222,7 +288,7 @@ class Undoc:
         """Get the number of sections in the document."""
         count = self._lib.undoc_section_count(self._handle)
         if count < 0:
-            raise UndocError(f"Failed to get section count: {_get_last_error()}")
+            raise _native_failure("Failed to get section count")
         return count
 
     @property
@@ -230,7 +296,7 @@ class Undoc:
         """Get the number of resources (images, etc.) in the document."""
         count = self._lib.undoc_resource_count(self._handle)
         if count < 0:
-            raise UndocError(f"Failed to get resource count: {_get_last_error()}")
+            raise _native_failure("Failed to get resource count")
         return count
 
     @property

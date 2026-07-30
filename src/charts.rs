@@ -244,7 +244,7 @@ pub fn parse_chart_xml(xml: &str) -> Result<ChartData> {
                 current_text.push_str(&crate::decode::resolve_general_ref(e));
             }
             Ok(quick_xml::events::Event::Eof) => break,
-            Err(e) => return Err(Error::XmlParse(e.to_string())),
+            Err(e) => return Err(e.into()),
             _ => {}
         }
         buf.clear();

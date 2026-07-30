@@ -14,6 +14,16 @@ use std::path::Path;
 /// ZIP file magic bytes: PK\x03\x04
 const ZIP_MAGIC: [u8; 4] = [0x50, 0x4B, 0x03, 0x04];
 
+/// Compound File Binary (OLE2) magic bytes: D0 CF 11 E0 A1 B1 1A E1.
+///
+/// Two kinds of file arrive with this header: the legacy binary Office formats
+/// (.doc/.xls/.ppt) and an OOXML document protected with ECMA-376 encryption, whose ZIP
+/// package is wrapped inside a CFB container. Telling those two apart means walking the
+/// CFB directory for an `EncryptedPackage` stream, which this library does not do — so
+/// report only what is certain: this is an Office container we cannot open. That is a
+/// different and more useful answer than "unrecognised file".
+const CFB_MAGIC: [u8; 8] = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
+
 /// Content type for DOCX main document part.
 const DOCX_CONTENT_TYPE: &str =
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml";
@@ -98,17 +108,45 @@ pub fn detect_format_from_path(path: impl AsRef<Path>) -> Result<FormatType> {
 /// # Ok::<(), undoc::Error>(())
 /// ```
 pub fn detect_format_from_bytes(data: &[u8]) -> Result<FormatType> {
-    // Check magic bytes first
-    if data.len() < 4 || data[..4] != ZIP_MAGIC {
+    detect_format_from_reader(std::io::Cursor::new(data))
+}
+
+/// Classify the container by its leading bytes.
+///
+/// Runs before the ZIP layer gets involved, so that a file we can *recognise* but not
+/// open is reported as such instead of surfacing as a damaged archive — which would send
+/// the caller off to repair a file that is not broken.
+fn classify_container_magic<R: Read + Seek>(reader: &mut R) -> Result<()> {
+    let mut head = [0u8; CFB_MAGIC.len()];
+    let mut filled = 0;
+    while filled < head.len() {
+        match reader.read(&mut head[filled..])? {
+            0 => break,
+            n => filled += n,
+        }
+    }
+    reader.seek(std::io::SeekFrom::Start(0))?;
+
+    if filled == CFB_MAGIC.len() && head == CFB_MAGIC {
+        return Err(Error::UnsupportedFormat(
+            "OLE/CFB container — a legacy binary Office format (.doc/.xls/.ppt) or an \
+             ECMA-376 encrypted document"
+                .to_string(),
+        ));
+    }
+
+    if filled < ZIP_MAGIC.len() || head[..ZIP_MAGIC.len()] != ZIP_MAGIC {
         return Err(Error::UnknownFormat);
     }
 
-    let cursor = std::io::Cursor::new(data);
-    detect_format_from_reader(cursor)
+    Ok(())
 }
 
 /// Detect the format type from a reader.
 pub fn detect_format_from_reader<R: Read + Seek>(reader: R) -> Result<FormatType> {
+    let mut reader = reader;
+    classify_container_magic(&mut reader)?;
+
     let mut archive = zip::ZipArchive::new(reader)?;
 
     // Try to read [Content_Types].xml
@@ -118,9 +156,13 @@ pub fn detect_format_from_reader<R: Read + Seek>(reader: R) -> Result<FormatType
             file.read_to_end(&mut bytes)?;
             decode_xml_bytes(&bytes)?
         }
-        Err(_) => {
+        // Only an absent part is a missing component. A container that is damaged or
+        // needs a password must say so — reporting either as "the part isn't there"
+        // points the caller at the wrong problem.
+        Err(zip::result::ZipError::FileNotFound) => {
             return Err(Error::MissingComponent("[Content_Types].xml".to_string()));
         }
+        Err(e) => return Err(Error::from(e)),
     };
 
     // Check content types to determine format
@@ -189,6 +231,44 @@ mod tests {
     fn test_detect_invalid_data() {
         let result = detect_format_from_bytes(&[0x00, 0x00, 0x00, 0x00]);
         assert!(matches!(result, Err(Error::UnknownFormat)));
+    }
+
+    /// A legacy binary Office file — or an ECMA-376 encrypted one — is a container we
+    /// recognise and cannot open. Reporting it as unrecognised sends the caller looking
+    /// for a file-type problem they do not have, and letting it reach the ZIP layer
+    /// reports it as damaged, which is worse: it invites a pointless repair attempt.
+    #[test]
+    fn test_ole_cfb_container_is_unsupported_not_unknown_or_damaged() {
+        let mut data = CFB_MAGIC.to_vec();
+        data.extend_from_slice(&[0u8; 64]);
+
+        let err = detect_format_from_bytes(&data).unwrap_err();
+
+        assert_eq!(
+            err.kind(),
+            crate::ErrorKind::UnsupportedFormat,
+            "got: {err}"
+        );
+    }
+
+    /// Truncated input must not be mistaken for a CFB header on a prefix match.
+    #[test]
+    fn test_truncated_cfb_prefix_is_unknown_format() {
+        let err = detect_format_from_bytes(&CFB_MAGIC[..4]).unwrap_err();
+
+        assert!(matches!(err, Error::UnknownFormat));
+    }
+
+    /// The ZIP path must keep working through the new magic-byte gate, including the
+    /// damaged-archive case that still has to read as damaged.
+    #[test]
+    fn test_zip_magic_still_reaches_the_archive_layer() {
+        let mut data = ZIP_MAGIC.to_vec();
+        data.extend_from_slice(b"not a real central directory");
+
+        let err = detect_format_from_bytes(&data).unwrap_err();
+
+        assert_eq!(err.kind(), crate::ErrorKind::ZipArchive, "got: {err}");
     }
 
     #[test]

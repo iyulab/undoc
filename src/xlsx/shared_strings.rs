@@ -3,7 +3,7 @@
 use std::borrow::Cow;
 
 use crate::decode::{decode_text_lossy, normalize_line_endings, resolve_general_ref};
-use crate::error::{Error, Result};
+use crate::error::Result;
 
 /// Shared strings table.
 #[derive(Debug, Clone, Default)]
@@ -63,7 +63,7 @@ impl SharedStrings {
                     _ => {}
                 },
                 Ok(quick_xml::events::Event::Eof) => break,
-                Err(e) => return Err(Error::XmlParse(e.to_string())),
+                Err(e) => return Err(e.into()),
                 _ => {}
             }
             buf.clear();

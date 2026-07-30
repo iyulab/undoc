@@ -17,11 +17,14 @@ pub enum JsonFormat {
 
 /// Convert a Document to JSON.
 pub fn to_json(doc: &Document, format: JsonFormat) -> Result<String> {
+    // Producing output is rendering — not XML parsing, which is what this used to
+    // report and would have told a caller to look in the wrong place.
+    let render_error =
+        |e: serde_json::Error| crate::error::Error::Render(format!("JSON serialization: {e}"));
+
     match format {
-        JsonFormat::Compact => serde_json::to_string(doc)
-            .map_err(|e| crate::error::Error::XmlParse(format!("JSON serialization error: {}", e))),
-        JsonFormat::Pretty => serde_json::to_string_pretty(doc)
-            .map_err(|e| crate::error::Error::XmlParse(format!("JSON serialization error: {}", e))),
+        JsonFormat::Compact => serde_json::to_string(doc).map_err(render_error),
+        JsonFormat::Pretty => serde_json::to_string_pretty(doc).map_err(render_error),
     }
 }
 

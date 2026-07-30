@@ -515,9 +515,80 @@ let format = detect_format_from_bytes(&data)?;
 
 ## C# / .NET Integration
 
-undoc provides C-ABI compatible bindings for integration with C# and .NET applications.
+undoc ships a .NET package that bundles the native library for every supported platform.
 
-### Getting the Native Library
+```bash
+dotnet add package Undoc
+```
+
+### Usage
+
+```csharp
+using Undoc;
+
+// Parse and convert to Markdown
+using var doc = UndocDocument.ParseFile("document.docx");
+string markdown = doc.ToMarkdown(new MarkdownOptions { IncludeFrontmatter = true });
+Console.WriteLine(markdown);
+
+// Document metadata — null means "not set", not "failed"
+Console.WriteLine($"Title: {doc.Title}");
+Console.WriteLine($"Author: {doc.Author}");
+Console.WriteLine($"Sections: {doc.SectionCount}");
+Console.WriteLine($"Resources: {doc.ResourceCount}");
+
+// Other output formats
+string text = doc.ToText();
+string json = doc.ToJson(compact: false);
+
+// Resources
+string[] resourceIds = doc.GetResourceIds();
+JsonDocument? info = doc.GetResourceInfo("rId1");
+byte[]? imageData = doc.GetResourceData("rId1");
+```
+
+`UndocDocument.ParseBytes(byte[])` parses content already in memory.
+
+### Classifying failures
+
+`UndocException.Kind` says *why* a call failed, so callers can react to the reason
+instead of matching on message text:
+
+```csharp
+try
+{
+    using var doc = UndocDocument.ParseFile(path);
+    Console.WriteLine(doc.ToMarkdown());
+}
+catch (UndocException ex)
+{
+    switch (ex.Kind)
+    {
+        case UndocErrorKind.ZipArchive:
+            Console.Error.WriteLine("The file is damaged.");
+            break;
+        case UndocErrorKind.UnknownFormat:
+        case UndocErrorKind.UnsupportedFormat:
+            Console.Error.WriteLine("Not a supported Office document.");
+            break;
+        case UndocErrorKind.Encrypted:
+            Console.Error.WriteLine("The document is encrypted.");
+            break;
+        default:
+            // Also the right branch for a reason this build has no name for.
+            Console.Error.WriteLine($"Extraction failed ({ex.Kind}): {ex.Message}");
+            break;
+    }
+}
+```
+
+The kind numbers are a stable ABI contract: a new failure reason takes the next free
+number and existing ones are never renumbered. Always keep a `default` branch — treat an
+unrecognised value as a generic failure so a newer library stays usable. `Kind` is
+`Other` for failures raised by the wrapper itself, and never `None` (which means
+success).
+
+### Using the native library directly
 
 Download from [GitHub Releases](https://github.com/iyulab/undoc/releases):
 
@@ -533,33 +604,9 @@ Or build from source:
 cargo build --release --features ffi
 ```
 
-### C# Wrapper Usage
-
-```csharp
-using Iyulab.Undoc;
-
-// Parse and convert to Markdown
-using var doc = UndocDocument.FromFile("document.docx");
-string markdown = doc.ToMarkdown(MarkdownFlags.Frontmatter);
-Console.WriteLine(markdown);
-
-// Get document metadata
-Console.WriteLine($"Title: {doc.Title}");
-Console.WriteLine($"Author: {doc.Author}");
-Console.WriteLine($"Sections: {doc.SectionCount}");
-Console.WriteLine($"Resources: {doc.ResourceCount}");
-
-// Convert to other formats
-string text = doc.ToText();
-string json = doc.ToJson(JsonFormat.Pretty);
-
-// Work with resources
-string resourceIds = doc.GetResourceIds(); // JSON array: ["rId1", "rId2"]
-string info = doc.GetResourceInfo("rId1"); // JSON metadata
-byte[] imageData = doc.GetResourceData("rId1"); // Binary data
-```
-
-See [bindings/csharp/Undoc.cs](bindings/csharp/Undoc.cs) for the complete wrapper implementation.
+The C API is declared in [include/undoc.h](include/undoc.h). Failures return `NULL` (or
+`-1`); call `undoc_last_error()` for the message and `undoc_last_error_kind()` for the
+`UndocErrorKind` classification.
 
 ---
 

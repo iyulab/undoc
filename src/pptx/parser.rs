@@ -2,7 +2,7 @@
 
 use crate::charts;
 use crate::container::OoxmlContainer;
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::model::{
     Block, Cell, Document, HeadingLevel, Metadata, Paragraph, Resource, ResourceType, RevisionType,
     Row, Section, Table, TextRun, TextStyle,
@@ -99,7 +99,7 @@ impl PptxParser {
                     }
                 }
                 Ok(quick_xml::events::Event::Eof) => break,
-                Err(e) => return Err(Error::XmlParse(e.to_string())),
+                Err(e) => return Err(e.into()),
                 _ => {}
             }
             buf.clear();
@@ -490,7 +490,7 @@ impl PptxParser {
                     }
                 }
                 Ok(quick_xml::events::Event::Eof) => break,
-                Err(e) => return Err(Error::XmlParse(e.to_string())),
+                Err(e) => return Err(e.into()),
                 _ => {}
             }
             buf.clear();
@@ -781,7 +781,7 @@ impl PptxParser {
                     }
                 }
                 Ok(quick_xml::events::Event::Eof) => break,
-                Err(e) => return Err(Error::XmlParse(e.to_string())),
+                Err(e) => return Err(e.into()),
                 _ => {}
             }
             buf.clear();
@@ -1067,7 +1067,7 @@ impl PptxParser {
                     }
                 }
                 Ok(quick_xml::events::Event::Eof) => break,
-                Err(e) => return Err(Error::XmlParse(e.to_string())),
+                Err(e) => return Err(e.into()),
                 _ => {}
             }
             buf.clear();
@@ -1251,7 +1251,7 @@ impl PptxParser {
                     }
                 }
                 Ok(quick_xml::events::Event::Eof) => break,
-                Err(e) => return Err(Error::XmlParse(e.to_string())),
+                Err(e) => return Err(e.into()),
                 _ => {}
             }
             buf.clear();
@@ -1555,6 +1555,7 @@ fn guess_mime_type(path: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::Error;
 
     #[test]
     fn test_open_pptx() {

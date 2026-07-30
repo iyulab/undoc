@@ -123,6 +123,11 @@ _lib.undoc_version.restype = ctypes.c_void_p
 _lib.undoc_last_error.argtypes = []
 _lib.undoc_last_error.restype = ctypes.c_void_p
 
+# Returns a raw int, not an enum: a newer native library may report a number this
+# build does not know, and it has to survive the trip rather than fail to convert.
+_lib.undoc_last_error_kind.argtypes = []
+_lib.undoc_last_error_kind.restype = ctypes.c_int
+
 _lib.undoc_parse_file.argtypes = [ctypes.c_char_p]
 _lib.undoc_parse_file.restype = ctypes.c_void_p
 

@@ -96,6 +96,46 @@ Console.WriteLine($"Resources: {doc.ResourceCount}");
 Console.WriteLine($"Library Version: {UndocDocument.Version}");
 ```
 
+### Handling Failures
+
+`UndocException.Kind` says *why* a call failed, so you can react to the reason instead of
+matching on message text:
+
+```csharp
+using Undoc;
+
+try
+{
+    using var doc = UndocDocument.ParseFile(path);
+    Console.WriteLine(doc.ToMarkdown());
+}
+catch (UndocException ex)
+{
+    switch (ex.Kind)
+    {
+        case UndocErrorKind.ZipArchive:
+            Console.Error.WriteLine("The file is damaged.");
+            break;
+        case UndocErrorKind.UnknownFormat:
+        case UndocErrorKind.UnsupportedFormat:
+            Console.Error.WriteLine("Not a supported Office document.");
+            break;
+        case UndocErrorKind.Encrypted:
+            Console.Error.WriteLine("The document is encrypted.");
+            break;
+        default:
+            // Also the right branch for a reason this build has no name for.
+            Console.Error.WriteLine($"Extraction failed ({ex.Kind}): {ex.Message}");
+            break;
+    }
+}
+```
+
+The numbers behind `UndocErrorKind` are a stable ABI contract: a new reason takes the next
+free number and existing ones are never renumbered. Always keep a `default` branch so an
+unrecognised value degrades to a generic failure rather than going unhandled. `Kind` is
+`Other` for failures raised by the wrapper itself, and never `None` (which means success).
+
 ## Supported Formats
 
 - **DOCX** - Microsoft Word documents

@@ -131,6 +131,10 @@ class FakeStringLibrary:
     def __init__(self):
         self._buffers = []
         self.freed = []
+        # What the native layer would report as the failure classification. Tests set
+        # this to stand in for a specific reason, including numbers this build has no
+        # name for.
+        self.last_error_kind = 5  # ZIP_ARCHIVE
 
     def _alloc(self, text: str) -> int:
         buf = ctypes.create_string_buffer(text.encode("utf-8"))
@@ -139,6 +143,9 @@ class FakeStringLibrary:
 
     def undoc_last_error(self):
         return self._alloc("Ошибка native")
+
+    def undoc_last_error_kind(self):
+        return self.last_error_kind
 
     def undoc_version(self):
         return self._alloc("1.2.3")
@@ -439,3 +446,88 @@ class TestFfiOwnershipAndUtf8:
             markdown = doc.to_markdown()
 
         assert "Привет из файла" in markdown
+
+
+class TestErrorKind:
+    """The classification channel: a caller must be able to branch on the reason."""
+
+    def test_kind_travels_with_the_error(self, monkeypatch):
+        fake_lib = FakeStringLibrary()
+        fake_lib.last_error_kind = int(undoc_module.ErrorKind.ZIP_ARCHIVE)
+        fake_lib.undoc_get_resource_ids = lambda _handle: 0
+        monkeypatch.setattr(undoc_module, "get_library", lambda: fake_lib)
+
+        doc = undoc_module.Undoc(123)
+
+        with pytest.raises(undoc_module.UndocError) as excinfo:
+            doc.get_resource_ids()
+
+        assert excinfo.value.kind is undoc_module.ErrorKind.ZIP_ARCHIVE
+
+    def test_unknown_kind_value_is_preserved_not_rejected(self, monkeypatch):
+        """Forward compatibility: a newer native library may report a reason this
+        build has no name for. It must arrive as a plain int, not raise ValueError."""
+        fake_lib = FakeStringLibrary()
+        fake_lib.last_error_kind = 9999
+        fake_lib.undoc_get_resource_ids = lambda _handle: 0
+        monkeypatch.setattr(undoc_module, "get_library", lambda: fake_lib)
+
+        doc = undoc_module.Undoc(123)
+
+        with pytest.raises(undoc_module.UndocError) as excinfo:
+            doc.get_resource_ids()
+
+        assert excinfo.value.kind == 9999
+        assert not isinstance(excinfo.value.kind, undoc_module.ErrorKind)
+
+    def test_unclassified_failure_is_other_never_none(self, monkeypatch):
+        """A failure the native layer left unclassified must not read as success."""
+        fake_lib = FakeStringLibrary()
+        fake_lib.last_error_kind = 0
+        fake_lib.undoc_get_resource_ids = lambda _handle: 0
+        monkeypatch.setattr(undoc_module, "get_library", lambda: fake_lib)
+
+        doc = undoc_module.Undoc(123)
+
+        with pytest.raises(undoc_module.UndocError) as excinfo:
+            doc.get_resource_ids()
+
+        assert excinfo.value.kind is undoc_module.ErrorKind.OTHER
+        assert excinfo.value.kind != undoc_module.ErrorKind.NONE
+
+    def test_error_raised_without_a_kind_defaults_to_other(self):
+        assert undoc_module.UndocError("wrapper-side").kind is undoc_module.ErrorKind.OTHER
+
+    def test_corrupted_archive_reports_zip_archive(self):
+        """End to end against the real library: a damaged container is recognisable
+        from the error alone, without reading its message."""
+        corrupted = b"PK\x03\x04" + b"truncated garbage with no central directory"
+
+        with pytest.raises(UndocError) as excinfo:
+            parse_bytes(corrupted)
+
+        assert excinfo.value.kind is undoc_module.ErrorKind.ZIP_ARCHIVE
+
+    def test_non_office_input_reports_unknown_format(self):
+        with pytest.raises(UndocError) as excinfo:
+            parse_bytes(b"not an office document at all")
+
+        assert excinfo.value.kind is undoc_module.ErrorKind.UNKNOWN_FORMAT
+
+    def test_distinct_failures_report_distinct_kinds(self):
+        with pytest.raises(UndocError) as damaged:
+            parse_bytes(b"PK\x03\x04garbage")
+        with pytest.raises(UndocError) as foreign:
+            parse_bytes(b"plain text file")
+
+        assert damaged.value.kind != foreign.value.kind
+
+    def test_discriminants_match_the_native_abi(self):
+        kinds = undoc_module.ErrorKind
+        assert (kinds.NONE, kinds.OTHER, kinds.IO) == (0, 1, 2)
+        assert (kinds.UNKNOWN_FORMAT, kinds.UNSUPPORTED_FORMAT) == (3, 4)
+        assert (kinds.ZIP_ARCHIVE, kinds.XML_PARSE, kinds.INVALID_DATA) == (5, 6, 7)
+        assert (kinds.MISSING_COMPONENT, kinds.ENCODING) == (8, 9)
+        assert (kinds.STYLE_NOT_FOUND, kinds.RESOURCE_NOT_FOUND) == (10, 11)
+        assert (kinds.ENCRYPTED, kinds.RENDER) == (12, 13)
+        assert (kinds.INVALID_ARGUMENT, kinds.PANIC, kinds.INVALID_OUTPUT) == (100, 101, 102)

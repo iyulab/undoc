@@ -11,9 +11,44 @@ namespace Undoc;
 public class UndocException : Exception
 {
     /// <summary>
+    /// Why the call failed — lets a caller branch on the reason (report a damaged file
+    /// on <see cref="UndocErrorKind.ZipArchive"/>, an unsupported input on
+    /// <see cref="UndocErrorKind.UnsupportedFormat"/>) without matching on
+    /// <see cref="Exception.Message"/>.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="UndocErrorKind.Other"/> when the failure did not come from the native
+    /// library and so carries no classification. Never
+    /// <see cref="UndocErrorKind.None"/>, which means success — a thrown exception is
+    /// not a success.
+    /// </remarks>
+    public UndocErrorKind Kind { get; }
+
+    /// <summary>
     /// Initialize an undoc exception with a native or wrapper error message.
     /// </summary>
-    public UndocException(string message) : base(message) { }
+    /// <param name="message">The error message.</param>
+    public UndocException(string message) : this(message, UndocErrorKind.Other) { }
+
+    /// <summary>
+    /// Initialize an undoc exception with a message and the reason the call failed.
+    /// </summary>
+    /// <param name="message">The error message.</param>
+    /// <param name="kind">Why the call failed.</param>
+    public UndocException(string message, UndocErrorKind kind) : base(message)
+    {
+        Kind = kind;
+    }
+
+    /// <summary>
+    /// Initialize an undoc exception with a message and an inner exception.
+    /// </summary>
+    /// <param name="message">The error message.</param>
+    /// <param name="innerException">The underlying exception.</param>
+    public UndocException(string message, Exception innerException) : base(message, innerException)
+    {
+        Kind = UndocErrorKind.Other;
+    }
 }
 
 /// <summary>
@@ -89,7 +124,7 @@ public class UndocDocument : IDisposable
 
         var handle = NativeMethods.undoc_parse_file(path);
         if (handle == IntPtr.Zero)
-            throw new UndocException($"Failed to parse {path}: {GetLastError()}");
+            throw NativeFailure($"Failed to parse {path}");
 
         return new UndocDocument(handle);
     }
@@ -108,7 +143,7 @@ public class UndocDocument : IDisposable
             Marshal.Copy(data, 0, dataPtr, data.Length);
             var handle = NativeMethods.undoc_parse_bytes(dataPtr, (UIntPtr)data.Length);
             if (handle == IntPtr.Zero)
-                throw new UndocException($"Failed to parse bytes: {GetLastError()}");
+                throw NativeFailure("Failed to parse bytes");
 
             return new UndocDocument(handle);
         }
@@ -129,7 +164,7 @@ public class UndocDocument : IDisposable
         uint flags = options?.ToFlags() ?? 0;
         var ptr = NativeMethods.undoc_to_markdown(_handle, flags);
         if (ptr == IntPtr.Zero)
-            throw new UndocException($"Failed to convert to markdown: {GetLastError()}");
+            throw NativeFailure("Failed to convert to markdown");
 
         return CopyAndFreeNativeUtf8String(ptr, NativeMethods.undoc_free_string);
     }
@@ -143,7 +178,7 @@ public class UndocDocument : IDisposable
         ThrowIfDisposed();
         var ptr = NativeMethods.undoc_to_text(_handle);
         if (ptr == IntPtr.Zero)
-            throw new UndocException($"Failed to convert to text: {GetLastError()}");
+            throw NativeFailure("Failed to convert to text");
 
         return CopyAndFreeNativeUtf8String(ptr, NativeMethods.undoc_free_string);
     }
@@ -159,7 +194,7 @@ public class UndocDocument : IDisposable
         int format = compact ? NativeMethods.UNDOC_JSON_COMPACT : NativeMethods.UNDOC_JSON_PRETTY;
         var ptr = NativeMethods.undoc_to_json(_handle, format);
         if (ptr == IntPtr.Zero)
-            throw new UndocException($"Failed to convert to JSON: {GetLastError()}");
+            throw NativeFailure("Failed to convert to JSON");
 
         return CopyAndFreeNativeUtf8String(ptr, NativeMethods.undoc_free_string);
     }
@@ -175,7 +210,7 @@ public class UndocDocument : IDisposable
         return CopyAndFreeRequiredNativeUtf8String(
             ptr,
             "Failed to get plain text",
-            GetLastError,
+            NativeFailure,
             NativeMethods.undoc_free_string);
     }
 
@@ -189,7 +224,7 @@ public class UndocDocument : IDisposable
             ThrowIfDisposed();
             var count = NativeMethods.undoc_section_count(_handle);
             if (count < 0)
-                throw new UndocException($"Failed to get section count: {GetLastError()}");
+                throw NativeFailure("Failed to get section count");
             return count;
         }
     }
@@ -204,7 +239,7 @@ public class UndocDocument : IDisposable
             ThrowIfDisposed();
             var count = NativeMethods.undoc_resource_count(_handle);
             if (count < 0)
-                throw new UndocException($"Failed to get resource count: {GetLastError()}");
+                throw NativeFailure("Failed to get resource count");
             return count;
         }
     }
@@ -249,7 +284,7 @@ public class UndocDocument : IDisposable
     {
         ThrowIfDisposed();
         var ptr = NativeMethods.undoc_get_resource_ids(_handle);
-        return ParseResourceIdsFromNativeJson(ptr, GetLastError, NativeMethods.undoc_free_string);
+        return ParseResourceIdsFromNativeJson(ptr, NativeFailure, NativeMethods.undoc_free_string);
     }
 
     /// <summary>
@@ -300,6 +335,32 @@ public class UndocDocument : IDisposable
         return PtrToStringUtf8(ptr);
     }
 
+    /// <summary>
+    /// Read the native classification of the last failure.
+    /// </summary>
+    /// <remarks>
+    /// An unrecognised number is passed through unchanged rather than folded into
+    /// <see cref="UndocErrorKind.Other"/>, so a newer native library stays usable and
+    /// the raw value survives in logs. Zero is the one value that cannot stand: we are
+    /// building a failure, and zero means success.
+    /// </remarks>
+    private static UndocErrorKind GetLastErrorKind()
+    {
+        var kind = NativeMethods.undoc_last_error_kind();
+        return kind == (int)UndocErrorKind.None ? UndocErrorKind.Other : (UndocErrorKind)kind;
+    }
+
+    /// <summary>
+    /// Build the exception for a failed native call, carrying both its message and its
+    /// classification.
+    /// </summary>
+    /// <remarks>
+    /// Every native failure goes through here so that no throw site can quietly drop
+    /// the classification and leave the caller with <see cref="UndocErrorKind.Other"/>.
+    /// </remarks>
+    internal static UndocException NativeFailure(string operation) =>
+        new UndocException($"{operation}: {GetLastError()}", GetLastErrorKind());
+
     internal static string CopyAndFreeNativeUtf8String(IntPtr ptr, Action<IntPtr> free)
     {
         if (ptr == IntPtr.Zero)
@@ -315,27 +376,33 @@ public class UndocDocument : IDisposable
         }
     }
 
+    /// <remarks>
+    /// Takes a factory that builds the whole exception rather than just its message, so
+    /// the failure classification travels with it — a message-only seam would silently
+    /// downgrade every failure routed through here to
+    /// <see cref="UndocErrorKind.Other"/>.
+    /// </remarks>
     internal static string CopyAndFreeRequiredNativeUtf8String(
         IntPtr ptr,
         string operation,
-        Func<string> getLastError,
+        Func<string, UndocException> nativeFailure,
         Action<IntPtr> free)
     {
         if (ptr == IntPtr.Zero)
-            throw new UndocException($"{operation}: {getLastError()}");
+            throw nativeFailure(operation);
 
         return CopyAndFreeNativeUtf8String(ptr, free);
     }
 
     internal static string[] ParseResourceIdsFromNativeJson(
         IntPtr ptr,
-        Func<string> getLastError,
+        Func<string, UndocException> nativeFailure,
         Action<IntPtr> free)
     {
         var json = CopyAndFreeRequiredNativeUtf8String(
             ptr,
             "Failed to get resource IDs",
-            getLastError,
+            nativeFailure,
             free);
         return JsonSerializer.Deserialize<string[]>(json) ?? Array.Empty<string>();
     }
