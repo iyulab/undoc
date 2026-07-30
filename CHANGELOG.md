@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **WebAssembly: every thrown error now carries its `kind`, not just the one from
+  `parse`.** 0.6.0 documented the property as part of the error contract, but the five
+  `OfficeDocument` methods (`fromBytes`, `toMarkdown`, `toText`, `toJson`, `metadata`)
+  still threw bare strings — so a caller who followed the documentation and branched on
+  `err.kind` got `undefined` from all but one entry point. All of them now throw a real
+  `Error` with the same numeric reason the C ABI reports. A failure to serialise metadata
+  is reported as `Render`, since producing output is rendering.
+
 ## [0.6.0] - 2026-07-30
 
 ### Added
