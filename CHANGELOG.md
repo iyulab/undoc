@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Cleanup deleted list items whose text was a number.** A leading dash was treated as
+  page-number decoration, so `- 5` and `- 2026` were removed as page furniture — while
+  `- 5 -`, which really is page decoration, survived. The two are now told apart by
+  symmetry: a dash on both sides is decoration, a dash on the left alone is a Markdown
+  list marker. Labelled (`Page 5`), trailing-decorated (`5 -`) and bare short numbers are
+  still removed.
+- **`preserve_frontmatter` now holds for the whole cleanup pipeline, not just one stage
+  of it.** It was passed only to the line filter, so the later stages still saw the
+  frontmatter: whitespace normalisation collapsed runs of spaces, which re-nests a YAML
+  block, and structure filtering could drop a single-character line. The block is now
+  detached before any stage runs and reattached afterwards, so no stage has to know
+  about it. An opening fence with no closing fence is not a block and is left in the body.
+- **The CLI update notification went to stdout, corrupting piped output.** `md`, `json`
+  and `text` emit document data on stdout, so the notification line landed in the middle
+  of it — `undoc json … | jq .` failed to parse. It now goes to stderr, where it still
+  appears in an interactive terminal.
 - **WebAssembly: every thrown error now carries its `kind`, not just the one from
   `parse`.** 0.6.0 documented the property as part of the error contract, but the five
   `OfficeDocument` methods (`fromBytes`, `toMarkdown`, `toText`, `toJson`, `metadata`)

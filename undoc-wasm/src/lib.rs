@@ -60,7 +60,9 @@ mod tests {
     /// message. That only holds if the property is actually there.
     #[wasm_bindgen_test]
     fn test_parse_error_carries_its_kind() {
-        let error = parse(b"garbage data").err().expect("garbage must not parse");
+        let error = parse(b"garbage data")
+            .err()
+            .expect("garbage must not parse");
         let kind = js_sys::Reflect::get(&error, &JsValue::from_str("kind"))
             .expect("a thrown error must expose kind");
 

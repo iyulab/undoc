@@ -8,7 +8,18 @@ use unicode_normalization::UnicodeNormalization;
 
 /// Clean text according to the provided options.
 pub fn clean_text(text: &str, options: &CleanupOptions) -> String {
-    let mut result = text.to_string();
+    // Frontmatter is detached before any stage runs and reattached afterwards, rather
+    // than being skipped stage by stage. YAML is whitespace-significant and its values
+    // are data, not prose: collapsing runs of spaces re-nests the document, and dropping
+    // single-character lines deletes a value. A stage that does not know about
+    // frontmatter cannot be trusted to leave it alone, so none of them see it.
+    let (frontmatter, body) = if options.preserve_frontmatter {
+        split_frontmatter(text)
+    } else {
+        (None, text)
+    };
+
+    let mut result = body.to_string();
 
     if options.normalize_strings {
         result = normalize_unicode(&result);
@@ -19,7 +30,7 @@ pub fn clean_text(text: &str, options: &CleanupOptions) -> String {
     }
 
     if options.clean_lines {
-        result = clean_lines(&result, options.preserve_frontmatter);
+        result = clean_lines(&result);
     }
 
     if options.filter_structure {
@@ -30,7 +41,29 @@ pub fn clean_text(text: &str, options: &CleanupOptions) -> String {
         result = final_normalize(&result);
     }
 
-    result
+    match frontmatter {
+        Some(frontmatter) => format!("{frontmatter}\n{result}"),
+        None => result,
+    }
+}
+
+/// Split a leading YAML frontmatter block off the text, if there is one.
+///
+/// Returns the block without its trailing newline and the remaining body. A document
+/// with no frontmatter — or with an unterminated opening fence, which is not a block —
+/// yields `None` and the original text.
+fn split_frontmatter(text: &str) -> (Option<&str>, &str) {
+    let Some(rest) = text.strip_prefix("---\n") else {
+        return (None, text);
+    };
+
+    // The closing fence is a line of its own, so search from a line boundary.
+    let Some(offset) = rest.find("\n---\n") else {
+        return (None, text);
+    };
+
+    let end = "---\n".len() + offset + "\n---".len();
+    (Some(&text[..end]), text[end..].trim_start_matches('\n'))
 }
 
 /// Normalize Unicode strings to NFC form and standardize common elements.
@@ -78,34 +111,18 @@ fn remove_private_use_area(text: &str) -> String {
 }
 
 /// Clean lines - remove headers, footers, page numbers, TOC markers.
-fn clean_lines(text: &str, preserve_frontmatter: bool) -> String {
-    let lines: Vec<&str> = text.lines().collect();
+///
+/// Frontmatter never reaches here: [`clean_text`] detaches it before any stage runs.
+fn clean_lines(text: &str) -> String {
     let mut result = Vec::new();
-    let mut in_frontmatter = false;
 
-    for (i, line) in lines.iter().enumerate() {
-        // Handle YAML frontmatter
-        if preserve_frontmatter {
-            if i == 0 && line.trim() == "---" {
-                in_frontmatter = true;
-                result.push(*line);
-                continue;
-            }
-            if in_frontmatter {
-                result.push(*line);
-                if line.trim() == "---" {
-                    in_frontmatter = false;
-                }
-                continue;
-            }
-        }
-
+    for line in text.lines() {
         // Skip likely header/footer patterns
         if should_skip_line(line) {
             continue;
         }
 
-        result.push(*line);
+        result.push(line);
     }
 
     result.join("\n")
@@ -139,25 +156,46 @@ fn should_skip_line(line: &str) -> bool {
 }
 
 /// Check if line is a page number.
+///
+/// A dash on the left is not evidence of one: in Markdown that is a list marker, so
+/// `- 5` is a list item whose text happens to be a number. Page decoration puts a dash
+/// on *both* sides (`- 5 -`), and that symmetry is what distinguishes the two.
 fn is_page_number(line: &str) -> bool {
-    // Simple page number patterns
-    let patterns = ["Page ", "page ", "- ", "— "];
+    fn is_number(s: &str) -> bool {
+        let s = s.trim();
+        !s.is_empty() && s.chars().all(|c| c.is_ascii_digit())
+    }
 
-    for pattern in patterns {
-        if let Some(rest) = line.strip_prefix(pattern) {
-            if rest.trim().chars().all(|c| c.is_ascii_digit()) {
+    // A labelled page number needs no decoration to be unambiguous.
+    for label in ["Page ", "page "] {
+        if let Some(rest) = line.strip_prefix(label) {
+            if is_number(rest) {
                 return true;
             }
         }
-        if let Some(rest) = line.strip_suffix(pattern.trim()) {
-            if rest.trim().chars().all(|c| c.is_ascii_digit()) {
+    }
+
+    for dash in ['-', '—'] {
+        // Symmetric decoration: "- 5 -". Asymmetric on the left is a list marker.
+        if let Some(inner) = line
+            .strip_prefix(dash)
+            .and_then(|rest| rest.strip_suffix(dash))
+        {
+            if is_number(inner) {
+                return true;
+            }
+        }
+
+        // Trailing decoration alone ("5 -") carries no list-marker meaning.
+        if let Some(rest) = line.strip_suffix(dash) {
+            if is_number(rest) {
                 return true;
             }
         }
     }
 
     // Just a number alone (potential page number)
-    if line.len() <= 5 && line.chars().all(|c| c.is_ascii_digit()) {
+    if line.len() <= 5 && is_number(line) {
         return true;
     }
 
@@ -342,17 +380,137 @@ mod tests {
     #[test]
     fn test_clean_lines_page_numbers() {
         let input = "Content here\nPage 1\nMore content\n15";
-        let result = clean_lines(input, false);
+        let result = clean_lines(input);
         assert!(!result.contains("Page 1"));
         assert!(!result.contains("\n15"));
     }
 
+    /// A leading dash is a Markdown list marker, so `- 5` is a list item whose text
+    /// happens to be a number — not page furniture. Page decoration puts a dash on
+    /// *both* sides, and that is the shape worth matching.
     #[test]
-    fn test_clean_lines_preserve_frontmatter() {
+    fn test_clean_lines_keeps_numeric_list_items() {
+        let input = "Intro\n- 5\n- 2026\n— 7\nOutro";
+        let result = clean_lines(input);
+
+        assert!(
+            result.contains("- 5"),
+            "a list item is not a page number: {result}"
+        );
+        assert!(
+            result.contains("- 2026"),
+            "a year is not a page number: {result}"
+        );
+        assert!(
+            result.contains("— 7"),
+            "an em-dash list marker is a marker: {result}"
+        );
+    }
+
+    /// The counterpart: decorated page numbers are still removed. Without this, "stop
+    /// deleting list items" could be read as "stop detecting page numbers".
+    #[test]
+    fn test_clean_lines_still_removes_decorated_page_numbers() {
+        let input = "Intro\n- 5 -\n— 7 —\nPage 12\n15\nOutro";
+        let result = clean_lines(input);
+
+        assert!(
+            !result.contains("- 5 -"),
+            "symmetric dashes are page decoration"
+        );
+        assert!(
+            !result.contains("— 7 —"),
+            "symmetric em dashes are page decoration"
+        );
+        assert!(
+            !result.contains("Page 12"),
+            "a labelled page number is page furniture"
+        );
+        assert!(
+            !result.contains("\n15"),
+            "a lone short number is page furniture"
+        );
+        assert!(result.contains("Intro") && result.contains("Outro"));
+    }
+
+    /// `preserve_frontmatter` has to hold for the whole pipeline, not one stage of it.
+    /// YAML is whitespace-significant, so a later stage that collapses runs of spaces
+    /// re-nests the document; one that drops single-character lines can delete a value.
+    #[test]
+    fn test_preserve_frontmatter_survives_every_stage() {
+        let options = CleanupOptions {
+            normalize_strings: true,
+            remove_pua: true,
+            clean_lines: true,
+            filter_structure: true,
+            final_normalize: true,
+            preserve_frontmatter: true,
+            ..Default::default()
+        };
+        let input =
+            "---\ntitle: Test\nnested:\n  key: value\n  list:\n    - one\n---\nBody text\nPage 1";
+        let result = clean_text(input, &options);
+
+        assert!(
+            result.contains("  key: value"),
+            "YAML indentation is significant and must survive: {result}"
+        );
+        assert!(
+            result.contains("    - one"),
+            "a nested list keeps its indentation: {result}"
+        );
+        assert!(
+            result.contains("Body text"),
+            "the body is still cleaned: {result}"
+        );
+        assert!(
+            !result.contains("Page 1"),
+            "cleanup still runs on the body: {result}"
+        );
+    }
+
+    #[test]
+    fn test_preserve_frontmatter() {
+        let options = CleanupOptions {
+            clean_lines: true,
+            preserve_frontmatter: true,
+            ..Default::default()
+        };
         let input = "---\ntitle: Test\n---\nContent\nPage 1";
-        let result = clean_lines(input, true);
+        let result = clean_text(input, &options);
         assert!(result.contains("title: Test"));
         assert!(!result.contains("Page 1"));
+    }
+
+    /// Without the option, frontmatter is just text — the stages see it like anything
+    /// else. Pinned so that detaching it never becomes unconditional by accident.
+    #[test]
+    fn test_frontmatter_is_not_preserved_when_not_asked_for() {
+        let options = CleanupOptions {
+            clean_lines: true,
+            preserve_frontmatter: false,
+            ..Default::default()
+        };
+        let input = "---\ntitle: Test\n---\nContent\nPage 1";
+        let result = clean_text(input, &options);
+        assert!(!result.contains("Page 1"));
+    }
+
+    /// An opening fence with no closing fence is not a frontmatter block, so it must not
+    /// swallow the document.
+    #[test]
+    fn test_unterminated_frontmatter_is_not_detached() {
+        let options = CleanupOptions {
+            clean_lines: true,
+            preserve_frontmatter: true,
+            ..Default::default()
+        };
+        let input = "---\ntitle: Test\nBody text";
+        let result = clean_text(input, &options);
+        assert!(
+            result.contains("Body text"),
+            "the body must survive: {result}"
+        );
     }
 
     #[test]
