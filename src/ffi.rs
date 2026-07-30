@@ -65,7 +65,7 @@
 //! }
 //! ```
 
-use std::ffi::{c_char, c_int, CStr, CString};
+use std::ffi::{c_char, c_int};
 use std::ptr;
 
 use uncore::ffi::{self, invalid_argument, FfiError, LastErrorSlot};
@@ -106,15 +106,17 @@ fn json_err(e: serde_json::Error) -> FfiError {
     (ErrorKind::Render as c_int, e.to_string())
 }
 
-/// Classify a non-UTF-8 string argument received across the ABI.
-fn utf8_err(e: std::str::Utf8Error) -> FfiError {
-    invalid_argument(e.to_string())
-}
+uncore::export_handle! {
+    /// Opaque handle to a parsed document.
+    handle UndocDocument { inner: Document },
 
-/// Opaque handle to a parsed document.
-#[repr(C)]
-pub struct UndocDocument {
-    inner: Document,
+    /// Free a document handle.
+    ///
+    /// # Safety
+    ///
+    /// - `doc` must be a valid pointer returned by `undoc_parse_file` or `undoc_parse_bytes`.
+    /// - After calling this function, the handle is invalid and must not be used.
+    free undoc_free_document,
 }
 
 /// Flags for markdown rendering.
@@ -147,13 +149,8 @@ pub extern "C" fn undoc_version() -> *const c_char {
 pub unsafe extern "C" fn undoc_parse_file(path: *const c_char) -> *mut UndocDocument {
     LAST_ERROR.with(|slot| slot.clear());
 
-    if path.is_null() {
-        LAST_ERROR.with(|slot| slot.set_error(&invalid_argument("path is null")));
-        return ptr::null_mut();
-    }
-
     let result: Result<*mut UndocDocument, FfiError> = ffi::catch(|| {
-        let path_str = CStr::from_ptr(path).to_str().map_err(utf8_err)?;
+        let path_str = uncore::with_c_str!(path)?;
 
         crate::parse_file(path_str)
             .map(|doc| Box::into_raw(Box::new(UndocDocument { inner: doc })))
@@ -202,37 +199,18 @@ pub unsafe extern "C" fn undoc_parse_bytes(data: *const u8, len: usize) -> *mut 
     }
 }
 
-/// Free a document handle.
-///
-/// # Safety
-///
-/// - `doc` must be a valid pointer returned by `undoc_parse_file` or `undoc_parse_bytes`.
-/// - After calling this function, the handle is invalid and must not be used.
-#[no_mangle]
-pub unsafe extern "C" fn undoc_free_document(doc: *mut UndocDocument) {
-    if !doc.is_null() {
-        let _ = Box::from_raw(doc);
-    }
-}
-
-/// Convert a document to Markdown.
-///
-/// # Safety
-///
-/// - `doc` must be a valid document handle.
-/// - `flags` is a bitwise OR of `UNDOC_FLAG_*` constants.
-/// - Returns null on error. Use `undoc_last_error` to get the error message.
-/// - The returned string must be freed with `undoc_free_string`.
-#[no_mangle]
-pub unsafe extern "C" fn undoc_to_markdown(doc: *const UndocDocument, flags: u32) -> *mut c_char {
-    LAST_ERROR.with(|slot| slot.clear());
-
-    if doc.is_null() {
-        LAST_ERROR.with(|slot| slot.set_error(&invalid_argument("document is null")));
-        return ptr::null_mut();
-    }
-
-    let result: Result<String, FfiError> = ffi::catch(|| {
+uncore::export_string_getter!(
+    /// Convert a document to Markdown.
+    ///
+    /// # Safety
+    ///
+    /// - `doc` must be a valid document handle.
+    /// - `flags` is a bitwise OR of `UNDOC_FLAG_*` constants.
+    /// - Returns null on error. Use `undoc_last_error` to get the error message.
+    /// - The returned string must be freed with `undoc_free_string`.
+    LAST_ERROR,
+    undoc_to_markdown(doc: UndocDocument, flags: u32),
+    {
         let document = &(*doc).inner;
 
         let mut options = RenderOptions::new();
@@ -248,78 +226,38 @@ pub unsafe extern "C" fn undoc_to_markdown(doc: *const UndocDocument, flags: u32
         }
 
         crate::render::to_markdown(document, &options).map_err(ffi_err)
-    });
-
-    match result {
-        Ok(md) => match CString::new(md) {
-            Ok(s) => s.into_raw(),
-            Err(_) => {
-                LAST_ERROR.with(|slot| slot.set_error(&ffi::invalid_output()));
-                ptr::null_mut()
-            }
-        },
-        Err(error) => {
-            LAST_ERROR.with(|slot| slot.set_error(&error));
-            ptr::null_mut()
-        }
     }
-}
+);
 
-/// Convert a document to plain text.
-///
-/// # Safety
-///
-/// - `doc` must be a valid document handle.
-/// - Returns null on error. Use `undoc_last_error` to get the error message.
-/// - The returned string must be freed with `undoc_free_string`.
-#[no_mangle]
-pub unsafe extern "C" fn undoc_to_text(doc: *const UndocDocument) -> *mut c_char {
-    LAST_ERROR.with(|slot| slot.clear());
-
-    if doc.is_null() {
-        LAST_ERROR.with(|slot| slot.set_error(&invalid_argument("document is null")));
-        return ptr::null_mut();
-    }
-
-    let result: Result<String, FfiError> = ffi::catch(|| {
+uncore::export_string_getter!(
+    /// Convert a document to plain text.
+    ///
+    /// # Safety
+    ///
+    /// - `doc` must be a valid document handle.
+    /// - Returns null on error. Use `undoc_last_error` to get the error message.
+    /// - The returned string must be freed with `undoc_free_string`.
+    LAST_ERROR,
+    undoc_to_text(doc: UndocDocument),
+    {
         let document = &(*doc).inner;
         let options = RenderOptions::default();
         crate::render::to_text(document, &options).map_err(ffi_err)
-    });
-
-    match result {
-        Ok(text) => match CString::new(text) {
-            Ok(s) => s.into_raw(),
-            Err(_) => {
-                LAST_ERROR.with(|slot| slot.set_error(&ffi::invalid_output()));
-                ptr::null_mut()
-            }
-        },
-        Err(error) => {
-            LAST_ERROR.with(|slot| slot.set_error(&error));
-            ptr::null_mut()
-        }
     }
-}
+);
 
-/// Convert a document to JSON.
-///
-/// # Safety
-///
-/// - `doc` must be a valid document handle.
-/// - `format` is one of `UNDOC_JSON_PRETTY` or `UNDOC_JSON_COMPACT`.
-/// - Returns null on error. Use `undoc_last_error` to get the error message.
-/// - The returned string must be freed with `undoc_free_string`.
-#[no_mangle]
-pub unsafe extern "C" fn undoc_to_json(doc: *const UndocDocument, format: c_int) -> *mut c_char {
-    LAST_ERROR.with(|slot| slot.clear());
-
-    if doc.is_null() {
-        LAST_ERROR.with(|slot| slot.set_error(&invalid_argument("document is null")));
-        return ptr::null_mut();
-    }
-
-    let result: Result<String, FfiError> = ffi::catch(|| {
+uncore::export_string_getter!(
+    /// Convert a document to JSON.
+    ///
+    /// # Safety
+    ///
+    /// - `doc` must be a valid document handle.
+    /// - `format` is one of `UNDOC_JSON_PRETTY` or `UNDOC_JSON_COMPACT`.
+    /// - Returns null on error. Use `undoc_last_error` to get the error message.
+    /// - The returned string must be freed with `undoc_free_string`.
+    LAST_ERROR,
+    undoc_to_json(doc: UndocDocument, format: c_int),
+    {
         let document = &(*doc).inner;
         let json_format = if format == UNDOC_JSON_COMPACT {
             JsonFormat::Compact
@@ -327,269 +265,144 @@ pub unsafe extern "C" fn undoc_to_json(doc: *const UndocDocument, format: c_int)
             JsonFormat::Pretty
         };
         crate::render::to_json(document, json_format).map_err(ffi_err)
-    });
-
-    match result {
-        Ok(json) => match CString::new(json) {
-            Ok(s) => s.into_raw(),
-            Err(_) => {
-                LAST_ERROR.with(|slot| slot.set_error(&ffi::invalid_output()));
-                ptr::null_mut()
-            }
-        },
-        Err(error) => {
-            LAST_ERROR.with(|slot| slot.set_error(&error));
-            ptr::null_mut()
-        }
     }
-}
+);
 
-/// Get the plain text content of a document.
-///
-/// # Safety
-///
-/// - `doc` must be a valid document handle.
-/// - Returns null on error; use `undoc_last_error` to get the error message.
-/// - A valid document with no text returns a non-null, empty (`""`) string.
-/// - The returned string must be freed with `undoc_free_string`.
-#[no_mangle]
-pub unsafe extern "C" fn undoc_plain_text(doc: *const UndocDocument) -> *mut c_char {
-    LAST_ERROR.with(|slot| slot.clear());
-
-    if doc.is_null() {
-        LAST_ERROR.with(|slot| slot.set_error(&invalid_argument("document is null")));
-        return ptr::null_mut();
-    }
-
-    let result: Result<String, FfiError> = ffi::catch(|| {
+uncore::export_string_getter!(
+    /// Get the plain text content of a document.
+    ///
+    /// # Safety
+    ///
+    /// - `doc` must be a valid document handle.
+    /// - Returns null on error; use `undoc_last_error` to get the error message.
+    /// - A valid document with no text returns a non-null, empty (`""`) string.
+    /// - The returned string must be freed with `undoc_free_string`.
+    LAST_ERROR,
+    undoc_plain_text(doc: UndocDocument),
+    {
         let document = &(*doc).inner;
         Ok(document.plain_text())
-    });
-
-    match result {
-        Ok(text) => match CString::new(text) {
-            Ok(s) => s.into_raw(),
-            Err(_) => {
-                LAST_ERROR.with(|slot| slot.set_error(&ffi::invalid_output()));
-                ptr::null_mut()
-            }
-        },
-        Err(error) => {
-            LAST_ERROR.with(|slot| slot.set_error(&error));
-            ptr::null_mut()
-        }
     }
-}
+);
 
-/// Get the number of sections in a document.
-///
-/// # Safety
-///
-/// - `doc` must be a valid document handle.
-/// - Returns -1 on error.
-#[no_mangle]
-pub unsafe extern "C" fn undoc_section_count(doc: *const UndocDocument) -> c_int {
-    LAST_ERROR.with(|slot| slot.clear());
-
-    if doc.is_null() {
-        LAST_ERROR.with(|slot| slot.set_error(&invalid_argument("document is null")));
-        return -1;
+uncore::export_count_getter!(
+    /// Get the number of sections in a document.
+    ///
+    /// # Safety
+    ///
+    /// - `doc` must be a valid document handle.
+    /// - Returns -1 on error.
+    LAST_ERROR,
+    undoc_section_count(doc: UndocDocument),
+    {
+        let document = &(*doc).inner;
+        Ok(document.sections.len() as c_int)
     }
+);
 
-    match ffi::catch(|| Ok((*doc).inner.sections.len() as c_int)) {
-        Ok(count) => count,
-        Err(error) => {
-            LAST_ERROR.with(|slot| slot.set_error(&error));
-            -1
-        }
+uncore::export_count_getter!(
+    /// Get the number of resources in a document.
+    ///
+    /// # Safety
+    ///
+    /// - `doc` must be a valid document handle.
+    /// - Returns -1 on error.
+    LAST_ERROR,
+    undoc_resource_count(doc: UndocDocument),
+    {
+        let document = &(*doc).inner;
+        Ok(document.resources.len() as c_int)
     }
-}
+);
 
-/// Get the number of resources in a document.
-///
-/// # Safety
-///
-/// - `doc` must be a valid document handle.
-/// - Returns -1 on error.
-#[no_mangle]
-pub unsafe extern "C" fn undoc_resource_count(doc: *const UndocDocument) -> c_int {
-    LAST_ERROR.with(|slot| slot.clear());
-
-    if doc.is_null() {
-        LAST_ERROR.with(|slot| slot.set_error(&invalid_argument("document is null")));
-        return -1;
+uncore::export_optional_string_getter!(
+    /// Get the document title.
+    ///
+    /// # Safety
+    ///
+    /// - `doc` must be a valid document handle.
+    /// - Returns null if no title is set — with `undoc_last_error_kind` left at
+    ///   `UNDOC_ERROR_NONE`, since an absent title is not a failure. A null return paired
+    ///   with a non-zero kind means the title could not be produced (for instance
+    ///   `UNDOC_ERROR_INVALID_OUTPUT` when it holds an interior NUL byte).
+    /// - The returned string must be freed with `undoc_free_string`.
+    LAST_ERROR,
+    undoc_get_title(doc: UndocDocument),
+    {
+        let document = &(*doc).inner;
+        Ok(document.metadata.title.clone())
     }
+);
 
-    match ffi::catch(|| Ok((*doc).inner.resources.len() as c_int)) {
-        Ok(count) => count,
-        Err(error) => {
-            LAST_ERROR.with(|slot| slot.set_error(&error));
-            -1
-        }
+uncore::export_optional_string_getter!(
+    /// Get the document author.
+    ///
+    /// # Safety
+    ///
+    /// - `doc` must be a valid document handle.
+    /// - Returns null if no author is set — with `undoc_last_error_kind` left at
+    ///   `UNDOC_ERROR_NONE`, since an absent author is not a failure. A null return paired
+    ///   with a non-zero kind means the author could not be produced (for instance
+    ///   `UNDOC_ERROR_INVALID_OUTPUT` when it holds an interior NUL byte).
+    /// - The returned string must be freed with `undoc_free_string`.
+    LAST_ERROR,
+    undoc_get_author(doc: UndocDocument),
+    {
+        let document = &(*doc).inner;
+        Ok(document.metadata.author.clone())
     }
-}
+);
 
-/// Get the document title.
-///
-/// # Safety
-///
-/// - `doc` must be a valid document handle.
-/// - Returns null if no title is set — with `undoc_last_error_kind` left at
-///   `UNDOC_ERROR_NONE`, since an absent title is not a failure. A null return paired
-///   with a non-zero kind means the title could not be produced (for instance
-///   `UNDOC_ERROR_INVALID_OUTPUT` when it holds an interior NUL byte).
-/// - The returned string must be freed with `undoc_free_string`.
-#[no_mangle]
-pub unsafe extern "C" fn undoc_get_title(doc: *const UndocDocument) -> *mut c_char {
-    LAST_ERROR.with(|slot| slot.clear());
+uncore::export_free_string!(
+    /// Free a string allocated by this library.
+    ///
+    /// # Safety
+    ///
+    /// - `s` must be a pointer returned by an undoc function, or null.
+    /// - After calling this function, the pointer is invalid and must not be used.
+    undoc_free_string
+);
 
-    if doc.is_null() {
-        LAST_ERROR.with(|slot| slot.set_error(&invalid_argument("document is null")));
-        return ptr::null_mut();
-    }
-
-    let result: Result<Option<CString>, FfiError> =
-        ffi::catch(|| match (*doc).inner.metadata.title.as_ref() {
-            Some(title) => CString::new(title.as_str())
-                .map(Some)
-                .map_err(|_| ffi::invalid_output()),
-            None => Ok(None),
-        });
-
-    match result {
-        Ok(Some(s)) => s.into_raw(),
-        Ok(None) => ptr::null_mut(),
-        Err(error) => {
-            LAST_ERROR.with(|slot| slot.set_error(&error));
-            ptr::null_mut()
-        }
-    }
-}
-
-/// Get the document author.
-///
-/// # Safety
-///
-/// - `doc` must be a valid document handle.
-/// - Returns null if no author is set — with `undoc_last_error_kind` left at
-///   `UNDOC_ERROR_NONE`, since an absent author is not a failure. A null return paired
-///   with a non-zero kind means the author could not be produced (for instance
-///   `UNDOC_ERROR_INVALID_OUTPUT` when it holds an interior NUL byte).
-/// - The returned string must be freed with `undoc_free_string`.
-#[no_mangle]
-pub unsafe extern "C" fn undoc_get_author(doc: *const UndocDocument) -> *mut c_char {
-    LAST_ERROR.with(|slot| slot.clear());
-
-    if doc.is_null() {
-        LAST_ERROR.with(|slot| slot.set_error(&invalid_argument("document is null")));
-        return ptr::null_mut();
-    }
-
-    let result: Result<Option<CString>, FfiError> =
-        ffi::catch(|| match (*doc).inner.metadata.author.as_ref() {
-            Some(author) => CString::new(author.as_str())
-                .map(Some)
-                .map_err(|_| ffi::invalid_output()),
-            None => Ok(None),
-        });
-
-    match result {
-        Ok(Some(s)) => s.into_raw(),
-        Ok(None) => ptr::null_mut(),
-        Err(error) => {
-            LAST_ERROR.with(|slot| slot.set_error(&error));
-            ptr::null_mut()
-        }
-    }
-}
-
-/// Free a string allocated by this library.
-///
-/// # Safety
-///
-/// - `s` must be a pointer returned by an undoc function, or null.
-/// - After calling this function, the pointer is invalid and must not be used.
-#[no_mangle]
-pub unsafe extern "C" fn undoc_free_string(s: *mut c_char) {
-    if !s.is_null() {
-        let _ = CString::from_raw(s);
-    }
-}
-
-/// Get all resource IDs as a JSON array.
-///
-/// # Safety
-///
-/// - `doc` must be a valid document handle.
-/// - Returns null on error. Use `undoc_last_error` to get the error message.
-/// - A valid document with no resources returns a non-null `"[]"` string.
-/// - The returned string must be freed with `undoc_free_string`.
-///
-/// # Returns
-///
-/// A JSON array of resource IDs, e.g., `["rId1", "rId2", "rId3"]`
-#[no_mangle]
-pub unsafe extern "C" fn undoc_get_resource_ids(doc: *const UndocDocument) -> *mut c_char {
-    LAST_ERROR.with(|slot| slot.clear());
-
-    if doc.is_null() {
-        LAST_ERROR.with(|slot| slot.set_error(&invalid_argument("document is null")));
-        return ptr::null_mut();
-    }
-
-    let result: Result<String, FfiError> = ffi::catch(|| {
+uncore::export_string_getter!(
+    /// Get all resource IDs as a JSON array.
+    ///
+    /// # Safety
+    ///
+    /// - `doc` must be a valid document handle.
+    /// - Returns null on error. Use `undoc_last_error` to get the error message.
+    /// - A valid document with no resources returns a non-null `"[]"` string.
+    /// - The returned string must be freed with `undoc_free_string`.
+    ///
+    /// # Returns
+    ///
+    /// A JSON array of resource IDs, e.g., `["rId1", "rId2", "rId3"]`
+    LAST_ERROR,
+    undoc_get_resource_ids(doc: UndocDocument),
+    {
         let document = &(*doc).inner;
         let ids: Vec<&String> = document.resources.keys().collect();
         serde_json::to_string(&ids).map_err(json_err)
-    });
-
-    match result {
-        Ok(json) => match CString::new(json) {
-            Ok(s) => s.into_raw(),
-            Err(_) => {
-                LAST_ERROR.with(|slot| slot.set_error(&ffi::invalid_output()));
-                ptr::null_mut()
-            }
-        },
-        Err(error) => {
-            LAST_ERROR.with(|slot| slot.set_error(&error));
-            ptr::null_mut()
-        }
     }
-}
+);
 
-/// Get resource metadata as JSON (without binary data).
-///
-/// # Safety
-///
-/// - `doc` must be a valid document handle.
-/// - `resource_id` must be a valid null-terminated UTF-8 string.
-/// - Returns null if resource not found or on error.
-/// - The returned string must be freed with `undoc_free_string`.
-///
-/// # Returns
-///
-/// JSON object with resource metadata:
-/// `{"id":"rId1","type":"image","filename":"image1.png","mime_type":"image/png","size":1024,"width":800,"height":600,"alt_text":"Description"}`
-#[no_mangle]
-pub unsafe extern "C" fn undoc_get_resource_info(
-    doc: *const UndocDocument,
-    resource_id: *const c_char,
-) -> *mut c_char {
-    LAST_ERROR.with(|slot| slot.clear());
-
-    if doc.is_null() {
-        LAST_ERROR.with(|slot| slot.set_error(&invalid_argument("document is null")));
-        return ptr::null_mut();
-    }
-
-    if resource_id.is_null() {
-        LAST_ERROR.with(|slot| slot.set_error(&invalid_argument("resource_id is null")));
-        return ptr::null_mut();
-    }
-
-    let result: Result<String, FfiError> = ffi::catch(|| {
-        let id_str = CStr::from_ptr(resource_id).to_str().map_err(utf8_err)?;
+uncore::export_string_getter!(
+    /// Get resource metadata as JSON (without binary data).
+    ///
+    /// # Safety
+    ///
+    /// - `doc` must be a valid document handle.
+    /// - `resource_id` must be a valid null-terminated UTF-8 string.
+    /// - Returns null if resource not found or on error.
+    /// - The returned string must be freed with `undoc_free_string`.
+    ///
+    /// # Returns
+    ///
+    /// JSON object with resource metadata:
+    /// `{"id":"rId1","type":"image","filename":"image1.png","mime_type":"image/png","size":1024,"width":800,"height":600,"alt_text":"Description"}`
+    LAST_ERROR,
+    undoc_get_resource_info(doc: UndocDocument, resource_id: *const c_char),
+    {
+        let id_str = uncore::with_c_str!(resource_id)?;
 
         let document = &(*doc).inner;
 
@@ -609,104 +422,49 @@ pub unsafe extern "C" fn undoc_get_resource_info(
             }
             None => Err(ffi_err(crate::Error::ResourceNotFound(id_str.to_string()))),
         }
-    });
-
-    match result {
-        Ok(json) => match CString::new(json) {
-            Ok(s) => s.into_raw(),
-            Err(_) => {
-                LAST_ERROR.with(|slot| slot.set_error(&ffi::invalid_output()));
-                ptr::null_mut()
-            }
-        },
-        Err(error) => {
-            LAST_ERROR.with(|slot| slot.set_error(&error));
-            ptr::null_mut()
-        }
     }
-}
+);
 
-/// Get resource binary data.
-///
-/// # Safety
-///
-/// - `doc` must be a valid document handle.
-/// - `resource_id` must be a valid null-terminated UTF-8 string.
-/// - `out_len` must be a valid pointer to receive the data length.
-/// - Returns null if resource not found or on error.
-/// - The returned pointer must be freed with `undoc_free_bytes`.
-#[no_mangle]
-pub unsafe extern "C" fn undoc_get_resource_data(
-    doc: *const UndocDocument,
-    resource_id: *const c_char,
-    out_len: *mut usize,
-) -> *mut u8 {
-    LAST_ERROR.with(|slot| slot.clear());
-
-    if doc.is_null() {
-        LAST_ERROR.with(|slot| slot.set_error(&invalid_argument("document is null")));
-        return ptr::null_mut();
-    }
-
-    if resource_id.is_null() {
-        LAST_ERROR.with(|slot| slot.set_error(&invalid_argument("resource_id is null")));
-        return ptr::null_mut();
-    }
-
-    if out_len.is_null() {
-        LAST_ERROR.with(|slot| slot.set_error(&invalid_argument("out_len is null")));
-        return ptr::null_mut();
-    }
-
-    let result: Result<(*mut u8, usize), FfiError> = ffi::catch(|| {
-        let id_str = CStr::from_ptr(resource_id).to_str().map_err(utf8_err)?;
+uncore::export_bytes_getter!(
+    /// Get resource binary data.
+    ///
+    /// # Safety
+    ///
+    /// - `doc` must be a valid document handle.
+    /// - `resource_id` must be a valid null-terminated UTF-8 string.
+    /// - `out_len` must be a valid pointer to receive the data length.
+    /// - Returns null if resource not found or on error.
+    /// - The returned pointer must be freed with `undoc_free_bytes`.
+    LAST_ERROR,
+    undoc_get_resource_data(doc: UndocDocument, resource_id, out out_len),
+    {
+        let id_str = uncore::ffi::c_str_utf8(resource_id)?;
 
         let document = &(*doc).inner;
 
         match document.resources.get(id_str) {
-            Some(resource) => {
-                let data = resource.data.clone();
-                let len = data.len();
-                let boxed = data.into_boxed_slice();
-                let ptr = Box::into_raw(boxed) as *mut u8;
-                Ok((ptr, len))
-            }
+            Some(resource) => Ok(resource.data.clone()),
             None => Err(ffi_err(crate::Error::ResourceNotFound(id_str.to_string()))),
         }
-    });
-
-    match result {
-        Ok((ptr, len)) => {
-            *out_len = len;
-            ptr
-        }
-        Err(error) => {
-            LAST_ERROR.with(|slot| slot.set_error(&error));
-            *out_len = 0;
-            ptr::null_mut()
-        }
     }
-}
+);
 
-/// Free binary data allocated by `undoc_get_resource_data`.
-///
-/// # Safety
-///
-/// - `data` must be a pointer returned by `undoc_get_resource_data`, or null.
-/// - `len` must be the length returned by `undoc_get_resource_data`.
-/// - After calling this function, the pointer is invalid and must not be used.
-#[no_mangle]
-pub unsafe extern "C" fn undoc_free_bytes(data: *mut u8, len: usize) {
-    if !data.is_null() && len > 0 {
-        let _ = Box::from_raw(std::ptr::slice_from_raw_parts_mut(data, len));
-    }
-}
+uncore::export_free_bytes!(
+    /// Free binary data allocated by `undoc_get_resource_data`.
+    ///
+    /// # Safety
+    ///
+    /// - `data` must be a pointer returned by `undoc_get_resource_data`, or null.
+    /// - `len` must be the length returned by `undoc_get_resource_data`.
+    /// - After calling this function, the pointer is invalid and must not be used.
+    undoc_free_bytes
+);
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::model::Document;
-    use std::ffi::CString;
+    use std::ffi::{CStr, CString};
     use std::path::Path;
 
     #[test]

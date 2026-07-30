@@ -1917,9 +1917,9 @@ checksum = "40ce102ab67701b8526c123c1bab5cbe42d7040ccfd0f64af1a385808d2f43de"
 
 [[package]]
 name = "uncore"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f92176b7addb1e89c8eb8a18dd775e337a2e1058e8c3e88bfbd24cabed5e8afb"
+checksum = "a7b3c5d5402af48b31a5631b055de44fe97ddede8f7876c36b2e6ea23e1dd503"
 
 [[package]]
 name = "undoc"
