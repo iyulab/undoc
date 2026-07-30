@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Internal: the FFI last-error/panic-guard plumbing now runs on the shared `uncore`
+  crate (thread-local slot, panic guard, boundary-reason helpers) instead of a
+  hand-rolled implementation duplicated across the `un*` extraction family. No
+  observable change — every `ErrorKind` discriminant, every exported C symbol's name
+  and signature, and every failure message stay exactly as they were.
+
 ## [0.6.0] - 2026-07-30
 
 ### Added

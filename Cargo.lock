@@ -1916,6 +1916,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40ce102ab67701b8526c123c1bab5cbe42d7040ccfd0f64af1a385808d2f43de"
 
 [[package]]
+name = "uncore"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f92176b7addb1e89c8eb8a18dd775e337a2e1058e8c3e88bfbd24cabed5e8afb"
+
+[[package]]
 name = "undoc"
 version = "0.6.0"
 dependencies = [
@@ -1927,6 +1933,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "uncore",
  "unicode-normalization",
  "unicode-width",
  "zip",
