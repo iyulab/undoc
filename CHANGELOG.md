@@ -7,7 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+- **`CleanupOptions::detect_mojibake`.** No stage ever read it, so a preset that set it
+  promised a behaviour that never ran. The `detect_mojibake()` function stays: it reports
+  what it finds and changes nothing, which is a diagnostic a caller invokes deliberately
+  rather than a pipeline option. Callers that set the field should drop it.
+
+### Changed
+- **`cleanup: None` now means no post-processing at all.** Blank-line collapsing used to run
+  regardless of the cleanup options, justified as lossless under CommonMark — true of the
+  rendered result, but not of the Markdown itself, which a consumer may diff, cite by line
+  number, or chunk for retrieval. Collapsing is part of whitespace normalization now and is
+  governed by the option that already covers it. Every preset enables that option, so
+  configured cleanup is unchanged; only `cleanup: None` output differs. This also makes
+  Markdown and text output follow the same policy, which they previously did not.
+
 ### Fixed
+- **Whitespace at a run boundary was rendered inside the markup wrapping the run.** A
+  document stores the space around a word in the runs themselves, so a trailing space
+  belongs *between* runs: inside the delimiters it becomes `[label ](url)`, where the space
+  sits within the link, or `**bold **`, which is not emphasis at all because CommonMark
+  refuses a closing delimiter preceded by whitespace. The markup now wraps the trimmed text
+  and the whitespace is emitted outside it. A run consisting only of whitespace is treated
+  as the separator it is, rather than being wrapped in delimiters around nothing.
+- **A thematic break could emit three consecutive newlines.** It prepended its own blank
+  line to a paragraph that already ended with one, and the unconditional collapsing pass
+  hid the result. The separator is now emitted to fit what precedes it.
 - **Nested lists were flattened by whitespace normalization.** The final cleanup stage
   collapsed every run of whitespace, including the indentation at the start of a line —
   and in Markdown that indentation is the only expression of list nesting, so sub-items
