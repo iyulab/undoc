@@ -188,11 +188,11 @@ fn render_section_impl(
             }
             Block::PageBreak => {
                 if options.emit_page_breaks {
-                    output.push_str("\n---\n\n");
+                    push_thematic_break(output);
                 }
             }
             Block::SectionBreak => {
-                output.push_str("\n---\n\n");
+                push_thematic_break(output);
             }
             Block::Image {
                 resource_id,
@@ -240,17 +240,27 @@ fn to_markdown_standard(doc: &Document, options: &RenderOptions) -> Result<Strin
         render_section_impl(section, i, doc.format, options, &resource_map, &mut output);
     }
 
-    let processed = if let Some(ref cleanup) = options.cleanup {
-        super::cleanup::clean_text(&output, cleanup)
-    } else {
-        output
+    Ok(finalize(output, options))
+}
+
+/// Finish a rendered document: apply the configured cleanup, if any.
+///
+/// `RenderOptions::cleanup == None` means no post-processing, and nothing here may quietly
+/// contradict that. Blank-line collapsing used to run unconditionally on the grounds that it
+/// is lossless under CommonMark. That holds for the *rendered* result, but not for the
+/// Markdown itself: a consumer diffing the output, citing it by line number, or chunking it
+/// for retrieval sees different text. Collapsing is part of cleanup's whitespace
+/// normalization now, which is also what makes Markdown and text output agree.
+///
+/// Trimming the document's own ends stays unconditional — those blank lines are the
+/// renderer's scaffolding between sections, not content it was given.
+fn finalize(output: String, options: &RenderOptions) -> String {
+    let processed = match options.cleanup {
+        Some(ref cleanup) => super::cleanup::clean_text(&output, cleanup),
+        None => output,
     };
 
-    let result = super::cleanup::collapse_blank_lines(&processed)
-        .trim()
-        .to_string();
-
-    Ok(result)
+    processed.trim().to_string()
 }
 
 /// Convert a Document to Markdown with sophisticated heading analysis.
@@ -336,11 +346,11 @@ fn to_markdown_with_analyzer(
                 }
                 Block::PageBreak => {
                     if options.emit_page_breaks {
-                        output.push_str("\n---\n\n");
+                        push_thematic_break(&mut output);
                     }
                 }
                 Block::SectionBreak => {
-                    output.push_str("\n---\n\n");
+                    push_thematic_break(&mut output);
                 }
                 Block::Image {
                     resource_id,
@@ -378,20 +388,7 @@ fn to_markdown_with_analyzer(
         }
     }
 
-    // Apply cleanup if configured
-    let processed = if let Some(ref cleanup) = options.cleanup {
-        super::cleanup::clean_text(&output, cleanup)
-    } else {
-        output
-    };
-
-    // Always collapse 3+ consecutive newlines into a single blank line.
-    // This is lossless: CommonMark renders multiple blank lines identically.
-    let result = super::cleanup::collapse_blank_lines(&processed)
-        .trim()
-        .to_string();
-
-    Ok(result)
+    Ok(finalize(output, options))
 }
 
 /// Render YAML frontmatter from document metadata.
@@ -646,48 +643,74 @@ struct RunContext {
 }
 
 /// Render a text run to Markdown.
+/// Append a thematic break, separated from what precedes it by exactly one blank line.
+///
+/// A block-level element cannot see what came before it, so prepending a newline
+/// unconditionally is a guess — and when the previous paragraph already ended with a blank
+/// line, that guess produced a run of three newlines which a later pass had to collapse.
+/// Normalizing the separator here means nothing downstream has to repair it.
+fn push_thematic_break(output: &mut String) {
+    while output.ends_with('\n') {
+        output.pop();
+    }
+    if !output.is_empty() {
+        output.push_str("\n\n");
+    }
+    output.push_str("---\n\n");
+}
+
+/// The break marker a run ends with, if the options ask for it.
+///
+/// A page break wins over a line break, and both are suffixes: they follow whatever the run
+/// rendered, including a run that rendered nothing at all.
+fn break_marker(run: &TextRun, options: &RenderOptions) -> &'static str {
+    if run.page_break && options.emit_page_breaks {
+        "\n\n---\n\n"
+    } else if run.line_break && options.preserve_line_breaks {
+        "  \n"
+    } else {
+        ""
+    }
+}
+
 fn render_run(run: &TextRun, options: &RenderOptions, ctx: RunContext) -> String {
     // Handle tracked changes based on revision_handling option
     match (&run.revision, &options.revision_handling) {
         // AcceptAll: show inserted text, hide deleted text
         (RevisionType::Deleted, RevisionHandling::AcceptAll) => {
-            // Return only break markers if present
-            if run.page_break && options.emit_page_breaks {
-                return "\n\n---\n\n".to_string();
-            } else if run.line_break && options.preserve_line_breaks {
-                return "  \n".to_string();
-            }
-            return String::new();
+            // Hidden text still yields its break marker, if any.
+            return break_marker(run, options).to_string();
         }
         // RejectAll: show deleted text, hide inserted text
         (RevisionType::Inserted, RevisionHandling::RejectAll) => {
-            // Return only break markers if present
-            if run.page_break && options.emit_page_breaks {
-                return "\n\n---\n\n".to_string();
-            } else if run.line_break && options.preserve_line_breaks {
-                return "  \n".to_string();
-            }
-            return String::new();
+            return break_marker(run, options).to_string();
         }
         // ShowMarkup or normal text: continue with rendering
         _ => {}
     }
 
-    // Handle empty runs with line/page breaks
-    if run.text.is_empty() {
-        if run.page_break && options.emit_page_breaks {
-            return "\n\n---\n\n".to_string();
-        } else if run.line_break && options.preserve_line_breaks {
-            return "  \n".to_string();
-        } else {
-            return String::new();
-        }
+    // A run with nothing to say — empty, or whitespace only — gets no markup: emphasis or a
+    // link wrapped around nothing produces delimiters with no content between them. Its
+    // whitespace is still emitted, because that whitespace is what separates its neighbours.
+    let core = run.text.trim();
+    if core.is_empty() {
+        return format!("{}{}", run.text, break_marker(run, options));
     }
 
+    // OOXML stores the whitespace around a word in the runs themselves — often in a run of
+    // its own, or flagged with `xml:space="preserve"`. That whitespace sits *between* runs,
+    // not inside the markup wrapping this one: `[label ](url)` puts the space inside the
+    // link, and `**bold **` is not emphasis at all, because CommonMark refuses a closing
+    // delimiter preceded by whitespace. So the markup goes around the trimmed text and the
+    // whitespace is re-emitted outside it.
+    let leading_len = run.text.len() - run.text.trim_start().len();
+    let leading = &run.text[..leading_len];
+    let trailing = &run.text[leading_len + core.len()..];
+
     let mut text = if options.escape_special_chars {
-        escape_markdown(&run.text, ctx.in_table_cell)
+        escape_markdown(core, ctx.in_table_cell)
     } else {
-        run.text.clone()
+        core.to_string()
     };
 
     // Apply formatting (innermost first)
@@ -734,14 +757,7 @@ fn render_run(run: &TextRun, options: &RenderOptions, ctx: RunContext) -> String
         _ => {}
     }
 
-    // Append page break (horizontal rule) or line break
-    if run.page_break && options.emit_page_breaks {
-        text.push_str("\n\n---\n\n");
-    } else if run.line_break && options.preserve_line_breaks {
-        text.push_str("  \n");
-    }
-
-    text
+    format!("{leading}{text}{trailing}{}", break_marker(run, options))
 }
 
 /// Escape Markdown special characters.
@@ -1528,12 +1544,42 @@ mod tests {
         assert!(md.contains("- Charlie\n\nAfter list."), "got {md:?}");
     }
 
+    /// `cleanup: None` has to mean no post-processing. Blank runs that the *document* asked
+    /// for are content — a consumer that diffs the output, cites it by line number, or
+    /// chunks it for retrieval is entitled to get them back unchanged.
+    #[test]
+    fn test_no_cleanup_leaves_document_blank_lines_alone() {
+        let mut doc = Document::new();
+        let mut section = Section::new(0);
+        // A paragraph holding nothing but a space is an ordinary artifact of authored
+        // documents, and it is the document's own vertical spacing — not the renderer's.
+        section.add_paragraph(Paragraph::with_text("First."));
+        section.add_paragraph(Paragraph::with_text(" "));
+        section.add_paragraph(Paragraph::with_text(" "));
+        section.add_paragraph(Paragraph::with_text("Second."));
+        doc.add_section(section);
+
+        let options = RenderOptions::lossless();
+        assert!(options.cleanup.is_none());
+        let raw = to_markdown(&doc, &options).unwrap();
+
+        let mut collapsing = RenderOptions::lossless();
+        collapsing.cleanup = Some(crate::render::options::CleanupOptions::minimal());
+        let cleaned = to_markdown(&doc, &collapsing).unwrap();
+
+        assert!(
+            raw.matches('\n').count() > cleaned.matches('\n').count(),
+            "cleanup must be the only thing that collapses blank lines\n  raw: {raw:?}\n  cleaned: {cleaned:?}"
+        );
+    }
+
     #[test]
     fn test_blank_lines_collapsed_without_cleanup() {
-        // A PageBreak after a paragraph naturally produces 3+ consecutive
-        // newlines because the paragraph trails with "\n\n" and the break
-        // prepends another "\n". The renderer must collapse this even when
-        // no cleanup pipeline is configured.
+        // A thematic break follows a paragraph that already ends with a blank line, so a
+        // break that prepends its own newline yields three in a row. The renderer emits the
+        // separator it actually needs instead, which is what lets this hold with no cleanup
+        // configured — repairing it afterwards would mean post-processing that `cleanup:
+        // None` promised not to do.
         let mut doc = Document::new();
         let mut section = Section::new(0);
         section.add_paragraph(Paragraph::with_text("Before break."));
@@ -1833,6 +1879,77 @@ mod tests {
         // Should contain both bold and plain text
         assert!(md.contains("**OS**"), "Expected bold OS, got: {}", md);
         assert!(md.contains("Linux"), "Expected Linux text, got: {}", md);
+    }
+
+    /// A run's trailing space separates it from the next run — it is not part of the link
+    /// label. Inside the brackets it renders in the wrong place and the raw Markdown reads
+    /// `](url)`, which downstream tokenizers see as one glued token.
+    #[test]
+    fn test_hyperlink_trailing_space_stays_outside_the_link() {
+        let mut para = Paragraph::new();
+        para.runs.push(TextRun {
+            text: "See the docs ".to_string(),
+            hyperlink: Some("https://example.com".to_string()),
+            ..Default::default()
+        });
+        para.runs.push(TextRun::plain("and continue"));
+
+        let md = render_paragraph(
+            &para,
+            &RenderOptions::default(),
+            None,
+            &empty_resource_map(),
+        );
+        assert_eq!(md, "[See the docs](https://example.com) and continue");
+    }
+
+    /// CommonMark refuses a closing emphasis delimiter that is preceded by whitespace, so
+    /// `**bold **` is not bold at all — the asterisks render literally.
+    #[test]
+    fn test_emphasis_trailing_space_stays_outside_the_delimiters() {
+        let mut para = Paragraph::new();
+        para.runs.push(TextRun {
+            text: "bold ".to_string(),
+            style: TextStyle {
+                bold: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        para.runs.push(TextRun::plain("after"));
+
+        let md = render_paragraph(
+            &para,
+            &RenderOptions::default(),
+            None,
+            &empty_resource_map(),
+        );
+        assert_eq!(md, "**bold** after");
+    }
+
+    /// A run that is only whitespace is the separator between its neighbours. Wrapping it in
+    /// markup would emit delimiters around nothing.
+    #[test]
+    fn test_whitespace_only_run_is_a_separator_not_content() {
+        let mut para = Paragraph::new();
+        para.runs.push(TextRun::plain("word"));
+        para.runs.push(TextRun {
+            text: " ".to_string(),
+            style: TextStyle {
+                bold: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        para.runs.push(TextRun::plain("next"));
+
+        let md = render_paragraph(
+            &para,
+            &RenderOptions::default(),
+            None,
+            &empty_resource_map(),
+        );
+        assert_eq!(md, "word next");
     }
 
     #[test]

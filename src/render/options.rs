@@ -46,9 +46,6 @@ pub struct CleanupOptions {
     /// Remove Private Use Area characters
     pub remove_pua: bool,
 
-    /// Detect and flag potential mojibake
-    pub detect_mojibake: bool,
-
     /// Preserve YAML frontmatter during cleanup
     pub preserve_frontmatter: bool,
 }
@@ -75,7 +72,6 @@ impl CleanupOptions {
                 filter_structure: true,
                 final_normalize: true,
                 remove_pua: true,
-                detect_mojibake: true,
                 preserve_frontmatter: true,
             },
         }

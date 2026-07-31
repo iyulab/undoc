@@ -39,6 +39,11 @@ pub fn clean_text(text: &str, options: &CleanupOptions) -> String {
 
     if options.final_normalize {
         result = final_normalize(&result);
+        // Runs of blank lines are whitespace like any other, so collapsing them belongs to
+        // whitespace normalization — and therefore to the option that governs it. It used to
+        // run outside the cleanup options entirely, which made `cleanup: None` mean
+        // "almost no post-processing" and gave Markdown and text output different policies.
+        result = collapse_blank_lines(&result);
     }
 
     match frontmatter {
@@ -338,8 +343,12 @@ fn final_normalize(text: &str) -> String {
     lines[start..=end].join("\n")
 }
 
-/// Detect potential mojibake patterns (for reporting, not fixing).
-#[allow(dead_code)]
+/// Detect potential mojibake patterns.
+///
+/// This reports what it finds and changes nothing: the patterns it recognises are
+/// ambiguous with legitimate text, so repairing them automatically would corrupt documents
+/// that were never mis-encoded. It is a diagnostic a caller invokes deliberately, which is
+/// why it is not a cleanup option — an option implies the pipeline acts on the result.
 pub fn detect_mojibake(text: &str) -> Vec<(usize, String)> {
     let mut issues = Vec::new();
 
@@ -463,7 +472,6 @@ mod tests {
             filter_structure: true,
             final_normalize: true,
             preserve_frontmatter: true,
-            ..Default::default()
         };
         let input =
             "---\ntitle: Test\nnested:\n  key: value\n  list:\n    - one\n---\nBody text\nPage 1";
@@ -600,7 +608,6 @@ mod tests {
             filter_structure: true,
             final_normalize: true,
             remove_pua: true,
-            detect_mojibake: false,
             preserve_frontmatter: true,
         };
 
@@ -624,7 +631,6 @@ mod tests {
             filter_structure: true,
             final_normalize: true,
             remove_pua: true,
-            detect_mojibake: false,
             preserve_frontmatter: true,
         };
 
