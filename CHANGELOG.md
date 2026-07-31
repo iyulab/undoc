@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-31
+
+### Upgrade notes
+
+`RenderOptions` with no cleanup configured no longer collapses blank lines — see **Changed**
+below. Output produced with a cleanup preset is unaffected. Rust callers that set
+`CleanupOptions::detect_mojibake` must drop the field; it never did anything.
+
 ### Removed
 - **`CleanupOptions::detect_mojibake`.** No stage ever read it, so a preset that set it
   promised a behaviour that never ran. The `detect_mojibake()` function stays: it reports
@@ -39,10 +47,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   came back out at the top level. The renderer emits two spaces per level for exactly this
   purpose, so cleanup was undoing it. Leading whitespace is now preserved; only trailing
   whitespace and runs inside a line are normalized.
-
-## [0.6.1] - 2026-07-31
-
-### Fixed
 - **Cleanup deleted list items whose text was a number.** A leading dash was treated as
   page-number decoration, so `- 5` and `- 2026` were removed as page furniture — while
   `- 5 -`, which really is page decoration, survived. The two are now told apart by
