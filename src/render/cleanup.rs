@@ -577,6 +577,38 @@ mod tests {
         assert_eq!(collapse_blank_lines(input), "A\nB\nC");
     }
 
+    /// Blank-line collapsing belongs to `final_normalize`, so options built by hand rather
+    /// than from a preset can now switch it off — where it used to run regardless. Every
+    /// shipped preset enables `final_normalize`, so preset-configured output is unchanged.
+    #[test]
+    fn test_blank_line_collapsing_follows_final_normalize() {
+        let input = "A
+
+
+
+
+B";
+
+        let collapsing = CleanupOptions {
+            final_normalize: true,
+            filter_structure: false,
+            ..Default::default()
+        };
+        assert_eq!(
+            clean_text(input, &collapsing),
+            "A
+
+B"
+        );
+
+        let untouched = CleanupOptions {
+            final_normalize: false,
+            filter_structure: false,
+            ..Default::default()
+        };
+        assert_eq!(clean_text(input, &untouched), input);
+    }
+
     #[test]
     fn test_final_normalize() {
         let input = "Multiple   spaces   here";

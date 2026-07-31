@@ -26,9 +26,12 @@ below. Output produced with a cleanup preset is unaffected. Rust callers that se
   regardless of the cleanup options, justified as lossless under CommonMark — true of the
   rendered result, but not of the Markdown itself, which a consumer may diff, cite by line
   number, or chunk for retrieval. Collapsing is part of whitespace normalization now and is
-  governed by the option that already covers it. Every preset enables that option, so
-  configured cleanup is unchanged; only `cleanup: None` output differs. This also makes
-  Markdown and text output follow the same policy, which they previously did not.
+  governed by `CleanupOptions::final_normalize`, which already covers whitespace. Every
+  shipped preset enables that option, so **preset-configured output is unchanged**. Two other
+  cases do change: `cleanup: None` no longer collapses anything, and `CleanupOptions` built by
+  hand with `final_normalize: false` no longer collapses either — previously it did, since the
+  pass ran outside the options entirely. This also makes Markdown and text output follow the
+  same policy, which they previously did not.
 
 ### Fixed
 - **Whitespace at a run boundary was rendered inside the markup wrapping the run.** A
