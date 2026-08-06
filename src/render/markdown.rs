@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use crate::detect::FormatType;
 use crate::error::Result;
 use crate::model::{
-    Block, CellAlignment, Document, HeadingLevel, Paragraph, RevisionType, Table, TextRun,
+    Block, Cell, CellAlignment, Document, HeadingLevel, Paragraph, RevisionType, Table, TextRun,
 };
 
 use super::heading_analyzer::{HeadingAnalyzer, HeadingDecision};
@@ -937,33 +937,38 @@ fn effective_cell_alignment(cell: &crate::model::Cell) -> CellAlignment {
 
 /// Get column alignments from the first data row (or first row if no data rows).
 /// Returns a vector of alignments for each column.
-fn get_column_alignments(table: &Table, col_count: usize) -> Vec<CellAlignment> {
-    // Try to get alignments from the first data row (non-header)
-    // If no data rows, use the first row
-    let source_row = table
-        .rows
-        .iter()
-        .find(|r| !r.is_header)
-        .or_else(|| table.rows.first());
+/// Column alignments for the separator row, read off the laid-out grid.
+///
+/// Taken from the grid rather than from a row's cell list so that a cell's alignment
+/// lands on the column it actually occupies: a vertical merge from an earlier row
+/// shifts a row's cells rightward, and counting cells would put every alignment after
+/// it one column early.
+fn get_column_alignments(
+    table: &Table,
+    grid: &[Vec<Option<&Cell>>],
+    col_count: usize,
+) -> Vec<CellAlignment> {
+    // Prefer the first data row (non-header); fall back to the first row.
+    let source = table.rows.iter().position(|r| !r.is_header).unwrap_or(0);
 
-    let mut alignments = Vec::with_capacity(col_count);
-
-    if let Some(row) = source_row {
-        for cell in &row.cells {
-            let alignment = effective_cell_alignment(cell);
-            // Add alignment for each column the cell spans
-            for _ in 0..cell.col_span {
-                alignments.push(alignment);
+    let mut alignments = vec![CellAlignment::Left; col_count];
+    if let Some(slots) = grid.get(source) {
+        for (col, slot) in slots.iter().enumerate().take(col_count) {
+            if let Some(cell) = slot {
+                alignments[col] = effective_cell_alignment(cell);
+            }
+        }
+        // A column covered by a merge takes the alignment of the cell covering it —
+        // otherwise a centred merged cell gets a left-aligned tail.
+        let mut carried = CellAlignment::Left;
+        for (col, slot) in slots.iter().enumerate().take(col_count) {
+            match slot {
+                Some(cell) => carried = effective_cell_alignment(cell),
+                None => alignments[col] = carried,
             }
         }
     }
 
-    // Fill remaining columns with Left alignment
-    while alignments.len() < col_count {
-        alignments.push(CellAlignment::Left);
-    }
-
-    alignments.truncate(col_count);
     alignments
 }
 
@@ -1076,7 +1081,7 @@ fn render_table(table: &Table, options: &RenderOptions, resource_map: &ResourceM
         if i == 0 {
             output.push('|');
             // Collect alignments from cells, filling with Left for missing columns
-            let alignments = get_column_alignments(table, col_count);
+            let alignments = get_column_alignments(table, &grid, col_count);
             for alignment in &alignments {
                 let separator = match alignment {
                     CellAlignment::Center => " :---: |",
