@@ -1,6 +1,6 @@
 [package]
 name = "undoc-wasm"
-version = "0.7.0"
+version = "0.8.0"
 edition = "2021"
 description = "High-performance Office document extraction to Markdown (WebAssembly)"
 repository = "https://github.com/iyulab/undoc"
