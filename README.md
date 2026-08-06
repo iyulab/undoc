@@ -16,6 +16,9 @@ A high-performance Rust library for extracting content from Microsoft Office doc
 - **Structure preservation**: Headings, lists, tables, inline formatting
 - **Smart heading detection**: Style-based heading recognition (English/Korean)
 - **Table cell alignment**: Proper left/center/right alignment in Markdown
+- **Merged cells keep their columns**: a merged cell renders at the column it starts in,
+  with the columns it covers left empty — so grouped/multi-row headers stay above their
+  own data instead of shifting
 - **PPTX table extraction**: Full table parsing from PowerPoint slides
 - **CJK text support**: Smart spacing for Korean, Chinese, Japanese content
 - **Asset extraction**: Images, charts, and embedded media with resolved paths (XLSX drawings included)
@@ -262,6 +265,8 @@ undoc markdown document.docx --cleanup standard -o cleaned.md
 
 # Table rendering options
 undoc markdown spreadsheet.xlsx --table-mode html -o output.md
+# `markdown` keeps a merged cell's column position but flattens the merge itself —
+# Markdown has no colspan. Use `html` when the merge has to survive.
 
 # Limit heading depth
 undoc markdown document.docx --max-heading 3 -o output.md
