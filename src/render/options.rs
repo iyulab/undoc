@@ -7,10 +7,17 @@ use super::heading_analyzer::HeadingConfig;
 /// How to render complex tables.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum TableFallback {
-    /// Use Markdown pipe tables (may break with merged cells)
+    /// Use Markdown pipe tables.
+    ///
+    /// Merged cells keep their columns: the value sits at the merge's first column and
+    /// the columns it covers render as empty cells. The merge itself is not expressible
+    /// in Markdown, so it is flattened — choose [`Self::Html`] to keep it.
     #[default]
     Markdown,
-    /// Fall back to HTML tables for complex layouts
+    /// Render tables as HTML when they contain a merge.
+    ///
+    /// Keeps `colspan`/`rowspan` rather than flattening them, at the cost of emitting
+    /// HTML into the Markdown. Tables without merges still render as pipe tables.
     Html,
     /// Use ASCII art tables
     Ascii,
