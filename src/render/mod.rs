@@ -22,6 +22,7 @@
 //! ```
 
 mod cleanup;
+mod grid;
 pub mod heading_analyzer;
 mod json;
 mod markdown;

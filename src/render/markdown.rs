@@ -1037,44 +1037,36 @@ fn render_table(table: &Table, options: &RenderOptions, resource_map: &ResourceM
     let mut output = String::new();
     let mut nested_tables: Vec<&Table> = Vec::new();
 
-    // Determine column count
-    let col_count = table.column_count();
+    // Merges are placed on a flat grid first. Markdown has no colspan/rowspan, so a
+    // merged cell must be anchored at the column it starts in with the columns it
+    // covers left empty — otherwise the row is narrower than the table and every
+    // value in it shifts out from under its heading.
+    let grid = super::grid::lay_out(table);
+    let col_count = grid.first().map_or(0, Vec::len);
     if col_count == 0 {
         return String::new();
     }
 
-    // Render rows
-    for (i, row) in table.rows.iter().enumerate() {
+    for (i, slots) in grid.iter().enumerate() {
         output.push('|');
-
-        // For header row, prepend placeholder columns if header has fewer cells than data
-        if i == 0 && row.cells.len() < col_count {
-            let missing_cols = col_count - row.cells.len();
-            for j in 0..missing_cols {
-                // Use "#" for first missing column (likely row number), empty for others
-                let placeholder = if j == 0 { "#" } else { "" };
-                output.push_str(&format!(" {} |", placeholder));
-            }
-        }
 
         // The first row is always rendered as a header row in markdown,
         // regardless of `row.is_header`. Treat it as a header cell for
         // emphasis-suppression purposes too.
-        let is_header_row = i == 0 || row.is_header;
-        for cell in &row.cells {
-            let text = render_cell_content(cell, options, resource_map, is_header_row);
-            output.push_str(&format!(" {} |", text));
+        let is_header_row = i == 0 || table.rows[i].is_header;
+        for slot in slots {
+            match slot {
+                Some(cell) => {
+                    let text = render_cell_content(cell, options, resource_map, is_header_row);
+                    output.push_str(&format!(" {} |", text));
 
-            // Collect nested tables for rendering after the main table
-            for nested in &cell.nested_tables {
-                nested_tables.push(nested);
-            }
-        }
-
-        // Pad data rows if they have fewer cells
-        if i > 0 {
-            for _ in row.cells.len()..col_count {
-                output.push_str(" |");
+                    // Collect nested tables for rendering after the main table
+                    for nested in &cell.nested_tables {
+                        nested_tables.push(nested);
+                    }
+                }
+                // A column covered by a merge, or one this row does not reach.
+                None => output.push_str("  |"),
             }
         }
         output.push('\n');

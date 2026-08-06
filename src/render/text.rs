@@ -148,42 +148,23 @@ fn render_table_text(table: &Table) -> String {
         return String::new();
     }
 
-    // Calculate column widths
-    let col_count = table.column_count();
+    // Merges are placed on a flat grid first — see `super::grid`. Without it a row of
+    // merged group labels is narrower than the table, and padding it at either end moves
+    // every value out from under its heading.
+    let grid = super::grid::lay_out(table);
+    let col_count = grid.first().map_or(0, Vec::len);
     if col_count == 0 {
         return String::new();
     }
 
-    // Check if header row has fewer cells than data rows
-    let header_missing = if let Some(first_row) = table.rows.first() {
-        if first_row.cells.len() < col_count {
-            col_count - first_row.cells.len()
-        } else {
-            0
-        }
-    } else {
-        0
-    };
-
     let mut widths: Vec<usize> = vec![0; col_count];
-
-    // Calculate widths accounting for header placeholders
-    // Use display width (unicode-width) instead of character count
-    for (row_idx, row) in table.rows.iter().enumerate() {
-        let offset = if row_idx == 0 { header_missing } else { 0 };
-        for (i, cell) in row.cells.iter().enumerate() {
-            let col_idx = i + offset;
-            if col_idx < col_count {
-                let text = cell_single_line_text(cell);
+    for slots in &grid {
+        for (col, slot) in slots.iter().enumerate() {
+            if let Some(cell) = slot {
                 // Use display width for correct CJK alignment
-                widths[col_idx] = widths[col_idx].max(text.width());
+                widths[col] = widths[col].max(cell_single_line_text(cell).width());
             }
         }
-    }
-
-    // Add width for header placeholders
-    if header_missing > 0 {
-        widths[0] = widths[0].max(1); // "#" placeholder
     }
 
     // Minimum width of 3 for readability
@@ -202,35 +183,17 @@ fn render_table_text(table: &Table) -> String {
     output.push('\n');
 
     // Rows
-    for (row_idx, row) in table.rows.iter().enumerate() {
+    for (row_idx, slots) in grid.iter().enumerate() {
         output.push('|');
 
-        // For header row, prepend placeholder columns
-        if row_idx == 0 && header_missing > 0 {
-            for (j, width) in widths.iter().take(header_missing).enumerate() {
-                let placeholder = if j == 0 { "#" } else { "" };
-                output.push_str(&format!(" {} |", pad_to_width(placeholder, *width)));
-            }
-        }
-
-        for (i, cell) in row.cells.iter().enumerate() {
-            let col_idx = if row_idx == 0 { i + header_missing } else { i };
-            if col_idx < col_count {
-                let text = cell_single_line_text(cell);
-                output.push_str(&format!(" {} |", pad_to_width(&text, widths[col_idx])));
-            }
-        }
-
-        // Pad data rows if they have fewer cells
-        if row_idx > 0 {
-            for width in widths.iter().take(col_count).skip(row.cells.len()) {
-                output.push_str(&format!(" {} |", pad_to_width("", *width)));
-            }
+        for (col, slot) in slots.iter().enumerate() {
+            let text = slot.map(cell_single_line_text).unwrap_or_default();
+            output.push_str(&format!(" {} |", pad_to_width(&text, widths[col])));
         }
         output.push('\n');
 
         // Separator after header row
-        if row_idx == 0 && row.is_header {
+        if row_idx == 0 && table.rows[row_idx].is_header {
             output.push('+');
             for w in &widths {
                 output.push_str(&"=".repeat(*w + 2));

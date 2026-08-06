@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Tables with merged cells kept their columns aligned.** A merged cell is now anchored
+  at the column it starts in, and the columns it covers render as empty cells — in both
+  the Markdown and the plain-text renderer.
+
+  Previously a row of merged group labels was narrower than the table (Markdown has no
+  colspan), and the renderer made up the difference by padding the *left* of the header
+  row while padding the *right* of data rows. Labels ended up under the wrong columns.
+  Vertical merges were not tracked at all, so rows below one started a column too far
+  left. Neither failure raised anything: the output was a well-formed table that said
+  something the document did not.
+
+- **No `#` is invented in a table's first column.** A short header row used to have a
+  literal `#` inserted as a stand-in row-number heading. It came from no cell in the
+  input, and it appeared in both renderers.
+
+**Output change.** Documents whose tables contain merged cells render differently — that
+is the fix. Tables without merges are unchanged. `TableFallback::Html` is unaffected and
+still available for callers that want merges expressed rather than flattened.
+
 ## [0.7.0] - 2026-07-31
 
 ### Upgrade notes
