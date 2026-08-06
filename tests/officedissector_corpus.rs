@@ -161,8 +161,11 @@ fn test_non_standard_namespace() {
     }
 }
 
+/// Ignored for this corpus file alone: its XML is truncated, so it cannot demonstrate a
+/// successful parse. The UTF-16 guarantee is pinned without a fixture in
+/// `utf16_xml_end_to_end_test.rs`.
 #[test]
-#[ignore = "Test file has truncated XML content - UTF-16 decoding works but XML is incomplete"]
+#[ignore = "this corpus file's XML is truncated; UTF-16 itself is covered by utf16_xml_end_to_end_test"]
 fn test_utf16_encoding() {
     let path = "test-files/officedissector/test/unit_test/testdocs/testutf16.docx";
     if test_file_exists(path) {
@@ -286,7 +289,9 @@ fn test_officedissector_full_corpus() {
     let expected_failures = [
         "badcrc.docx",    // Intentionally bad CRC
         "testascii.docx", // Non-standard encoding
-        "testutf16.docx", // UTF-16 not supported yet
+        // Decoded fine; this particular file's XML is truncated. UTF-16 support itself is
+        // covered without a fixture by `utf16_xml_end_to_end_test.rs`.
+        "testutf16.docx",
     ];
 
     fn scan_dir(

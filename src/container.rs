@@ -100,29 +100,41 @@ impl Relationships {
     }
 }
 
-/// Fix XML encoding declaration from UTF-16 to UTF-8.
+/// Restate the XML declaration's encoding as UTF-8 after a decode.
 ///
-/// When we decode UTF-16 XML to a Rust String (UTF-8), the XML declaration
-/// still says encoding="UTF-16". This causes quick-xml to fail when it tries
-/// to re-interpret the already-decoded UTF-8 string as UTF-16.
+/// Once the bytes have been decoded into a Rust `String` the content *is* UTF-8, so a
+/// declaration still naming the source encoding contradicts the string carrying it.
+/// Callers get the part as text and may re-serialize or re-read it; leaving the stale
+/// name in place hands them a document that describes itself wrongly.
+///
+/// Whatever the declared value was, it is no longer the truth — so the value is replaced
+/// rather than matched against a list of spellings (`UTF-16`, `utf-16le`, `UTF-16BE`, …).
 fn fix_xml_encoding_declaration(content: &str) -> String {
-    // Replace encoding="UTF-16" with encoding="UTF-8" in XML declaration
-    if content.starts_with("<?xml") {
-        if let Some(end_decl) = content.find("?>") {
-            let decl = &content[..end_decl + 2];
-            let rest = &content[end_decl + 2..];
-
-            // Replace UTF-16 with UTF-8 (case insensitive)
-            let fixed_decl = decl
-                .replace("encoding=\"UTF-16\"", "encoding=\"UTF-8\"")
-                .replace("encoding='UTF-16'", "encoding='UTF-8'")
-                .replace("encoding=\"utf-16\"", "encoding=\"UTF-8\"")
-                .replace("encoding='utf-16'", "encoding='UTF-8'");
-
-            return format!("{}{}", fixed_decl, rest);
-        }
+    if !content.starts_with("<?xml") {
+        return content.to_string();
     }
-    content.to_string()
+    let Some(end_decl) = content.find("?>") else {
+        return content.to_string();
+    };
+    let (decl, rest) = content.split_at(end_decl + 2);
+
+    let Some(value_start) = decl.find("encoding=") else {
+        return content.to_string();
+    };
+    let after = &decl[value_start + "encoding=".len()..];
+    let Some(quote) = after.chars().next().filter(|c| *c == '"' || *c == '\'') else {
+        return content.to_string();
+    };
+    let Some(value_len) = after[1..].find(quote) else {
+        return content.to_string();
+    };
+
+    format!(
+        "{}encoding={quote}UTF-8{quote}{}{}",
+        &decl[..value_start],
+        &after[1 + value_len + 1..],
+        rest
+    )
 }
 
 /// OOXML container abstraction over a ZIP archive.
@@ -140,12 +152,19 @@ pub struct OoxmlContainer {
 ///
 /// OOXML files are typically UTF-8 encoded, but some (especially older
 /// or non-standard documents) may use UTF-16 encoding.
+///
+/// A BOM decides the encoding outright. Without one, UTF-16 is detected *before* UTF-8 is
+/// attempted, because BOM-less UTF-16 of ASCII text is a valid UTF-8 byte sequence: every
+/// second byte is NUL, and NUL is a legal UTF-8 encoding of U+0000. Trying UTF-8 first
+/// would therefore succeed and yield a string whose element names are interleaved with
+/// NUL — no XML reader matches anything in it, and the part parses to nothing at all. The
+/// detection cannot misfire on real UTF-8 XML, since XML 1.0 forbids U+0000 in content.
 pub fn decode_xml_bytes(bytes: &[u8]) -> Result<String> {
     // Check for BOM (Byte Order Mark)
     if bytes.len() >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF {
         // UTF-8 BOM: EF BB BF - skip BOM and decode as UTF-8
         return String::from_utf8(bytes[3..].to_vec())
-            .map_err(|e| Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e)));
+            .map_err(|e| Error::Encoding(format!("UTF-8 XML part has invalid bytes: {e}")));
     }
 
     if bytes.len() >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE {
@@ -162,25 +181,20 @@ pub fn decode_xml_bytes(bytes: &[u8]) -> Result<String> {
         return Ok(fix_xml_encoding_declaration(&content));
     }
 
-    // No BOM - try UTF-8 first, then attempt UTF-16 detection
-    match String::from_utf8(bytes.to_vec()) {
-        Ok(s) => Ok(s),
-        Err(_) => {
-            // Try to detect UTF-16 by checking for common XML patterns
-            // UTF-16 LE typically has null bytes in odd positions for ASCII
-            if bytes.len() >= 4 && bytes[1] == 0 && bytes[3] == 0 {
-                let content = decode_utf16_le(bytes)?;
-                Ok(fix_xml_encoding_declaration(&content))
-            } else if bytes.len() >= 4 && bytes[0] == 0 && bytes[2] == 0 {
-                let content = decode_utf16_be(bytes)?;
-                Ok(fix_xml_encoding_declaration(&content))
-            } else {
-                Err(Error::Encoding(
-                    "XML part is not valid UTF-8 or UTF-16".to_string(),
-                ))
-            }
-        }
+    // No BOM. XML 1.0 requires one on UTF-16 entities, so this is already non-conformant
+    // input — but it is recoverable, and the NUL pattern says which half of the code unit
+    // holds the ASCII byte.
+    if bytes.len() >= 4 && bytes[1] == 0 && bytes[3] == 0 {
+        let content = decode_utf16_le(bytes)?;
+        return Ok(fix_xml_encoding_declaration(&content));
     }
+    if bytes.len() >= 4 && bytes[0] == 0 && bytes[2] == 0 {
+        let content = decode_utf16_be(bytes)?;
+        return Ok(fix_xml_encoding_declaration(&content));
+    }
+
+    String::from_utf8(bytes.to_vec())
+        .map_err(|_| Error::Encoding("XML part is not valid UTF-8 or UTF-16".to_string()))
 }
 
 /// Decode UTF-16 Little Endian bytes to String.
@@ -197,7 +211,7 @@ fn decode_utf16_le(bytes: &[u8]) -> Result<String> {
 
     char::decode_utf16(u16_iter)
         .collect::<std::result::Result<String, _>>()
-        .map_err(|e| Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))
+        .map_err(|e| Error::Encoding(format!("UTF-16 little-endian XML is malformed: {e}")))
 }
 
 /// Decode UTF-16 Big Endian bytes to String.
@@ -214,7 +228,7 @@ fn decode_utf16_be(bytes: &[u8]) -> Result<String> {
 
     char::decode_utf16(u16_iter)
         .collect::<std::result::Result<String, _>>()
-        .map_err(|e| Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))
+        .map_err(|e| Error::Encoding(format!("UTF-16 big-endian XML is malformed: {e}")))
 }
 
 impl OoxmlContainer {
@@ -969,6 +983,88 @@ mod tests {
         let err = decode_xml_bytes(cp1252_xml).unwrap_err();
 
         assert!(matches!(err, Error::Encoding(_)));
+    }
+
+    /// BOM-less UTF-16 of ASCII text is a *valid* UTF-8 byte sequence — every second byte
+    /// is NUL, which UTF-8 accepts as U+0000. Decoding it as UTF-8 therefore succeeds and
+    /// returns element names no reader can match, so the part parses to nothing without
+    /// an error. Detection has to come before the UTF-8 attempt, not after it fails.
+    #[test]
+    fn test_decode_xml_bytes_detects_bom_less_utf16_of_pure_ascii() {
+        let ascii = "<?xml version=\"1.0\"?><root>plain</root>";
+
+        let le: Vec<u8> = ascii.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        assert_eq!(
+            decode_xml_bytes(&le).expect("BOM-less UTF-16 LE must decode"),
+            ascii
+        );
+
+        let be: Vec<u8> = ascii.encode_utf16().flat_map(u16::to_be_bytes).collect();
+        assert_eq!(
+            decode_xml_bytes(&be).expect("BOM-less UTF-16 BE must decode"),
+            ascii
+        );
+    }
+
+    /// An encoding failure is an encoding failure at every entry point. Reporting some of
+    /// them as I/O sends consumers a discriminant that says the disk was at fault.
+    #[test]
+    fn test_encoding_failures_are_classified_as_encoding_everywhere() {
+        // A lone high surrogate: well-formed UTF-16 code units, not a valid scalar.
+        let mut lone_surrogate = vec![0xFF, 0xFE];
+        lone_surrogate.extend_from_slice(&0xD800u16.to_le_bytes());
+        lone_surrogate.extend_from_slice(&0x0041u16.to_le_bytes());
+        assert_eq!(
+            decode_xml_bytes(&lone_surrogate).unwrap_err().kind(),
+            crate::error::ErrorKind::Encoding
+        );
+
+        let mut lone_surrogate_be = vec![0xFE, 0xFF];
+        lone_surrogate_be.extend_from_slice(&0xD800u16.to_be_bytes());
+        lone_surrogate_be.extend_from_slice(&0x0041u16.to_be_bytes());
+        assert_eq!(
+            decode_xml_bytes(&lone_surrogate_be).unwrap_err().kind(),
+            crate::error::ErrorKind::Encoding
+        );
+
+        // UTF-8 BOM followed by bytes that are not UTF-8.
+        let bad_after_bom = b"\xEF\xBB\xBF<root>Caf\xe9</root>";
+        assert_eq!(
+            decode_xml_bytes(bad_after_bom).unwrap_err().kind(),
+            crate::error::ErrorKind::Encoding
+        );
+    }
+
+    /// After decoding, the string is UTF-8 whatever the declaration claimed — including
+    /// spellings a fixed list of literals would miss.
+    #[test]
+    fn test_decoded_part_declares_the_encoding_it_actually_has() {
+        for declared in ["UTF-16", "utf-16", "UTF-16LE", "utf-16be", "ISO-8859-1"] {
+            let xml = format!("<?xml version=\"1.0\" encoding=\"{declared}\"?><root/>");
+            let bytes: Vec<u8> = std::iter::once(0xFEFFu16)
+                .chain(xml.encode_utf16())
+                .flat_map(u16::to_le_bytes)
+                .collect();
+
+            let decoded = decode_xml_bytes(&bytes).expect("must decode");
+            assert_eq!(
+                decoded, "<?xml version=\"1.0\" encoding=\"UTF-8\"?><root/>",
+                "declared {declared} was left in place"
+            );
+        }
+    }
+
+    /// A declaration with no encoding attribute, and one with none at all, must come back
+    /// untouched rather than rewritten or dropped.
+    #[test]
+    fn test_declaration_without_an_encoding_is_left_alone() {
+        for xml in ["<?xml version=\"1.0\"?><root/>", "<root/>"] {
+            let bytes: Vec<u8> = std::iter::once(0xFEFFu16)
+                .chain(xml.encode_utf16())
+                .flat_map(u16::to_le_bytes)
+                .collect();
+            assert_eq!(decode_xml_bytes(&bytes).expect("must decode"), xml);
+        }
     }
 
     #[test]

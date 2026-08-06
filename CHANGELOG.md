@@ -35,6 +35,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   literal `#` inserted as a stand-in row-number heading. It came from no cell in the
   input, and it appeared in both renderers.
 
+- **A UTF-16 package holding only ASCII no longer parses to an empty document.** UTF-16
+  without a byte-order mark was detected only after decoding as UTF-8 had failed — but
+  UTF-16 of ASCII text *is* valid UTF-8 (every second byte is NUL, which UTF-8 accepts),
+  so the decode succeeded and produced element names interleaved with NUL. Nothing
+  matched, nothing failed, and the result was a document with no content. Encoding is now
+  determined before the UTF-8 attempt, which cannot misfire on real UTF-8 XML because
+  XML 1.0 forbids U+0000 in content.
+
+- **Encoding failures report `ErrorKind::Encoding` instead of `ErrorKind::Io`.** Invalid
+  bytes after a UTF-8 BOM, and malformed UTF-16 such as an unpaired surrogate, were
+  classified as I/O errors, telling callers the storage layer had failed when the content
+  was at fault. Odd-length UTF-16 already reported `Encoding`, so the same function
+  returned two different discriminants for the same class of problem. No discriminant
+  values changed.
+
+- **A decoded XML part declares the encoding it actually has.** After a UTF-16 part is
+  decoded the string is UTF-8, and the declaration is now restated to match regardless of
+  how the original encoding was spelled — `UTF-16LE` and `utf-16be` were previously left
+  in place by a fixed list of literals.
+
 **Output change.** Documents whose tables contain merged cells render differently — that
 is the fix. Tables without merges are unchanged. `TableFallback::Html` is unaffected and
 still available for callers that want merges expressed rather than flattened.
