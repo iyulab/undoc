@@ -20,6 +20,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   left. Neither failure raised anything: the output was a well-formed table that said
   something the document did not.
 
+- **The plain-text renderer no longer drops cells past its column count.** A row wider
+  than the table's computed width had its trailing cells discarded outright — silent
+  data loss, and only in `--format text`. The column count is now derived from what the
+  rows actually need, so there is nothing to drop.
+
+- **Table column alignments follow the column, not the cell index.** The separator row
+  read alignments by counting cells, which disagrees with the rendered columns whenever
+  a vertical merge shifts a row rightward — every alignment after the merge landed a
+  column early. Columns covered by a merge now take the covering cell's alignment
+  instead of falling back to left.
+
 - **No `#` is invented in a table's first column.** A short header row used to have a
   literal `#` inserted as a stand-in row-number heading. It came from no cell in the
   input, and it appeared in both renderers.
