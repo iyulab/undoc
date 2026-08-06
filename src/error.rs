@@ -352,23 +352,24 @@ mod tests {
         assert_eq!(err.kind(), ErrorKind::Render);
     }
 
-    /// The discriminants are a public ABI contract: they cross the C boundary as
-    /// `undoc_last_error_kind` values. Pinning every one of them here is what makes
-    /// an accidental renumbering a test failure instead of a silent consumer break.
-    #[test]
-    fn test_error_kind_discriminants_are_stable() {
-        assert_eq!(ErrorKind::Other as i32, 1);
-        assert_eq!(ErrorKind::Io as i32, 2);
-        assert_eq!(ErrorKind::UnknownFormat as i32, 3);
-        assert_eq!(ErrorKind::UnsupportedFormat as i32, 4);
-        assert_eq!(ErrorKind::ZipArchive as i32, 5);
-        assert_eq!(ErrorKind::XmlParse as i32, 6);
-        assert_eq!(ErrorKind::InvalidData as i32, 7);
-        assert_eq!(ErrorKind::MissingComponent as i32, 8);
-        assert_eq!(ErrorKind::Encoding as i32, 9);
-        assert_eq!(ErrorKind::StyleNotFound as i32, 10);
-        assert_eq!(ErrorKind::ResourceNotFound as i32, 11);
-        assert_eq!(ErrorKind::Encrypted as i32, 12);
-        assert_eq!(ErrorKind::Render as i32, 13);
+    // The discriminants are a public ABI contract: they cross the C boundary as
+    // `undoc_last_error_kind` values. Pinning every one of them here — via the same
+    // macro the sibling crates use — is what makes an accidental renumbering a test
+    // failure instead of a silent consumer break.
+    uncore::assert_stable_kinds! {
+        ErrorKind, test_error_kind_discriminants_are_stable,
+        Other = 1,
+        Io = 2,
+        UnknownFormat = 3,
+        UnsupportedFormat = 4,
+        ZipArchive = 5,
+        XmlParse = 6,
+        InvalidData = 7,
+        MissingComponent = 8,
+        Encoding = 9,
+        StyleNotFound = 10,
+        ResourceNotFound = 11,
+        Encrypted = 12,
+        Render = 13,
     }
 }
