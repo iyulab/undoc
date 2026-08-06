@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.8.0] - 2026-08-06
 
+### Upgrade notes
+
+- **Tables containing merged cells render differently** — that is the fix, see **Fixed**
+  below. Tables without merges are byte-for-byte unchanged, and `TableFallback::Html` is
+  unaffected.
+- **Some malformed input now reports `ErrorKind::Encoding` (9) where it reported
+  `ErrorKind::Io` (2)**: invalid bytes after a UTF-8 BOM, and malformed UTF-16. Callers
+  that branch on `kind` should check those branches. No discriminant value changed — only
+  which error maps to which existing kind.
+
 ### Fixed
 
 - **Tables with merged cells kept their columns aligned.** A merged cell is now anchored
@@ -35,6 +45,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   literal `#` inserted as a stand-in row-number heading. It came from no cell in the
   input, and it appeared in both renderers.
 
+  **Output change.** Documents whose tables contain merged cells render differently — that
+  is the fix. Tables without merges are unchanged. `TableFallback::Html` is unaffected and
+  still available for callers that want merges expressed rather than flattened.
+
 - **A UTF-16 package holding only ASCII no longer parses to an empty document.** UTF-16
   without a byte-order mark was detected only after decoding as UTF-8 had failed — but
   UTF-16 of ASCII text *is* valid UTF-8 (every second byte is NUL, which UTF-8 accepts),
@@ -54,10 +68,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   decoded the string is UTF-8, and the declaration is now restated to match regardless of
   how the original encoding was spelled — `UTF-16LE` and `utf-16be` were previously left
   in place by a fixed list of literals.
-
-**Output change.** Documents whose tables contain merged cells render differently — that
-is the fix. Tables without merges are unchanged. `TableFallback::Html` is unaffected and
-still available for callers that want merges expressed rather than flattened.
 
 ## [0.7.0] - 2026-07-31
 
