@@ -43,6 +43,11 @@ struct Cli {
     /// Apply text cleanup preset
     #[arg(long, global = true)]
     cleanup: Option<CleanupMode>,
+
+    /// Apply the markdown shape-refinement pass (table shape, list numbering,
+    /// link/image paths, frontmatter, section anchors)
+    #[arg(long, global = true)]
+    refine: bool,
 }
 
 #[derive(Subcommand)]
@@ -59,6 +64,11 @@ enum Commands {
         /// Apply text cleanup
         #[arg(long)]
         cleanup: Option<CleanupMode>,
+
+        /// Apply the markdown shape-refinement pass (table shape, list
+        /// numbering, link/image paths, frontmatter, section anchors)
+        #[arg(long)]
+        refine: bool,
 
         /// Output formats to produce (comma-separated: md,txt,json; default: md)
         #[arg(long, value_delimiter = ',', default_value = "md")]
@@ -119,6 +129,11 @@ enum Commands {
         #[arg(long)]
         cleanup: Option<CleanupMode>,
 
+        /// Apply the markdown shape-refinement pass (table shape, list
+        /// numbering, link/image paths, frontmatter, section anchors)
+        #[arg(long)]
+        refine: bool,
+
         /// Maximum heading level (1-6, default: 4)
         #[arg(long, default_value = "4")]
         max_heading: u8,
@@ -156,6 +171,11 @@ enum Commands {
         /// Apply text cleanup
         #[arg(long)]
         cleanup: Option<CleanupMode>,
+
+        /// Accepted for API consistency with other subcommands; has no
+        /// effect since plain text output is not markdown.
+        #[arg(long)]
+        refine: bool,
     },
 
     /// Convert a document to JSON
@@ -292,6 +312,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 input: &input,
                 output: cli.output.as_ref(),
                 cleanup: cli.cleanup,
+                refine: cli.refine,
                 formats: &[OutputFormat::Markdown],
                 no_images: false,
                 quiet: false,
@@ -313,6 +334,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             input,
             output,
             cleanup,
+            refine,
             formats,
             all,
             no_images,
@@ -343,6 +365,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 input: &input,
                 output: output.as_ref(),
                 cleanup,
+                refine,
                 formats: &resolved,
                 no_images,
                 quiet,
@@ -359,6 +382,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             frontmatter,
             table_mode,
             cleanup,
+            refine,
             max_heading,
             emit_page_breaks,
             include_headers_footers,
@@ -393,6 +417,9 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     options = options.with_cleanup_preset(preset);
                 }
             }
+            if refine {
+                options = options.with_refine();
+            }
 
             let markdown = undoc::render::to_markdown(&doc, &options)?;
 
@@ -412,6 +439,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             input,
             output,
             cleanup,
+            refine,
         } => {
             let pb = create_spinner("Parsing document...");
 
@@ -429,6 +457,11 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     options = options.with_cleanup_preset(preset);
                 }
             }
+
+            // Suppress unused variable warning - refine is accepted for API
+            // consistency; it is a markdown-shape pass and has nothing to do
+            // on plain text output.
+            let _ = refine;
 
             let text = undoc::render::to_text(&doc, &options)?;
 
@@ -568,6 +601,7 @@ struct ConvertParams<'a> {
     input: &'a PathBuf,
     output: Option<&'a PathBuf>,
     cleanup: Option<CleanupMode>,
+    refine: bool,
     formats: &'a [OutputFormat],
     no_images: bool,
     quiet: bool,
@@ -620,6 +654,9 @@ fn run_convert(p: ConvertParams<'_>) -> Result<(), Box<dyn std::error::Error>> {
         if let Some(preset) = mode.to_preset() {
             options = options.with_cleanup_preset(preset);
         }
+    }
+    if p.refine {
+        options = options.with_refine();
     }
 
     pb.set_message("Generating output...");

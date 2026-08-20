@@ -71,12 +71,20 @@ public class MarkdownOptions
     /// </summary>
     public bool ParagraphSpacing { get; set; } = false;
 
+    /// <summary>
+    /// Apply the lossless, idempotent markdown shape-refinement pass (table
+    /// shape, ordered-list numbering, link/image paths, frontmatter, section
+    /// anchors) after rendering. Default: <see langword="false"/>.
+    /// </summary>
+    public bool Refine { get; set; } = false;
+
     internal uint ToFlags()
     {
         uint flags = 0;
         if (IncludeFrontmatter) flags |= NativeMethods.UNDOC_FLAG_FRONTMATTER;
         if (EscapeSpecialChars) flags |= NativeMethods.UNDOC_FLAG_ESCAPE_SPECIAL;
         if (ParagraphSpacing) flags |= NativeMethods.UNDOC_FLAG_PARAGRAPH_SPACING;
+        if (Refine) flags |= NativeMethods.UNDOC_FLAG_REFINE;
         return flags;
     }
 }

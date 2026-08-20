@@ -20,12 +20,17 @@ rust-version = "1.87"
 crate-type = ["lib", "cdylib"]
 
 [features]
-default = ["docx", "xlsx", "pptx"]
+default = ["docx", "xlsx", "pptx", "refine"]
 docx = []
 xlsx = []
 pptx = []
 async = ["tokio"]
 ffi = []
+# Shape-refinement pass (RenderOptions.refine). Pulls in unrefine, and with
+# it a fresh pulldown-cmark + pulldown-cmark-to-cmark (undoc has no other use
+# for a CommonMark parser) -- measured +21.5% wasm bundle size. On by default
+# for native/CLI/FFI builds; undoc-wasm opts out via default-features=false.
+refine = ["dep:unrefine"]
 
 [dependencies]
 # ZIP handling — default-features disabled: lzma/bzip2/xz/zstd require C toolchain
@@ -56,6 +61,9 @@ uncore = "0.2"
 # Text processing
 unicode-normalization = "0.1"
 unicode-width = "0.2"
+
+# Lossless, idempotent markdown shape-refinement pass (RenderOptions.refine)
+unrefine = { version = "0.1", optional = true }
 
 # Optional: Async
 tokio = { version = "1.42", features = ["rt", "fs"], optional = true }

@@ -15,7 +15,8 @@ use std::path::{Path, PathBuf};
 use undoc::detect::FormatType;
 use undoc::model::{Document, Section};
 use undoc::render::{
-    render_section_to_string, to_json, to_markdown, to_text, JsonFormat, RenderOptions,
+    clean_text, refine, render_section_to_string, to_json, to_markdown, to_text, JsonFormat,
+    RenderOptions,
 };
 
 /// Output formats supported by the convert command.
@@ -268,6 +269,25 @@ impl StreamingWriter {
 
         if let (Some(mut md), Some(md_path)) = (self.md.take(), self.md_path.take()) {
             md.flush()?;
+            drop(md);
+            // The streaming renderer bypasses both cleanup and refine (neither
+            // is section-scoped: cleanup's line-frequency analysis and
+            // refine's table/anchor/frontmatter passes both need whole-
+            // document scope). Apply them now as a single read-modify-write
+            // pass on the completed file, mirroring the pattern unpdf's CLI
+            // already uses for cleanup.
+            if self.render_opts.cleanup.is_some() || self.render_opts.refine.is_some() {
+                let raw = std::fs::read_to_string(&md_path)?;
+                let cleaned = match self.render_opts.cleanup {
+                    Some(ref cleanup) => clean_text(&raw, cleanup),
+                    None => raw,
+                };
+                let refined = match self.render_opts.refine {
+                    Some(ref refine_options) => refine(&cleaned, refine_options),
+                    None => cleaned,
+                };
+                std::fs::write(&md_path, refined)?;
+            }
             summary.md_path = Some(md_path);
         }
 

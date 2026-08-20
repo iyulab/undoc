@@ -238,6 +238,11 @@ class TestConversion:
         md = sample_docx.to_markdown(frontmatter=True)
         assert "---" in md
 
+    def test_to_markdown_with_refine(self, sample_docx):
+        md = sample_docx.to_markdown(refine=True)
+        assert isinstance(md, str)
+        assert len(md) > 0
+
     def test_to_text(self, sample_docx):
         text = sample_docx.to_text()
         assert isinstance(text, str)

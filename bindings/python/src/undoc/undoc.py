@@ -10,6 +10,7 @@ from ._native import (
     UNDOC_FLAG_FRONTMATTER,
     UNDOC_FLAG_ESCAPE_SPECIAL,
     UNDOC_FLAG_PARAGRAPH_SPACING,
+    UNDOC_FLAG_REFINE,
     UNDOC_JSON_PRETTY,
     UNDOC_JSON_COMPACT,
 )
@@ -206,6 +207,7 @@ class Undoc:
         frontmatter: bool = False,
         escape_special: bool = False,
         paragraph_spacing: bool = False,
+        refine: bool = False,
     ) -> str:
         """Convert document to Markdown.
 
@@ -213,6 +215,9 @@ class Undoc:
             frontmatter: Include YAML frontmatter with metadata
             escape_special: Escape special Markdown characters
             paragraph_spacing: Add extra spacing between paragraphs
+            refine: Apply the lossless, idempotent markdown shape-refinement
+                pass (table shape, ordered-list numbering, link/image paths,
+                frontmatter, section anchors) after rendering
 
         Returns:
             Markdown string
@@ -227,6 +232,8 @@ class Undoc:
             flags |= UNDOC_FLAG_ESCAPE_SPECIAL
         if paragraph_spacing:
             flags |= UNDOC_FLAG_PARAGRAPH_SPACING
+        if refine:
+            flags |= UNDOC_FLAG_REFINE
 
         result = self._lib.undoc_to_markdown(self._handle, flags)
         if not result:

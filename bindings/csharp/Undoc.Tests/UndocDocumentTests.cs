@@ -12,6 +12,14 @@ public class BasicTests
     {
         var opts = new MarkdownOptions();
         Assert.False(opts.IncludeFrontmatter);
+        Assert.False(opts.Refine);
+    }
+
+    [Fact]
+    public void MarkdownOptions_RefineIsSettable()
+    {
+        var opts = new MarkdownOptions { Refine = true };
+        Assert.True(opts.Refine);
     }
 }
 

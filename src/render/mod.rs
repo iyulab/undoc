@@ -40,3 +40,5 @@ pub use options::{
 };
 pub use style_mapping::StyleMapping;
 pub use text::to_text;
+#[cfg(feature = "refine")]
+pub use unrefine::{refine, RefineOptions};

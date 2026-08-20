@@ -140,6 +140,18 @@ pub struct RenderOptions {
     /// Cleanup options (None = no cleanup)
     pub cleanup: Option<CleanupOptions>,
 
+    /// Shape-refinement pass ([`unrefine::refine`]) applied after cleanup.
+    /// Lossless and idempotent — normalizes table shape, ordered-list
+    /// numbering, link/image paths, frontmatter, and section anchors without
+    /// deleting any visible text. If `None` (the default), no refinement is
+    /// performed and output is unchanged from pre-`refine` behavior.
+    ///
+    /// Gated behind the `refine` feature (default-on) because it pulls in a
+    /// fresh `pulldown-cmark`/`pulldown-cmark-to-cmark` -- measured +21.5%
+    /// wasm bundle size, unlike unhwp/unpdf which already carry that pair.
+    #[cfg(feature = "refine")]
+    pub refine: Option<unrefine::RefineOptions>,
+
     /// Heading analysis configuration.
     /// When set, enables sophisticated heading detection with multi-priority analysis.
     pub heading_config: Option<HeadingConfig>,
@@ -216,6 +228,8 @@ impl Default for RenderOptions {
             paragraph_spacing: true,
             escape_special_chars: true,
             cleanup: None,
+            #[cfg(feature = "refine")]
+            refine: None,
             heading_config: None,
             revision_handling: RevisionHandling::AcceptAll,
             strip_redundant_emphasis_in_headings: true,
@@ -260,6 +274,13 @@ impl RenderOptions {
     /// Enable cleanup with default options.
     pub fn with_cleanup(mut self) -> Self {
         self.cleanup = Some(CleanupOptions::standard());
+        self
+    }
+
+    /// Enable the shape-refinement pass with default options.
+    #[cfg(feature = "refine")]
+    pub fn with_refine(mut self) -> Self {
+        self.refine = Some(unrefine::RefineOptions::default());
         self
     }
 

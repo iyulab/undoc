@@ -123,6 +123,7 @@ uncore::export_handle! {
 pub const UNDOC_FLAG_FRONTMATTER: u32 = 1;
 pub const UNDOC_FLAG_ESCAPE_SPECIAL: u32 = 2;
 pub const UNDOC_FLAG_PARAGRAPH_SPACING: u32 = 4;
+pub const UNDOC_FLAG_REFINE: u32 = 8;
 
 /// JSON format options.
 pub const UNDOC_JSON_PRETTY: c_int = 0;
@@ -223,6 +224,10 @@ uncore::export_string_getter!(
         }
         if flags & UNDOC_FLAG_PARAGRAPH_SPACING != 0 {
             options.paragraph_spacing = true;
+        }
+        #[cfg(feature = "refine")]
+        if flags & UNDOC_FLAG_REFINE != 0 {
+            options = options.with_refine();
         }
 
         crate::render::to_markdown(document, &options).map_err(ffi_err)

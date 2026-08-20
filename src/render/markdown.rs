@@ -282,7 +282,15 @@ fn finalize(output: String, options: &RenderOptions) -> String {
         None => output,
     };
 
-    processed.trim().to_string()
+    let trimmed = processed.trim().to_string();
+
+    #[cfg(feature = "refine")]
+    let trimmed = match options.refine {
+        Some(ref refine_options) => unrefine::refine(&trimmed, refine_options),
+        None => trimmed,
+    };
+
+    trimmed
 }
 
 /// Convert a Document to Markdown with sophisticated heading analysis.
@@ -1325,6 +1333,56 @@ mod tests {
             md.contains("[doc](<a\\<b\\>c d>)"),
             "angle brackets not backslash-escaped: {md:?}"
         );
+    }
+
+    /// `RenderOptions::default()` leaves `refine` off — the last line of
+    /// defense protecting deployed consumers. A backslash-separated
+    /// hyperlink path is exactly the kind of value `unrefine`'s link
+    /// normalization pass would touch, so its survival here proves refine
+    /// did not run.
+    #[cfg(feature = "refine")]
+    #[test]
+    fn test_refine_off_by_default_leaves_backslash_link_paths_untouched() {
+        let mut doc = Document::new();
+        let mut section = Section::new(0);
+        let mut para = Paragraph::new();
+        para.runs
+            .push(TextRun::link("doc", "sub\\folder\\file.docx"));
+        section.add_block(Block::Paragraph(para));
+        doc.sections.push(section);
+
+        let options = RenderOptions::default();
+        assert!(options.refine.is_none());
+
+        let md = to_markdown(&doc, &options).unwrap();
+        assert!(
+            md.contains("sub\\folder\\file.docx"),
+            "refine must not run when RenderOptions::default() leaves it off: {md:?}"
+        );
+    }
+
+    /// `finalize()` wires `RenderOptions.refine` into `unrefine::refine`
+    /// after cleanup — this exercises that wiring end to end, not
+    /// `unrefine`'s own pass logic (that's `unrefine`'s test suite).
+    #[cfg(feature = "refine")]
+    #[test]
+    fn test_refine_on_normalizes_backslash_link_paths() {
+        let mut doc = Document::new();
+        let mut section = Section::new(0);
+        let mut para = Paragraph::new();
+        para.runs
+            .push(TextRun::link("doc", "sub\\folder\\file.docx"));
+        section.add_block(Block::Paragraph(para));
+        doc.sections.push(section);
+
+        let options = RenderOptions::default().with_refine();
+        let md = to_markdown(&doc, &options).unwrap();
+
+        assert!(
+            md.contains("sub/folder/file.docx"),
+            "refine should normalize backslashes to forward slashes: {md:?}"
+        );
+        assert!(!md.contains('\\'), "no backslash should remain: {md:?}");
     }
 
     #[test]

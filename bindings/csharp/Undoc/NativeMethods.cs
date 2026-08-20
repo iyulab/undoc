@@ -203,6 +203,7 @@ internal static class NativeMethods
     public const uint UNDOC_FLAG_FRONTMATTER = 1;
     public const uint UNDOC_FLAG_ESCAPE_SPECIAL = 2;
     public const uint UNDOC_FLAG_PARAGRAPH_SPACING = 4;
+    public const uint UNDOC_FLAG_REFINE = 8;
 
     // JSON format options
     public const int UNDOC_JSON_PRETTY = 0;
