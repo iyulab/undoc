@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.1] - 2026-08-20
+
+### Fixed
+
+- A hyperlink or image destination containing a space is now wrapped in `<...>` —
+  previously a raw space produced Markdown that is not valid CommonMark outside
+  `<...>` at all, so a downstream consumer read the literal brackets and
+  parentheses as text instead of a link. A destination containing a literal `<`
+  or `>` is now backslash-escaped rather than percent-encoded, so the escaped
+  target still resolves to the original path.
+
 ## [0.8.0] - 2026-08-06
 
 ### Upgrade notes
