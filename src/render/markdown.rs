@@ -103,7 +103,22 @@ fn resolve_image_path(resource_id: &str, resource_map: &ResourceMap, prefix: &st
         .get(resource_id)
         .cloned()
         .unwrap_or_else(|| resource_id.to_string());
-    format!("{}{}", prefix, filename)
+    format_link_destination(&format!("{}{}", prefix, filename))
+}
+
+/// Format a link/image destination for `[text](destination)` syntax, wrapping it in
+/// `<...>` when it contains a character CommonMark's bare-parenthesis destination form
+/// forbids. A destination with a raw space is not valid CommonMark outside `<...>` at
+/// all -- `pulldown-cmark` does not even produce a `Link`/`Image` event for it, so a
+/// consumer sees the brackets as literal text instead of a link. A hyperlink target or
+/// an `image_path_prefix`-built path can legitimately contain a space (a local file
+/// path, for instance).
+fn format_link_destination(url: &str) -> String {
+    if url.contains(' ') || url.contains(['<', '>']) {
+        format!("<{}>", url.replace('<', "%3C").replace('>', "%3E"))
+    } else {
+        url.to_string()
+    }
 }
 
 /// Build a section boundary marker comment for PPTX slides or XLSX sheets.
@@ -741,7 +756,7 @@ fn render_run(run: &TextRun, options: &RenderOptions, ctx: RunContext) -> String
 
     // Handle hyperlinks
     if let Some(ref url) = run.hyperlink {
-        text = format!("[{}]({})", text, url);
+        text = format!("[{}]({})", text, format_link_destination(url));
     }
 
     // Apply revision markup for ShowMarkup mode
@@ -1274,6 +1289,22 @@ mod tests {
         let options = RenderOptions::default();
         let md = render_paragraph(&para, &options, None, &empty_resource_map());
         assert!(md.contains("[click here](https://example.com)"));
+    }
+
+    #[test]
+    fn test_hyperlink_destination_with_a_space_is_angle_wrapped() {
+        // A bare `(dest with space)` is not valid CommonMark syntax at all --
+        // pulldown-cmark never produces a Link event for it, so a consumer sees the
+        // brackets as literal text instead of a link.
+        let mut para = Paragraph::new();
+        para.runs.push(TextRun::link("doc", "my folder/file.docx"));
+
+        let options = RenderOptions::default();
+        let md = render_paragraph(&para, &options, None, &empty_resource_map());
+        assert!(
+            md.contains("[doc](<my folder/file.docx>)"),
+            "destination not angle-wrapped: {md:?}"
+        );
     }
 
     #[test]
