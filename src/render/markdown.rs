@@ -115,7 +115,14 @@ fn resolve_image_path(resource_id: &str, resource_map: &ResourceMap, prefix: &st
 /// path, for instance).
 fn format_link_destination(url: &str) -> String {
     if url.contains(' ') || url.contains(['<', '>']) {
-        format!("<{}>", url.replace('<', "%3C").replace('>', "%3E"))
+        // Backslash-escape, not percent-encode: a link destination is data, and
+        // percent-encoding `<`/`>` would silently change the target (e.g. a real
+        // file path) instead of just escaping it for Markdown syntax.
+        let escaped = url
+            .replace('\\', "\\\\")
+            .replace('<', "\\<")
+            .replace('>', "\\>");
+        format!("<{}>", escaped)
     } else {
         url.to_string()
     }
@@ -1304,6 +1311,19 @@ mod tests {
         assert!(
             md.contains("[doc](<my folder/file.docx>)"),
             "destination not angle-wrapped: {md:?}"
+        );
+    }
+
+    #[test]
+    fn test_hyperlink_destination_with_angle_brackets_is_backslash_escaped() {
+        let mut para = Paragraph::new();
+        para.runs.push(TextRun::link("doc", "a<b>c d"));
+
+        let options = RenderOptions::default();
+        let md = render_paragraph(&para, &options, None, &empty_resource_map());
+        assert!(
+            md.contains("[doc](<a\\<b\\>c d>)"),
+            "angle brackets not backslash-escaped: {md:?}"
         );
     }
 
