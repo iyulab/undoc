@@ -1,0 +1,68 @@
+name: Publish npm package
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish (e.g. 0.9.0 — must match Cargo.toml)'
+        required: false
+        type: string
+
+jobs:
+  publish:
+    name: Publish @iyulab/undoc to npm
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify requested version matches Cargo.toml
+        if: inputs.version != ''
+        run: |
+          actual=$(grep -m1 '^version' Cargo.toml | sed -E 's/version = "(.*)"/\1/')
+          if [ "${{ inputs.version }}" != "$actual" ]; then
+            echo "::error::Requested version ${{ inputs.version }} does not match Cargo.toml version $actual"
+            exit 1
+          fi
+
+      # registry-url is required: it writes the .npmrc that maps
+      # NODE_AUTH_TOKEN to registry auth. Without it `npm publish`
+      # fails with ENEEDAUTH even when the token is set.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: ${{ runner.os }}-cargo-wasm-release-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-wasm-release-
+
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Build WASM package
+        run: wasm-pack build undoc-wasm --target bundler --out-dir pkg
+
+      - name: Set scoped npm package name
+        run: |
+          jq '.name = "@iyulab/undoc"' undoc-wasm/pkg/package.json > /tmp/pkg.json
+          mv /tmp/pkg.json undoc-wasm/pkg/package.json
+
+      - name: Copy LICENSE into pkg
+        run: cp LICENSE undoc-wasm/pkg/
+
+      - name: Publish to npm
+        run: wasm-pack publish undoc-wasm/pkg --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
