@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-08-20
+
+### Added
+
+- **Markdown shape-refinement pass** (`RenderOptions.refine`, CLI `--refine`, C-ABI
+  `UNDOC_FLAG_REFINE`, C# `MarkdownOptions.Refine`, Python `to_markdown(refine=...)`) — a
+  lossless, idempotent post-processing pass ([`unrefine`](https://crates.io/crates/unrefine))
+  that normalizes table shape, ordered-list numbering, link/image path separators,
+  frontmatter formatting, and assigns a GitHub-compatible slug to every heading. Never
+  deletes visible text. Off by default — existing output is unaffected.
+- Gated behind a new `refine` cargo feature (on by default). `undoc-wasm` excludes it:
+  `unrefine` needs a fresh `pulldown-cmark`/`pulldown-cmark-to-cmark` that undoc otherwise
+  has no use for, measured at +21.5% wasm bundle size — with the feature off, the delta
+  is negligible (+8 bytes).
+- The streaming `convert` path now also applies `cleanup` (previously it silently ignored
+  `RenderOptions.cleanup` entirely — ⚠️ **cleanup now actually runs on streamed output**, a
+  behavior fix bundled with the refine wiring since both post-process the completed file
+  the same way) and `refine`, applied together as a single pass after the last section is
+  written.
+
 ## [0.8.1] - 2026-08-20
 
 ### Fixed
