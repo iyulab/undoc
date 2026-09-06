@@ -2,6 +2,7 @@
 
 import ctypes
 import io
+import json
 import os
 import platform
 import pytest
@@ -29,8 +30,10 @@ except OSError as exc:
     NATIVE_IMPORT_ERROR = exc
 
 
-# Get test files directory
-TEST_FILES_DIR = Path(__file__).parent.parent.parent.parent / "test-files"
+# Documents are assembled in-process rather than committed as binaries, the same way the
+# Rust suite builds its OOXML packages. A generated fixture is always present, so a test
+# that needs one can fail loudly instead of quietly skipping itself.
+SAMPLE_TEXT = "Paragraph the binding must carry"
 
 
 def _native_library_filename() -> str:
@@ -89,6 +92,156 @@ def create_minimal_docx_bytes(text: str = "Привет из Python") -> bytes:
 </Relationships>""",
         )
         zf.writestr("word/document.xml", document_xml)
+    return buf.getvalue()
+
+
+# A 1x1 opaque PNG. Small enough to inline, real enough to be read back as resource
+# bytes — which is what the resource tests need a document to carry.
+_ONE_PIXEL_PNG = (
+    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+    b"\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDAT\x08\xd7c\xf8\xcf"
+    b"\xc0\x00\x00\x03\x01\x01\x00\x18\xdd\x8d\xb0\x00\x00\x00\x00IEND\xaeB`\x82"
+)
+
+
+def create_docx_with_image_bytes(text: str = "Document with a picture") -> bytes:
+    """A DOCX carrying one embedded image, for the resource-inventory tests."""
+    document_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p>
+      <w:r><w:t>{text}</w:t></w:r>
+    </w:p>
+  </w:body>
+</w:document>"""
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_STORED) as zf:
+        zf.writestr(
+            "[Content_Types].xml",
+            """<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Default Extension="png" ContentType="image/png"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>""",
+        )
+        zf.writestr(
+            "_rels/.rels",
+            """<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>""",
+        )
+        zf.writestr(
+            "word/_rels/document.xml.rels",
+            """<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId10" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image1.png"/>
+</Relationships>""",
+        )
+        zf.writestr("word/document.xml", document_xml)
+        zf.writestr("word/media/image1.png", _ONE_PIXEL_PNG)
+    return buf.getvalue()
+
+
+def create_minimal_xlsx_bytes(text: str = "Spreadsheet cell") -> bytes:
+    """Create a tiny XLSX fixture without relying on external test files."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_STORED) as zf:
+        zf.writestr(
+            "[Content_Types].xml",
+            """<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+</Types>""",
+        )
+        zf.writestr(
+            "_rels/.rels",
+            """<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>""",
+        )
+        zf.writestr(
+            "xl/workbook.xml",
+            """<?xml version="1.0" encoding="UTF-8"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+          xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets>
+</workbook>""",
+        )
+        zf.writestr(
+            "xl/_rels/workbook.xml.rels",
+            """<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+</Relationships>""",
+        )
+        zf.writestr(
+            "xl/worksheets/sheet1.xml",
+            f"""<?xml version="1.0" encoding="UTF-8"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    <row r="1"><c r="A1" t="inlineStr"><is><t>{text}</t></is></c></row>
+  </sheetData>
+</worksheet>""",
+        )
+    return buf.getvalue()
+
+
+def create_minimal_pptx_bytes(text: str = "Slide text") -> bytes:
+    """Create a tiny PPTX fixture without relying on external test files."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_STORED) as zf:
+        zf.writestr(
+            "[Content_Types].xml",
+            """<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>
+  <Override PartName="/ppt/slides/slide1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>
+</Types>""",
+        )
+        zf.writestr(
+            "_rels/.rels",
+            """<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="ppt/presentation.xml"/>
+</Relationships>""",
+        )
+        zf.writestr(
+            "ppt/presentation.xml",
+            """<?xml version="1.0" encoding="UTF-8"?>
+<p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
+                xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <p:sldIdLst><p:sldId id="256" r:id="rId1"/></p:sldIdLst>
+</p:presentation>""",
+        )
+        zf.writestr(
+            "ppt/_rels/presentation.xml.rels",
+            """<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide1.xml"/>
+</Relationships>""",
+        )
+        zf.writestr(
+            "ppt/slides/slide1.xml",
+            f"""<?xml version="1.0" encoding="UTF-8"?>
+<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+       xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
+  <p:cSld><p:spTree>
+    <p:sp><p:txBody>
+      <a:bodyPr/>
+      <a:p><a:r><a:t>{text}</a:t></a:r></a:p>
+    </p:txBody></p:sp>
+  </p:spTree></p:cSld>
+</p:sld>""",
+        )
     return buf.getvalue()
 
 
@@ -193,65 +346,57 @@ class TestParseFile:
         with pytest.raises(FileNotFoundError):
             parse_file("nonexistent.docx")
 
-    @pytest.mark.skipif(
-        not (TEST_FILES_DIR / "file-sample_1MB.docx").exists(),
-        reason="Test file not available",
-    )
-    def test_parse_docx(self):
-        doc = parse_file(TEST_FILES_DIR / "file-sample_1MB.docx")
-        assert doc is not None
-        assert doc.section_count >= 0
+    def test_parse_docx(self, tmp_path):
+        path = tmp_path / "sample.docx"
+        path.write_bytes(create_minimal_docx_bytes("Word content"))
 
-    @pytest.mark.skipif(
-        not (TEST_FILES_DIR / "sample-xlsx-file.xlsx").exists(),
-        reason="Test file not available",
-    )
-    def test_parse_xlsx(self):
-        doc = parse_file(TEST_FILES_DIR / "sample-xlsx-file.xlsx")
-        assert doc is not None
-        assert doc.section_count >= 0
+        doc = parse_file(path)
+        assert doc.section_count == 1
+        assert "Word content" in doc.to_markdown()
 
-    @pytest.mark.skipif(
-        not (TEST_FILES_DIR / "file_example_PPT_1MB.pptx").exists(),
-        reason="Test file not available",
-    )
-    def test_parse_pptx(self):
-        doc = parse_file(TEST_FILES_DIR / "file_example_PPT_1MB.pptx")
-        assert doc is not None
-        assert doc.section_count >= 0
+    def test_parse_xlsx(self, tmp_path):
+        path = tmp_path / "sample.xlsx"
+        path.write_bytes(create_minimal_xlsx_bytes("Spreadsheet content"))
+
+        doc = parse_file(path)
+        assert doc.section_count == 1
+        assert "Spreadsheet content" in doc.to_markdown()
+
+    def test_parse_pptx(self, tmp_path):
+        path = tmp_path / "sample.pptx"
+        path.write_bytes(create_minimal_pptx_bytes("Presentation content"))
+
+        doc = parse_file(path)
+        assert doc.section_count == 1
+        assert "Presentation content" in doc.to_markdown()
 
 
 class TestConversion:
     @pytest.fixture
     def sample_docx(self):
-        path = TEST_FILES_DIR / "file-sample_1MB.docx"
-        if not path.exists():
-            pytest.skip("Test file not available")
-        return parse_file(path)
+        return parse_bytes(create_minimal_docx_bytes(SAMPLE_TEXT))
 
     def test_to_markdown(self, sample_docx):
-        md = sample_docx.to_markdown()
-        assert isinstance(md, str)
-        assert len(md) > 0
+        assert SAMPLE_TEXT in sample_docx.to_markdown()
 
     def test_to_markdown_with_frontmatter(self, sample_docx):
         md = sample_docx.to_markdown(frontmatter=True)
         assert "---" in md
+        assert SAMPLE_TEXT in md
 
     def test_to_markdown_with_refine(self, sample_docx):
-        md = sample_docx.to_markdown(refine=True)
-        assert isinstance(md, str)
-        assert len(md) > 0
+        # Refining reshapes markdown; it must not drop the document's text.
+        assert SAMPLE_TEXT in sample_docx.to_markdown(refine=True)
 
     def test_to_text(self, sample_docx):
-        text = sample_docx.to_text()
-        assert isinstance(text, str)
-        assert len(text) > 0
+        assert SAMPLE_TEXT in sample_docx.to_text()
 
     def test_to_json(self, sample_docx):
-        json_str = sample_docx.to_json()
-        assert isinstance(json_str, str)
-        assert json_str.startswith("{")
+        # `startswith("{")` alone would pass on a truncated payload, so decode it.
+        payload = json.loads(sample_docx.to_json())
+
+        assert payload["format"] == "docx"
+        assert SAMPLE_TEXT in json.dumps(payload, ensure_ascii=False)
 
     def test_to_json_compact(self, sample_docx):
         json_str = sample_docx.to_json(compact=True)
@@ -260,78 +405,54 @@ class TestConversion:
         assert "\n  " not in json_str
 
     def test_plain_text(self, sample_docx):
-        text = sample_docx.plain_text()
-        assert isinstance(text, str)
+        assert SAMPLE_TEXT in sample_docx.plain_text()
 
 
 class TestMetadata:
     @pytest.fixture
     def sample_docx(self):
-        path = TEST_FILES_DIR / "file-sample_1MB.docx"
-        if not path.exists():
-            pytest.skip("Test file not available")
-        return parse_file(path)
+        return parse_bytes(create_minimal_docx_bytes(SAMPLE_TEXT))
 
     def test_section_count(self, sample_docx):
-        assert isinstance(sample_docx.section_count, int)
-        assert sample_docx.section_count >= 0
+        assert sample_docx.section_count == 1
 
     def test_resource_count(self, sample_docx):
-        assert isinstance(sample_docx.resource_count, int)
-        assert sample_docx.resource_count >= 0
+        # This package carries no media part; the resource tests cover the other case.
+        assert sample_docx.resource_count == 0
 
     def test_title(self, sample_docx):
-        title = sample_docx.title
-        # Title may be None or string
-        assert title is None or isinstance(title, str)
+        # The package has no core properties, so an absent title must surface as None
+        # rather than an empty string or a raised error.
+        assert sample_docx.title is None
 
     def test_author(self, sample_docx):
-        author = sample_docx.author
-        # Author may be None or string
-        assert author is None or isinstance(author, str)
+        assert sample_docx.author is None
 
 
 class TestContextManager:
-    @pytest.mark.skipif(
-        not (TEST_FILES_DIR / "file-sample_1MB.docx").exists(),
-        reason="Test file not available",
-    )
-    def test_context_manager(self):
-        with parse_file(TEST_FILES_DIR / "file-sample_1MB.docx") as doc:
-            md = doc.to_markdown()
-            assert len(md) > 0
+    def test_context_manager(self, tmp_path):
+        path = tmp_path / "sample.docx"
+        path.write_bytes(create_minimal_docx_bytes(SAMPLE_TEXT))
+
+        with parse_file(path) as doc:
+            assert SAMPLE_TEXT in doc.to_markdown()
         # After exiting, the document should be freed
         # (we can't easily test this, but at least it shouldn't crash)
 
 
 class TestParseBytes:
-    @pytest.mark.skipif(
-        not (TEST_FILES_DIR / "file-sample_1MB.docx").exists(),
-        reason="Test file not available",
-    )
     def test_parse_bytes(self):
-        path = TEST_FILES_DIR / "file-sample_1MB.docx"
-        with open(path, "rb") as f:
-            data = f.read()
+        doc = parse_bytes(create_minimal_docx_bytes(SAMPLE_TEXT))
 
-        doc = parse_bytes(data)
-        assert doc is not None
-
-        md = doc.to_markdown()
-        assert len(md) > 0
+        assert SAMPLE_TEXT in doc.to_markdown()
 
 
 class TestResources:
     @pytest.fixture
     def docx_with_images(self):
-        # Try to find a document with images
-        for name in ["file-sample_1MB.docx", "sample-docx-file.docx"]:
-            path = TEST_FILES_DIR / name
-            if path.exists():
-                doc = parse_file(path)
-                if doc.resource_count > 0:
-                    return doc
-        pytest.skip("No test file with resources available")
+        doc = parse_bytes(create_docx_with_image_bytes())
+        assert doc.resource_count > 0, "the generated document must carry its image"
+        return doc
 
     def test_get_resource_ids(self, docx_with_images):
         ids = docx_with_images.get_resource_ids()
