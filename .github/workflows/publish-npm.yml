@@ -53,6 +53,13 @@ jobs:
       - name: Install wasm-pack
         run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
 
+      # This workflow is dispatched by hand, so it never passes through CI.
+      # Without this step it is a publish path with no test between the
+      # source tree and the registry, and npm only allows an unpublish
+      # within 24 hours.
+      - name: Run WASM tests
+        run: wasm-pack test --node undoc-wasm
+
       - name: Build WASM package
         run: wasm-pack build undoc-wasm --target bundler --out-dir pkg
 

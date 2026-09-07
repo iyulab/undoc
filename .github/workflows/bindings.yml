@@ -25,7 +25,7 @@ jobs:
           {"os":"windows-latest","artifact":"native-win-x64","runtime":"win-x64"},
           {"os":"macos-latest","artifact":"native-osx-arm64","runtime":"osx-arm64"}
         ]
-      validate-packed-nuget: false
+      validate-packed-nuget: true
       publish: ${{ github.event.workflow_run.conclusion == 'success' || github.event.inputs.publish == 'true' }}
     permissions:
       contents: read
