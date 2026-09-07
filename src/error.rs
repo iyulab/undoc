@@ -297,7 +297,7 @@ mod tests {
         use zip::result::ZipError;
 
         assert_eq!(
-            Error::from(ZipError::InvalidArchive("no central directory")).kind(),
+            Error::from(ZipError::InvalidArchive("no central directory".into())).kind(),
             ErrorKind::ZipArchive,
             "a damaged container stays a damaged container"
         );

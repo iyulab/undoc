@@ -156,12 +156,8 @@ fn check_latest_version() -> Option<UpdateCheckResult> {
         .fetch()
         .ok()?;
 
-    if releases.is_empty() {
-        return None;
-    }
-
-    let latest = &releases[0];
-    let latest_version = latest.version.trim_start_matches('v');
+    let latest = releases.latest()?;
+    let latest_version = latest.version().trim_start_matches('v');
 
     let current = Version::parse(current_version).ok()?;
     let latest_ver = Version::parse(latest_version).ok()?;
@@ -220,8 +216,8 @@ pub fn run_update(check_only: bool, force: bool) -> Result<(), Box<dyn std::erro
     }
 
     // Get latest release version
-    let latest = &releases[0];
-    let latest_version = latest.version.trim_start_matches('v');
+    let latest = releases.latest().ok_or("No releases found on GitHub.")?;
+    let latest_version = latest.version().trim_start_matches('v');
 
     println!("{} {}", "Latest version:".cyan().bold(), latest_version);
 
@@ -286,7 +282,11 @@ pub fn run_update(check_only: bool, force: bool) -> Result<(), Box<dyn std::erro
     let platform = get_platform_info();
     let patterns = get_asset_patterns(&platform, latest_version);
 
-    let asset_names: Vec<String> = latest.assets.iter().map(|a| a.name.clone()).collect();
+    let asset_names: Vec<String> = latest
+        .assets()
+        .iter()
+        .map(|a| a.name().to_string())
+        .collect();
     let asset_name = find_matching_asset(&asset_names, &patterns);
 
     if asset_name.is_none() {
@@ -300,9 +300,9 @@ pub fn run_update(check_only: bool, force: bool) -> Result<(), Box<dyn std::erro
             "{} {}",
             "Available assets:".dimmed(),
             latest
-                .assets
+                .assets()
                 .iter()
-                .map(|a| a.name.as_str())
+                .map(|a| a.name())
                 .collect::<Vec<_>>()
                 .join(", ")
         );
@@ -318,12 +318,12 @@ pub fn run_update(check_only: bool, force: bool) -> Result<(), Box<dyn std::erro
         REPO_OWNER, REPO_NAME, latest_version, asset_name
     );
 
-    let tmp_dir = self_update::TempDir::new()?;
+    let tmp_dir = tempfile::TempDir::new()?;
     let tmp_archive_path = tmp_dir.path().join(&asset_name);
     let mut tmp_archive = std::fs::File::create(&tmp_archive_path)?;
 
     let mut download = self_update::Download::from_url(&download_url);
-    download.show_progress(true);
+    download.show_download_progress(true);
     download.download_to(&mut tmp_archive)?;
 
     print!("Extracting archive... ");
@@ -335,7 +335,7 @@ pub fn run_update(check_only: bool, force: bool) -> Result<(), Box<dyn std::erro
     print!("Replacing binary file... ");
     std::io::Write::flush(&mut std::io::stdout())?;
     let new_exe = tmp_dir.path().join(&bin_name);
-    self_update::self_replace::self_replace(new_exe)?;
+    self_replace::self_replace(new_exe)?;
     println!("Done");
 
     println!();

@@ -35,12 +35,12 @@ refine = ["dep:unrefine"]
 [dependencies]
 # ZIP handling — default-features disabled: lzma/bzip2/xz/zstd require C toolchain
 # OOXML files exclusively use Deflate; dropping other compression codecs is safe.
-zip = { version = "2.2", default-features = false, features = ["deflate"] }
+zip = { version = "8.6", default-features = false, features = ["deflate"] }
 
 # OLE/CFB container inspection. Only used by format detection, to tell an ECMA-376
 # encrypted OOXML package (a CFB holding `EncryptedPackage`) apart from a legacy binary
 # Office file — both arrive with the same header. Pure Rust, so it builds for wasm32.
-cfb = "0.10"
+cfb = "0.14"
 
 # XML parsing. `serialize` feature intentionally omitted — undoc uses only the
 # manual Reader/Event API; serde derives live on undoc's own model types.
