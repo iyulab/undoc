@@ -97,7 +97,11 @@ jobs:
       - name: Run tests
         # --workspace: without it only the root package is tested, so the cli and
         # wasm crates' own tests never run.
-        run: cargo test --workspace
+        # --all-features: the ffi and async features carry tests of their own.
+        # Without this flag they compile in the release pipeline but are never
+        # executed anywhere, which is how a feature-gated regression reaches a
+        # published crate while CI stays green.
+        run: cargo test --workspace --all-features
 
       - name: Build with FFI
         run: cargo build --release --features ffi
@@ -151,7 +155,10 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Clippy
-        run: cargo clippy -- -D warnings
+        # --all-targets covers tests, benches and examples; --all-features covers
+        # the feature-gated code. Bare `cargo clippy` lints only the default
+        # target of the default feature set.
+        run: cargo clippy --all-targets --all-features -- -D warnings
 
   security-audit:
     name: Security Audit
