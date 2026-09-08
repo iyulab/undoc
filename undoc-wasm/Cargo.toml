@@ -2,7 +2,7 @@
 name = "undoc-wasm"
 version = "0.9.0"
 edition = "2021"
-description = "High-performance Office document extraction to Markdown (WebAssembly)"
+description = "High-performance Microsoft Office (DOCX, XLSX, PPTX) extraction to Markdown (WebAssembly)"
 repository = "https://github.com/iyulab/undoc"
 license = "MIT"
 keywords = ["docx", "xlsx", "pptx", "wasm", "webassembly"]

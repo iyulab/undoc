@@ -55,6 +55,15 @@ pub enum FormatType {
 }
 
 impl FormatType {
+    /// Every format this library can parse.
+    ///
+    /// The enumeration lives here so that consumers do not have to keep their own copy.
+    /// A consumer deciding whether to hand a file to this library otherwise hardcodes the
+    /// extension list on its side, and that copy goes quietly stale the moment the library
+    /// learns a new format -- with nothing to notice the drift. Adding a variant without
+    /// adding it here is caught by `all_variants_are_listed` below.
+    pub const ALL: [FormatType; 3] = [FormatType::Docx, FormatType::Xlsx, FormatType::Pptx];
+
     /// Returns the file extension for this format.
     pub fn extension(&self) -> &'static str {
         match self {
@@ -261,6 +270,41 @@ pub fn is_zip_file(data: &[u8]) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn all_variants_are_listed() {
+        // The match is what does the work. Adding a variant to FormatType without adding it
+        // to ALL stops this from compiling -- which is the only thing keeping a consumer's
+        // copy of the extension list from going quietly stale behind a new format.
+        for format in FormatType::ALL {
+            match format {
+                FormatType::Docx | FormatType::Xlsx | FormatType::Pptx => {}
+            }
+        }
+
+        // The list is only useful to a consumer if each entry maps to a distinct extension.
+        let mut extensions: Vec<&str> = FormatType::ALL.iter().map(|f| f.extension()).collect();
+        extensions.sort_unstable();
+        extensions.dedup();
+        assert_eq!(extensions.len(), FormatType::ALL.len());
+        assert_eq!(extensions, ["docx", "pptx", "xlsx"]);
+
+        // Both fields are pinned here rather than only at the binding that serialises them:
+        // this test runs on every host, whereas the wasm crate's does not always build
+        // locally. What a consumer reads is (extension, name), so that pair is the contract.
+        let pairs: Vec<(&str, &str)> = FormatType::ALL
+            .iter()
+            .map(|f| (f.extension(), f.name()))
+            .collect();
+        assert_eq!(
+            pairs,
+            [
+                ("docx", "Word Document"),
+                ("xlsx", "Excel Workbook"),
+                ("pptx", "PowerPoint Presentation"),
+            ]
+        );
+    }
+
     use super::*;
 
     #[test]

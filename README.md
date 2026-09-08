@@ -51,8 +51,7 @@ A high-performance Rust library for extracting content from Microsoft Office doc
 Parse Office documents in the browser — no server, no upload:
 
 ```js
-import init, { parse } from '@iyulab/undoc';
-await init();
+import { parse } from '@iyulab/undoc';
 const doc = parse(new Uint8Array(await file.arrayBuffer()));
 console.log(doc.format());      // "docx" | "xlsx" | "pptx"
 console.log(doc.toMarkdown());

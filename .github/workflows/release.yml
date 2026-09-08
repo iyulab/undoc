@@ -280,8 +280,10 @@ jobs:
           jq '.name = "@iyulab/undoc"' undoc-wasm/pkg/package.json > /tmp/pkg.json
           mv /tmp/pkg.json undoc-wasm/pkg/package.json
 
-      - name: Copy LICENSE into pkg
-        run: cp LICENSE undoc-wasm/pkg/
+      - name: Copy README and LICENSE into pkg
+        run: |
+          cp bindings/wasm/README.md undoc-wasm/pkg/
+          cp LICENSE undoc-wasm/pkg/
 
       - name: Publish to npm
         run: wasm-pack publish undoc-wasm/pkg --access public

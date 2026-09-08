@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `supportedFormats()` on the WebAssembly package, returning the formats the library parses as
+  `[{"extension":"docx","name":"Word Document"}, ...]`. A consumer deciding which files to hand
+  to this package previously had to keep its own copy of the extension list, and that copy went
+  quietly stale whenever the library learned a new format. `FormatType::ALL` is the same list on
+  the Rust side, and a compile-time exhaustive match keeps a newly added format from being
+  omitted from it.
+
+### Fixed
+
+- The npm package now ships its README. The file existed in the repository but the publish
+  workflow only copied `LICENSE` into the package directory, so the npm page and the installed
+  package carried no usage documentation at all — the sibling packages both had theirs.
+- The WebAssembly usage examples no longer open with `import init` and `await init()`. The npm
+  package is built for bundlers, where the module initialises itself and no `init` export exists,
+  so anyone following the first example stopped on its first line.
+- The WebAssembly package description said "Office document extraction" where the crate parses
+  OOXML specifically. It now names the formats, matching the library crate's own description.
+
 ## [0.9.0] - 2026-08-20
 
 ### Added
@@ -591,15 +613,3 @@ below. Output produced with a cleanup preset is unaffected. Rust callers that se
   alignment of the cell's first paragraph (`<w:pPr>/<w:jc>`), recovering
   the visual intent that authors typically express via paragraph
   properties.
-
-## [Unreleased]
-
-### Planned
-
-- Legacy format support (.doc, .xls, .ppt)
-- Async I/O with Tokio
-- Additional output formats (HTML, RST)
-- Image optimization options
-- Batch processing mode
-- Plugin system for custom processors
-- `undoc_get_paragraph_count()` FFI function
