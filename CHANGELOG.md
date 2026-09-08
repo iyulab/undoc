@@ -27,6 +27,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The WebAssembly package description said "Office document extraction" where the crate parses
   OOXML specifically. It now names the formats, matching the library crate's own description.
 
+### Changed
+
+- Refreshed the declared minimum for `colored` (2 → 3), `indicatif` (0.17 → 0.18) and
+  `criterion` (0.5 → 0.8). The `indicatif` bump is the one that matters: 0.17 pulled in
+  `number_prefix`, which is unmaintained (RUSTSEC-2025-0119), and 0.18 does not depend on it —
+  `cargo audit` is now clean without an exemption. `criterion` 0.8 deprecates its `black_box`
+  re-export in favour of `std::hint::black_box`, which the benchmark now uses.
+
+- Updated `quick-xml` to 0.42, which replaces its byte-oriented event API with a string-oriented
+  one (`QName`, `LocalName` and `Attribute::value` now carry `str`/`Cow<str>` instead of bytes).
+  Parsing behaviour is unchanged: the reader is constructed from a `&str` that the container layer
+  has already decoded, so the UTF-8 validation the new API performs sits on input that is valid by
+  construction. The `from_utf8_lossy` calls the old API required around each element name and
+  attribute value could therefore never have substituted a replacement character, and have been
+  removed rather than translated — they suggested a tolerance for malformed bytes that the parser
+  has never had. Invalid UTF-8 is still rejected where it is actually read, as
+  `ErrorKind::Encoding`.
+
 ## [0.9.0] - 2026-08-20
 
 ### Added

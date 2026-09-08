@@ -46,7 +46,7 @@ cfb = "0.14"
 # manual Reader/Event API; serde derives live on undoc's own model types.
 # Pinned at ^0.41 for RUSTSEC-2026-0194/-0195 (DoS) fixes; 0.40+ also emits
 # entity refs as separate Event::GeneralRef events (see src/decode.rs).
-quick-xml = "0.41"
+quick-xml = "0.42"
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
@@ -69,7 +69,7 @@ unrefine = { version = "0.1", optional = true }
 tokio = { version = "1.42", features = ["rt", "fs"], optional = true }
 
 [dev-dependencies]
-criterion = { version = "0.5", features = ["html_reports"] }
+criterion = { version = "0.8", features = ["html_reports"] }
 tempfile = "3.14"
 
 [[bench]]

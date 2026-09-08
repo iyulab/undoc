@@ -52,7 +52,7 @@ use quick_xml::escape::resolve_predefined_entity;
 use quick_xml::events::{BytesRef, BytesText};
 use quick_xml::Reader;
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 
 /// Build a [`Reader`] with undoc's shared leniency policy.
 ///
@@ -95,10 +95,7 @@ pub(crate) fn reader_for(xml: &str) -> Reader<&[u8]> {
 ///
 /// [`Event::GeneralRef`]: quick_xml::events::Event::GeneralRef
 pub(crate) fn resolve_general_ref(r: &BytesRef<'_>) -> String {
-    let name = match r.decode() {
-        Ok(n) => n,
-        Err(_) => return String::new(),
-    };
+    let name = r.as_ref();
 
     if let Some(num) = name.strip_prefix('#') {
         let codepoint = match num.strip_prefix(['x', 'X']) {
@@ -111,7 +108,7 @@ pub(crate) fn resolve_general_ref(r: &BytesRef<'_>) -> String {
             .unwrap_or_default();
     }
 
-    if let Some(value) = resolve_predefined_entity(&name) {
+    if let Some(value) = resolve_predefined_entity(name) {
         return value.to_string();
     }
 
@@ -161,20 +158,22 @@ pub(crate) fn normalize_line_endings(input: Cow<'_, str>) -> Cow<'_, str> {
 /// [`Event::Text`]: quick_xml::events::Event::Text
 /// [`Event::GeneralRef`]: quick_xml::events::Event::GeneralRef
 pub(crate) fn decode_text_lossy(text: &BytesText<'_>) -> String {
-    let raw = String::from_utf8_lossy(text.as_ref());
-    normalize_line_endings(raw).into_owned()
+    let raw = text.as_ref();
+    normalize_line_endings(Cow::Borrowed(raw)).into_owned()
 }
 
-/// Decode a [`Event::Text`] event into an owned `String`, requiring valid UTF-8.
+/// Decode a [`Event::Text`] event into an owned `String` on the metadata paths.
 ///
-/// Intended for metadata paths where invalid UTF-8 must surface as
-/// `Error::XmlParse` with a location context rather than be silently replaced.
+/// This used to differ from [`decode_text_lossy`] by rejecting invalid UTF-8 with
+/// `Error::XmlParse` instead of replacing it. Since quick-xml 0.42 the event
+/// already carries `str`, so there is nothing left to reject and the two
+/// functions do the same work — the `Result` is now always `Ok`. The signature is
+/// kept for the moment so the metadata call sites keep their shape; collapsing
+/// the pair is a separate change.
 ///
 /// [`Event::Text`]: quick_xml::events::Event::Text
-pub(crate) fn decode_text_strict(text: &BytesText<'_>, location: &str) -> Result<String> {
-    let raw = std::str::from_utf8(text.as_ref())
-        .map_err(|err| Error::xml_parse_with_context(err.to_string(), location))?;
-    Ok(normalize_line_endings(Cow::Borrowed(raw)).into_owned())
+pub(crate) fn decode_text_strict(text: &BytesText<'_>, _location: &str) -> Result<String> {
+    Ok(decode_text_lossy(text))
 }
 
 #[cfg(test)]

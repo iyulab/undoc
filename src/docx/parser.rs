@@ -63,13 +63,13 @@ impl DocxParser {
 
         // Parse footnotes — absent is OK, malformed bytes must surface.
         let footnotes = match container.read_xml_optional("word/footnotes.xml")? {
-            Some(xml) => parse_notes_xml(&xml, b"w:footnote"),
+            Some(xml) => parse_notes_xml(&xml, "w:footnote"),
             None => HashMap::new(),
         };
 
         // Parse endnotes — absent is OK, malformed bytes must surface.
         let endnotes = match container.read_xml_optional("word/endnotes.xml")? {
-            Some(xml) => parse_notes_xml(&xml, b"w:endnote"),
+            Some(xml) => parse_notes_xml(&xml, "w:endnote"),
             None => HashMap::new(),
         };
 
@@ -296,18 +296,18 @@ impl DocxParser {
                 Ok(quick_xml::events::Event::Start(ref e)) => {
                     let name = e.name();
                     match name.as_ref() {
-                        b"w:body" => {
+                        "w:body" => {
                             in_body = true;
                         }
-                        b"w:p" if in_body && table_depth == 0 && !in_paragraph => {
+                        "w:p" if in_body && table_depth == 0 && !in_paragraph => {
                             in_paragraph = true;
                             paragraph_xml.clear();
                             paragraph_xml.push_str("<w:p");
                             for attr in e.attributes().flatten() {
                                 paragraph_xml.push_str(&format!(
                                     " {}=\"{}\"",
-                                    String::from_utf8_lossy(attr.key.as_ref()),
-                                    String::from_utf8_lossy(&attr.value)
+                                    attr.key.as_ref(),
+                                    attr.value.as_ref()
                                 ));
                             }
                             paragraph_xml.push('>');
@@ -317,7 +317,7 @@ impl DocxParser {
                         // in paragraph_xml so the text-box path extracts its text,
                         // otherwise table mode collects an empty shell (cell text is
                         // captured separately) and emits a spurious empty table.
-                        b"w:tbl" if in_body && !in_paragraph => {
+                        "w:tbl" if in_body && !in_paragraph => {
                             if table_depth == 0 {
                                 // Start collecting table XML
                                 table_xml.clear();
@@ -328,27 +328,27 @@ impl DocxParser {
                         _ => {
                             if in_paragraph {
                                 // Track nested w:p depth for text boxes
-                                if name.as_ref() == b"w:p" {
+                                if name.as_ref() == "w:p" {
                                     para_depth += 1;
                                 }
                                 paragraph_xml.push('<');
-                                paragraph_xml.push_str(&String::from_utf8_lossy(name.as_ref()));
+                                paragraph_xml.push_str(name.as_ref());
                                 for attr in e.attributes().flatten() {
                                     paragraph_xml.push_str(&format!(
                                         " {}=\"{}\"",
-                                        String::from_utf8_lossy(attr.key.as_ref()),
-                                        String::from_utf8_lossy(&attr.value)
+                                        attr.key.as_ref(),
+                                        attr.value.as_ref()
                                     ));
                                 }
                                 paragraph_xml.push('>');
                             } else if table_depth > 0 {
                                 table_xml.push('<');
-                                table_xml.push_str(&String::from_utf8_lossy(name.as_ref()));
+                                table_xml.push_str(name.as_ref());
                                 for attr in e.attributes().flatten() {
                                     table_xml.push_str(&format!(
                                         " {}=\"{}\"",
-                                        String::from_utf8_lossy(attr.key.as_ref()),
-                                        String::from_utf8_lossy(&attr.value)
+                                        attr.key.as_ref(),
+                                        attr.value.as_ref()
                                     ));
                                 }
                                 table_xml.push('>');
@@ -366,16 +366,16 @@ impl DocxParser {
                     // header/footer text but the last.
                     if in_body
                         && table_depth == 0
-                        && matches!(name.as_ref(), b"w:headerReference" | b"w:footerReference")
+                        && matches!(name.as_ref(), "w:headerReference" | "w:footerReference")
                     {
                         let mut r_id = String::new();
                         for attr in e.attributes().flatten() {
-                            if attr.key.as_ref() == b"r:id" {
-                                r_id = String::from_utf8_lossy(&attr.value).to_string();
+                            if attr.key.as_ref() == "r:id" {
+                                r_id = attr.value.to_string();
                             }
                         }
                         if !r_id.is_empty() {
-                            if name.as_ref() == b"w:headerReference" {
+                            if name.as_ref() == "w:headerReference" {
                                 header_rids.push(r_id);
                             } else {
                                 footer_rids.push(r_id);
@@ -383,23 +383,23 @@ impl DocxParser {
                         }
                     } else if in_paragraph {
                         paragraph_xml.push('<');
-                        paragraph_xml.push_str(&String::from_utf8_lossy(name.as_ref()));
+                        paragraph_xml.push_str(name.as_ref());
                         for attr in e.attributes().flatten() {
                             paragraph_xml.push_str(&format!(
                                 " {}=\"{}\"",
-                                String::from_utf8_lossy(attr.key.as_ref()),
-                                String::from_utf8_lossy(&attr.value)
+                                attr.key.as_ref(),
+                                attr.value.as_ref()
                             ));
                         }
                         paragraph_xml.push_str("/>");
                     } else if table_depth > 0 {
                         table_xml.push('<');
-                        table_xml.push_str(&String::from_utf8_lossy(name.as_ref()));
+                        table_xml.push_str(name.as_ref());
                         for attr in e.attributes().flatten() {
                             table_xml.push_str(&format!(
                                 " {}=\"{}\"",
-                                String::from_utf8_lossy(attr.key.as_ref()),
-                                String::from_utf8_lossy(&attr.value)
+                                attr.key.as_ref(),
+                                attr.value.as_ref()
                             ));
                         }
                         table_xml.push_str("/>");
@@ -429,10 +429,10 @@ impl DocxParser {
                 Ok(quick_xml::events::Event::End(ref e)) => {
                     let name = e.name();
                     match name.as_ref() {
-                        b"w:body" => {
+                        "w:body" => {
                             in_body = false;
                         }
-                        b"w:p" if in_paragraph && table_depth == 0 && para_depth == 0 => {
+                        "w:p" if in_paragraph && table_depth == 0 && para_depth == 0 => {
                             paragraph_xml.push_str("</w:p>");
                             // Extract text box paragraphs before parsing the main paragraph
                             let textbox_paras = self.extract_textbox_paragraphs(&paragraph_xml);
@@ -445,7 +445,7 @@ impl DocxParser {
                             }
                             in_paragraph = false;
                         }
-                        b"w:tbl" if table_depth > 0 => {
+                        "w:tbl" if table_depth > 0 => {
                             table_xml.push_str("</w:tbl>");
                             table_depth -= 1;
                             if table_depth == 0 {
@@ -458,15 +458,15 @@ impl DocxParser {
                         _ => {
                             if in_paragraph {
                                 // Track nested w:p depth for text boxes
-                                if name.as_ref() == b"w:p" {
+                                if name.as_ref() == "w:p" {
                                     para_depth = para_depth.saturating_sub(1);
                                 }
                                 paragraph_xml.push_str("</");
-                                paragraph_xml.push_str(&String::from_utf8_lossy(name.as_ref()));
+                                paragraph_xml.push_str(name.as_ref());
                                 paragraph_xml.push('>');
                             } else if table_depth > 0 {
                                 table_xml.push_str("</");
-                                table_xml.push_str(&String::from_utf8_lossy(name.as_ref()));
+                                table_xml.push_str(name.as_ref());
                                 table_xml.push('>');
                             }
                         }
@@ -571,7 +571,7 @@ impl DocxParser {
                         // A paragraph at any nesting depth (top level or inside a
                         // table cell). Table wrappers are transparent, so cell
                         // paragraphs start here just like top-level ones.
-                        b"w:p" if !in_paragraph => {
+                        "w:p" if !in_paragraph => {
                             in_paragraph = true;
                             para_depth = 0;
                             paragraph_xml.clear();
@@ -579,7 +579,7 @@ impl DocxParser {
                         }
                         _ => {
                             if in_paragraph {
-                                if name.as_ref() == b"w:p" {
+                                if name.as_ref() == "w:p" {
                                     para_depth += 1;
                                 }
                                 push_start_tag(&mut paragraph_xml, e);
@@ -607,7 +607,7 @@ impl DocxParser {
                 Ok(quick_xml::events::Event::End(ref e)) => {
                     let name = e.name();
                     match name.as_ref() {
-                        b"w:p" if in_paragraph && para_depth == 0 => {
+                        "w:p" if in_paragraph && para_depth == 0 => {
                             paragraph_xml.push_str("</w:p>");
                             // Text boxes are pulled out first, as separate paragraphs.
                             let textbox_paras = self.extract_textbox_paragraphs(&paragraph_xml);
@@ -623,7 +623,7 @@ impl DocxParser {
                         }
                         _ => {
                             if in_paragraph {
-                                if name.as_ref() == b"w:p" {
+                                if name.as_ref() == "w:p" {
                                     para_depth = para_depth.saturating_sub(1);
                                 }
                                 push_end_tag(&mut paragraph_xml, name.as_ref());
@@ -678,37 +678,37 @@ impl DocxParser {
             match reader.read_event_into(&mut buf) {
                 Ok(quick_xml::events::Event::Start(ref e)) => match e.name().as_ref() {
                     // Skip mc:Fallback branches to avoid duplicating text box content
-                    b"mc:Fallback" => {
+                    "mc:Fallback" => {
                         mc_fallback_depth += 1;
                     }
                     // Track w:txbxContent to suppress text capture (extracted separately)
-                    b"w:txbxContent" if mc_fallback_depth == 0 => {
+                    "w:txbxContent" if mc_fallback_depth == 0 => {
                         txbx_content_depth += 1;
                     }
                     _ if mc_fallback_depth > 0 => {} // Skip everything inside mc:Fallback
                     _ if txbx_content_depth > 0 => {} // Skip everything inside w:txbxContent
-                    b"w:pPr" => in_ppr = true,
-                    b"w:rPr" => in_rpr = true,
-                    b"w:r" => {
+                    "w:pPr" => in_ppr = true,
+                    "w:rPr" => in_rpr = true,
+                    "w:r" => {
                         in_run = true;
                         current_style = TextStyle::default();
                     }
-                    b"w:t" => in_text = true,
-                    b"w:instrText" => in_instr_text = true,
-                    b"w:drawing" => {
+                    "w:t" => in_text = true,
+                    "w:instrText" => in_instr_text = true,
+                    "w:drawing" => {
                         in_drawing = true;
                         current_image_alt = None;
                     }
-                    b"w:pict" | b"w:object" => in_pict = true,
+                    "w:pict" | "w:object" => in_pict = true,
                     // Tracked changes - insertions
-                    b"w:ins" => in_ins = true,
+                    "w:ins" => in_ins = true,
                     // Tracked changes - deletions
-                    b"w:del" => in_del = true,
-                    b"w:hyperlink" => {
+                    "w:del" => in_del = true,
+                    "w:hyperlink" => {
                         for attr in e.attributes().flatten() {
-                            if attr.key.as_ref() == b"r:id" {
-                                let rel_id = String::from_utf8_lossy(&attr.value);
-                                if let Some(rel) = self.relationships.get(&rel_id) {
+                            if attr.key.as_ref() == "r:id" {
+                                let rel_id = attr.value.as_ref();
+                                if let Some(rel) = self.relationships.get(rel_id) {
                                     current_hyperlink = Some(rel.target.clone());
                                 }
                             }
@@ -718,14 +718,14 @@ impl DocxParser {
                 },
                 Ok(quick_xml::events::Event::Empty(ref e)) => match e.name().as_ref() {
                     _ if mc_fallback_depth > 0 || txbx_content_depth > 0 => {} // Skip
-                    b"w:pStyle" if in_ppr => {
+                    "w:pStyle" if in_ppr => {
                         for attr in e.attributes().flatten() {
-                            if attr.key.as_ref() == b"w:val" {
-                                let style_id = String::from_utf8_lossy(&attr.value);
+                            if attr.key.as_ref() == "w:val" {
+                                let style_id = attr.value.as_ref();
                                 para.style_id = Some(style_id.to_string());
-                                para.heading = self.styles.get_heading_level(&style_id);
+                                para.heading = self.styles.get_heading_level(style_id);
                                 // Also get style name from StyleMap
-                                if let Some(style) = self.styles.styles.get(style_id.as_ref()) {
+                                if let Some(style) = self.styles.styles.get(style_id) {
                                     if !style.name.is_empty() {
                                         para.style_name = Some(style.name.clone());
                                     }
@@ -733,11 +733,11 @@ impl DocxParser {
                             }
                         }
                     }
-                    b"w:jc" if in_ppr => {
+                    "w:jc" if in_ppr => {
                         for attr in e.attributes().flatten() {
-                            if attr.key.as_ref() == b"w:val" {
-                                let val = String::from_utf8_lossy(&attr.value);
-                                para.alignment = match val.as_ref() {
+                            if attr.key.as_ref() == "w:val" {
+                                let val = attr.value.as_ref();
+                                para.alignment = match val {
                                     "center" => TextAlignment::Center,
                                     "right" => TextAlignment::Right,
                                     "both" | "distribute" => TextAlignment::Justify,
@@ -746,31 +746,31 @@ impl DocxParser {
                             }
                         }
                     }
-                    b"w:b" if in_rpr => {
-                        let val = get_bool_attr(e, b"w:val");
+                    "w:b" if in_rpr => {
+                        let val = get_bool_attr(e, "w:val");
                         current_style.bold = val.unwrap_or(true);
                     }
-                    b"w:i" if in_rpr => {
-                        let val = get_bool_attr(e, b"w:val");
+                    "w:i" if in_rpr => {
+                        let val = get_bool_attr(e, "w:val");
                         current_style.italic = val.unwrap_or(true);
                     }
-                    b"w:u" if in_rpr => {
+                    "w:u" if in_rpr => {
                         for attr in e.attributes().flatten() {
-                            if attr.key.as_ref() == b"w:val" {
-                                let val = String::from_utf8_lossy(&attr.value);
+                            if attr.key.as_ref() == "w:val" {
+                                let val = attr.value.as_ref();
                                 current_style.underline = val != "none";
                             }
                         }
                     }
-                    b"w:strike" if in_rpr => {
-                        let val = get_bool_attr(e, b"w:val");
+                    "w:strike" if in_rpr => {
+                        let val = get_bool_attr(e, "w:val");
                         current_style.strikethrough = val.unwrap_or(true);
                     }
-                    b"w:vertAlign" if in_rpr => {
+                    "w:vertAlign" if in_rpr => {
                         for attr in e.attributes().flatten() {
-                            if attr.key.as_ref() == b"w:val" {
-                                let val = String::from_utf8_lossy(&attr.value);
-                                match val.as_ref() {
+                            if attr.key.as_ref() == "w:val" {
+                                let val = attr.value.as_ref();
+                                match val {
                                     "superscript" => current_style.superscript = true,
                                     "subscript" => current_style.subscript = true,
                                     _ => {}
@@ -778,55 +778,52 @@ impl DocxParser {
                             }
                         }
                     }
-                    b"w:sz" if in_rpr => {
+                    "w:sz" if in_rpr => {
                         for attr in e.attributes().flatten() {
-                            if attr.key.as_ref() == b"w:val" {
-                                let val = String::from_utf8_lossy(&attr.value);
+                            if attr.key.as_ref() == "w:val" {
+                                let val = attr.value.as_ref();
                                 current_style.size = val.parse().ok();
                             }
                         }
                     }
-                    b"w:color" if in_rpr => {
+                    "w:color" if in_rpr => {
                         for attr in e.attributes().flatten() {
-                            if attr.key.as_ref() == b"w:val" {
-                                let val = String::from_utf8_lossy(&attr.value);
+                            if attr.key.as_ref() == "w:val" {
+                                let val = attr.value.as_ref();
                                 if val != "auto" {
                                     current_style.color = Some(val.to_string());
                                 }
                             }
                         }
                     }
-                    b"w:highlight" if in_rpr => {
+                    "w:highlight" if in_rpr => {
                         for attr in e.attributes().flatten() {
-                            if attr.key.as_ref() == b"w:val" {
-                                current_style.highlight =
-                                    Some(String::from_utf8_lossy(&attr.value).to_string());
+                            if attr.key.as_ref() == "w:val" {
+                                current_style.highlight = Some(attr.value.to_string());
                             }
                         }
                     }
-                    b"w:rFonts" if in_rpr => {
+                    "w:rFonts" if in_rpr => {
                         for attr in e.attributes().flatten() {
-                            if attr.key.as_ref() == b"w:ascii" {
-                                current_style.font =
-                                    Some(String::from_utf8_lossy(&attr.value).to_string());
+                            if attr.key.as_ref() == "w:ascii" {
+                                current_style.font = Some(attr.value.to_string());
                                 break;
                             }
                         }
                     }
                     // Image handling: wp:docPr contains alt text
-                    b"wp:docPr" if in_drawing => {
+                    "wp:docPr" if in_drawing => {
                         for attr in e.attributes().flatten() {
-                            if attr.key.as_ref() == b"descr" {
-                                current_image_alt =
-                                    Some(String::from_utf8_lossy(&attr.value).to_string());
+                            if attr.key.as_ref() == "descr" {
+                                current_image_alt = Some(attr.value.to_string());
                             }
                         }
                     }
                     // Image handling: a:blip contains the image reference
-                    b"a:blip" if in_drawing => {
+                    "a:blip" if in_drawing => {
                         for attr in e.attributes().flatten() {
-                            if attr.key.as_ref() == b"r:embed" {
-                                let rel_id = String::from_utf8_lossy(&attr.value).to_string();
+                            if attr.key.as_ref() == "r:embed" {
+                                let rel_id = attr.value.to_string();
                                 // Create inline image with the relationship ID
                                 let image = InlineImage {
                                     resource_id: rel_id,
@@ -839,18 +836,18 @@ impl DocxParser {
                         }
                     }
                     // VML image handling: v:imagedata references the image part
-                    b"v:imagedata" if in_pict => {
+                    "v:imagedata" if in_pict => {
                         if let Some(image) = vml_inline_image(e) {
                             para.images.push(image);
                         }
                     }
                     // Break handling - line break or page break
-                    b"w:br" if in_run => {
+                    "w:br" if in_run => {
                         // Check for break type: page, column, or text wrapping (default)
                         let mut is_page_break = false;
                         for attr in e.attributes().flatten() {
-                            if attr.key.as_ref() == b"w:type" {
-                                let break_type = String::from_utf8_lossy(&attr.value);
+                            if attr.key.as_ref() == "w:type" {
+                                let break_type = attr.value.as_ref();
                                 is_page_break = break_type == "page";
                             }
                         }
@@ -895,7 +892,7 @@ impl DocxParser {
                         }
                     }
                     // Tab character handling - convert <w:tab/> to tab character
-                    b"w:tab" if in_run => {
+                    "w:tab" if in_run => {
                         let current_revision = if in_del {
                             RevisionType::Deleted
                         } else if in_ins {
@@ -913,7 +910,7 @@ impl DocxParser {
                         });
                     }
                     // Carriage return handling - convert <w:cr/> to newline
-                    b"w:cr" if in_run => {
+                    "w:cr" if in_run => {
                         if let Some(last_run) = para.runs.last_mut() {
                             last_run.line_break = true;
                         } else {
@@ -935,7 +932,7 @@ impl DocxParser {
                         }
                     }
                     // Non-breaking hyphen handling
-                    b"w:noBreakHyphen" if in_run => {
+                    "w:noBreakHyphen" if in_run => {
                         let current_revision = if in_del {
                             RevisionType::Deleted
                         } else if in_ins {
@@ -953,7 +950,7 @@ impl DocxParser {
                         });
                     }
                     // Soft hyphen handling (optional hyphen, usually invisible)
-                    b"w:softHyphen" if in_run => {
+                    "w:softHyphen" if in_run => {
                         let current_revision = if in_del {
                             RevisionType::Deleted
                         } else if in_ins {
@@ -971,7 +968,7 @@ impl DocxParser {
                         });
                     }
                     // Non-breaking space handling
-                    b"w:noBreakSpace" if in_run => {
+                    "w:noBreakSpace" if in_run => {
                         let current_revision = if in_del {
                             RevisionType::Deleted
                         } else if in_ins {
@@ -989,10 +986,10 @@ impl DocxParser {
                         });
                     }
                     // Footnote reference handling
-                    b"w:footnoteReference" if in_run => {
+                    "w:footnoteReference" if in_run => {
                         for attr in e.attributes().flatten() {
-                            if attr.key.as_ref() == b"w:id" {
-                                let id = String::from_utf8_lossy(&attr.value).to_string();
+                            if attr.key.as_ref() == "w:id" {
+                                let id = attr.value.to_string();
                                 // Only insert marker if this footnote has content
                                 if self.footnotes.contains_key(&id) {
                                     para.runs.push(TextRun::plain(format!("[^{}]", id)));
@@ -1001,10 +998,10 @@ impl DocxParser {
                         }
                     }
                     // Endnote reference handling
-                    b"w:endnoteReference" if in_run => {
+                    "w:endnoteReference" if in_run => {
                         for attr in e.attributes().flatten() {
-                            if attr.key.as_ref() == b"w:id" {
-                                let id = String::from_utf8_lossy(&attr.value).to_string();
+                            if attr.key.as_ref() == "w:id" {
+                                let id = attr.value.to_string();
                                 // Only insert marker if this endnote has content
                                 if self.endnotes.contains_key(&id) {
                                     para.runs.push(TextRun::plain(format!("[^e{}]", id)));
@@ -1074,26 +1071,26 @@ impl DocxParser {
                     }
                 }
                 Ok(quick_xml::events::Event::End(ref e)) => match e.name().as_ref() {
-                    b"mc:Fallback" if mc_fallback_depth > 0 => {
+                    "mc:Fallback" if mc_fallback_depth > 0 => {
                         mc_fallback_depth -= 1;
                     }
-                    b"w:txbxContent" if txbx_content_depth > 0 => {
+                    "w:txbxContent" if txbx_content_depth > 0 => {
                         txbx_content_depth -= 1;
                     }
                     _ if mc_fallback_depth > 0 || txbx_content_depth > 0 => {} // Skip
-                    b"w:pPr" => in_ppr = false,
-                    b"w:rPr" => in_rpr = false,
-                    b"w:r" => in_run = false,
-                    b"w:t" => in_text = false,
-                    b"w:instrText" => in_instr_text = false,
-                    b"w:hyperlink" => current_hyperlink = None,
-                    b"w:drawing" => {
+                    "w:pPr" => in_ppr = false,
+                    "w:rPr" => in_rpr = false,
+                    "w:r" => in_run = false,
+                    "w:t" => in_text = false,
+                    "w:instrText" => in_instr_text = false,
+                    "w:hyperlink" => current_hyperlink = None,
+                    "w:drawing" => {
                         in_drawing = false;
                         current_image_alt = None;
                     }
-                    b"w:pict" | b"w:object" => in_pict = false,
-                    b"w:ins" => in_ins = false,
-                    b"w:del" => in_del = false,
+                    "w:pict" | "w:object" => in_pict = false,
+                    "w:ins" => in_ins = false,
+                    "w:del" => in_del = false,
                     _ => {}
                 },
                 Ok(quick_xml::events::Event::Eof) => break,
@@ -1131,13 +1128,13 @@ impl DocxParser {
                 Ok(quick_xml::events::Event::Start(ref e)) => {
                     let name = e.name();
                     match name.as_ref() {
-                        b"mc:Fallback" => {
+                        "mc:Fallback" => {
                             mc_fallback_depth += 1;
                         }
-                        b"w:txbxContent" if mc_fallback_depth == 0 => {
+                        "w:txbxContent" if mc_fallback_depth == 0 => {
                             txbx_content_depth += 1;
                         }
-                        b"w:p" if txbx_content_depth > 0 && !in_txbx_para => {
+                        "w:p" if txbx_content_depth > 0 && !in_txbx_para => {
                             in_txbx_para = true;
                             txbx_para_depth = 0;
                             txbx_para_xml.clear();
@@ -1145,8 +1142,8 @@ impl DocxParser {
                             for attr in e.attributes().flatten() {
                                 txbx_para_xml.push_str(&format!(
                                     " {}=\"{}\"",
-                                    String::from_utf8_lossy(attr.key.as_ref()),
-                                    String::from_utf8_lossy(&attr.value)
+                                    attr.key.as_ref(),
+                                    attr.value.as_ref()
                                 ));
                             }
                             txbx_para_xml.push('>');
@@ -1154,12 +1151,12 @@ impl DocxParser {
                         _ if in_txbx_para => {
                             txbx_para_depth += 1;
                             txbx_para_xml.push('<');
-                            txbx_para_xml.push_str(&String::from_utf8_lossy(name.as_ref()));
+                            txbx_para_xml.push_str(name.as_ref());
                             for attr in e.attributes().flatten() {
                                 txbx_para_xml.push_str(&format!(
                                     " {}=\"{}\"",
-                                    String::from_utf8_lossy(attr.key.as_ref()),
-                                    String::from_utf8_lossy(&attr.value)
+                                    attr.key.as_ref(),
+                                    attr.value.as_ref()
                                 ));
                             }
                             txbx_para_xml.push('>');
@@ -1170,12 +1167,12 @@ impl DocxParser {
                 Ok(quick_xml::events::Event::Empty(ref e)) if in_txbx_para => {
                     let name = e.name();
                     txbx_para_xml.push('<');
-                    txbx_para_xml.push_str(&String::from_utf8_lossy(name.as_ref()));
+                    txbx_para_xml.push_str(name.as_ref());
                     for attr in e.attributes().flatten() {
                         txbx_para_xml.push_str(&format!(
                             " {}=\"{}\"",
-                            String::from_utf8_lossy(attr.key.as_ref()),
-                            String::from_utf8_lossy(&attr.value)
+                            attr.key.as_ref(),
+                            attr.value.as_ref()
                         ));
                     }
                     txbx_para_xml.push_str("/>");
@@ -1193,13 +1190,13 @@ impl DocxParser {
                 Ok(quick_xml::events::Event::End(ref e)) => {
                     let name = e.name();
                     match name.as_ref() {
-                        b"mc:Fallback" if mc_fallback_depth > 0 => {
+                        "mc:Fallback" if mc_fallback_depth > 0 => {
                             mc_fallback_depth -= 1;
                         }
-                        b"w:txbxContent" if txbx_content_depth > 0 => {
+                        "w:txbxContent" if txbx_content_depth > 0 => {
                             txbx_content_depth -= 1;
                         }
-                        b"w:p" if in_txbx_para && txbx_para_depth == 0 => {
+                        "w:p" if in_txbx_para && txbx_para_depth == 0 => {
                             txbx_para_xml.push_str("</w:p>");
                             if let Ok(para) = self.parse_paragraph(&txbx_para_xml) {
                                 if !para.plain_text().is_empty() {
@@ -1211,7 +1208,7 @@ impl DocxParser {
                         _ if in_txbx_para => {
                             txbx_para_depth = txbx_para_depth.saturating_sub(1);
                             txbx_para_xml.push_str("</");
-                            txbx_para_xml.push_str(&String::from_utf8_lossy(name.as_ref()));
+                            txbx_para_xml.push_str(name.as_ref());
                             txbx_para_xml.push('>');
                         }
                         _ => {}
@@ -1239,22 +1236,22 @@ impl DocxParser {
 
         loop {
             match reader.read_event_into(&mut buf) {
-                Ok(quick_xml::events::Event::Start(ref e)) if e.name().as_ref() == b"w:numPr" => {
+                Ok(quick_xml::events::Event::Start(ref e)) if e.name().as_ref() == "w:numPr" => {
                     in_num_pr = true;
                 }
                 Ok(quick_xml::events::Event::Empty(ref e)) if in_num_pr => {
                     match e.name().as_ref() {
-                        b"w:numId" => {
+                        "w:numId" => {
                             for attr in e.attributes().flatten() {
-                                if attr.key.as_ref() == b"w:val" {
-                                    num_id = Some(String::from_utf8_lossy(&attr.value).to_string());
+                                if attr.key.as_ref() == "w:val" {
+                                    num_id = Some(attr.value.to_string());
                                 }
                             }
                         }
-                        b"w:ilvl" => {
+                        "w:ilvl" => {
                             for attr in e.attributes().flatten() {
-                                if attr.key.as_ref() == b"w:val" {
-                                    let val = String::from_utf8_lossy(&attr.value);
+                                if attr.key.as_ref() == "w:val" {
+                                    let val = attr.value.as_ref();
                                     level = val.parse().unwrap_or(0);
                                 }
                             }
@@ -1262,7 +1259,7 @@ impl DocxParser {
                         _ => {}
                     }
                 }
-                Ok(quick_xml::events::Event::End(ref e)) if e.name().as_ref() == b"w:numPr" => {
+                Ok(quick_xml::events::Event::End(ref e)) if e.name().as_ref() == "w:numPr" => {
                     in_num_pr = false;
                 }
                 Ok(quick_xml::events::Event::Eof) => break,
@@ -1339,29 +1336,29 @@ impl DocxParser {
                     // If we're inside a nested table, just collect XML
                     if nested_table_depth > 0 {
                         nested_table_xml.push('<');
-                        nested_table_xml.push_str(&String::from_utf8_lossy(name.as_ref()));
+                        nested_table_xml.push_str(name.as_ref());
                         for attr in e.attributes().flatten() {
                             nested_table_xml.push_str(&format!(
                                 " {}=\"{}\"",
-                                String::from_utf8_lossy(attr.key.as_ref()),
-                                String::from_utf8_lossy(&attr.value)
+                                attr.key.as_ref(),
+                                attr.value.as_ref()
                             ));
                         }
                         nested_table_xml.push('>');
-                        if name.as_ref() == b"w:tbl" {
+                        if name.as_ref() == "w:tbl" {
                             nested_table_depth += 1;
                         }
                         continue;
                     }
 
                     match name.as_ref() {
-                        b"w:tbl" if in_cell => {
+                        "w:tbl" if in_cell => {
                             // Start collecting nested table
                             nested_table_depth = 1;
                             nested_table_xml.clear();
                             nested_table_xml.push_str("<w:tbl>");
                         }
-                        b"w:tr" => {
+                        "w:tr" => {
                             in_row = true;
                             current_row = Some(Row {
                                 cells: Vec::new(),
@@ -1370,7 +1367,7 @@ impl DocxParser {
                             });
                             is_header_row = false;
                         }
-                        b"w:tc" => {
+                        "w:tc" => {
                             in_cell = true;
                             cell_paragraphs.clear();
                             cell_nested_tables.clear();
@@ -1378,26 +1375,26 @@ impl DocxParser {
                             row_span = 1;
                             cell_alignment = CellAlignment::Left;
                         }
-                        b"w:tcPr" if in_cell => {
+                        "w:tcPr" if in_cell => {
                             in_tc_pr = true;
                         }
-                        b"w:p" if in_cell => {
+                        "w:p" if in_cell => {
                             in_paragraph = true;
                             current_paragraph = Some(Paragraph::new());
                         }
-                        b"w:r" if in_paragraph => {
+                        "w:r" if in_paragraph => {
                             in_run = true;
                             current_style = TextStyle::default();
                         }
-                        b"w:rPr" if in_run => in_rpr = true,
-                        b"w:t" => in_text = true,
-                        b"w:instrText" => in_instr_text = true,
-                        b"w:drawing" => {
+                        "w:rPr" if in_run => in_rpr = true,
+                        "w:t" => in_text = true,
+                        "w:instrText" => in_instr_text = true,
+                        "w:drawing" => {
                             in_drawing = true;
                             current_image_alt = None;
                         }
-                        b"w:pict" | b"w:object" => in_pict = true,
-                        b"mc:Fallback" => mc_fallback_depth += 1,
+                        "w:pict" | "w:object" => in_pict = true,
+                        "mc:Fallback" => mc_fallback_depth += 1,
                         _ => {}
                     }
                 }
@@ -1407,12 +1404,12 @@ impl DocxParser {
                     // If we're inside a nested table, just collect XML
                     if nested_table_depth > 0 {
                         nested_table_xml.push('<');
-                        nested_table_xml.push_str(&String::from_utf8_lossy(name.as_ref()));
+                        nested_table_xml.push_str(name.as_ref());
                         for attr in e.attributes().flatten() {
                             nested_table_xml.push_str(&format!(
                                 " {}=\"{}\"",
-                                String::from_utf8_lossy(attr.key.as_ref()),
-                                String::from_utf8_lossy(&attr.value)
+                                attr.key.as_ref(),
+                                attr.value.as_ref()
                             ));
                         }
                         nested_table_xml.push_str("/>");
@@ -1420,21 +1417,21 @@ impl DocxParser {
                     }
 
                     match name.as_ref() {
-                        b"w:tblHeader" if in_row => {
+                        "w:tblHeader" if in_row => {
                             is_header_row = true;
                         }
-                        b"w:gridSpan" if in_cell => {
+                        "w:gridSpan" if in_cell => {
                             for attr in e.attributes().flatten() {
-                                if attr.key.as_ref() == b"w:val" {
-                                    let val = String::from_utf8_lossy(&attr.value);
+                                if attr.key.as_ref() == "w:val" {
+                                    let val = attr.value.as_ref();
                                     col_span = val.parse().unwrap_or(1);
                                 }
                             }
                         }
-                        b"w:vMerge" if in_cell => {
+                        "w:vMerge" if in_cell => {
                             let mut has_val = false;
                             for attr in e.attributes().flatten() {
-                                if attr.key.as_ref() == b"w:val" {
+                                if attr.key.as_ref() == "w:val" {
                                     has_val = true;
                                 }
                             }
@@ -1442,11 +1439,11 @@ impl DocxParser {
                                 row_span = 0;
                             }
                         }
-                        b"w:jc" if in_tc_pr => {
+                        "w:jc" if in_tc_pr => {
                             for attr in e.attributes().flatten() {
-                                if attr.key.as_ref() == b"w:val" {
-                                    let val = String::from_utf8_lossy(&attr.value);
-                                    cell_alignment = match val.as_ref() {
+                                if attr.key.as_ref() == "w:val" {
+                                    let val = attr.value.as_ref();
+                                    cell_alignment = match val {
                                         "center" => CellAlignment::Center,
                                         "right" | "end" => CellAlignment::Right,
                                         _ => CellAlignment::Left,
@@ -1455,40 +1452,39 @@ impl DocxParser {
                             }
                         }
                         // Handle formatting in run properties
-                        b"w:b" if in_rpr => {
-                            let val = get_bool_attr(e, b"w:val");
+                        "w:b" if in_rpr => {
+                            let val = get_bool_attr(e, "w:val");
                             current_style.bold = val.unwrap_or(true);
                         }
-                        b"w:i" if in_rpr => {
-                            let val = get_bool_attr(e, b"w:val");
+                        "w:i" if in_rpr => {
+                            let val = get_bool_attr(e, "w:val");
                             current_style.italic = val.unwrap_or(true);
                         }
-                        b"w:u" if in_rpr => {
+                        "w:u" if in_rpr => {
                             for attr in e.attributes().flatten() {
-                                if attr.key.as_ref() == b"w:val" {
-                                    let val = String::from_utf8_lossy(&attr.value);
+                                if attr.key.as_ref() == "w:val" {
+                                    let val = attr.value.as_ref();
                                     current_style.underline = val != "none";
                                 }
                             }
                         }
-                        b"w:strike" if in_rpr => {
-                            let val = get_bool_attr(e, b"w:val");
+                        "w:strike" if in_rpr => {
+                            let val = get_bool_attr(e, "w:val");
                             current_style.strikethrough = val.unwrap_or(true);
                         }
                         // Image handling: wp:docPr contains alt text
-                        b"wp:docPr" if in_drawing => {
+                        "wp:docPr" if in_drawing => {
                             for attr in e.attributes().flatten() {
-                                if attr.key.as_ref() == b"descr" {
-                                    current_image_alt =
-                                        Some(String::from_utf8_lossy(&attr.value).to_string());
+                                if attr.key.as_ref() == "descr" {
+                                    current_image_alt = Some(attr.value.to_string());
                                 }
                             }
                         }
                         // Image handling: a:blip contains the image reference
-                        b"a:blip" if in_drawing => {
+                        "a:blip" if in_drawing => {
                             for attr in e.attributes().flatten() {
-                                if attr.key.as_ref() == b"r:embed" {
-                                    let rel_id = String::from_utf8_lossy(&attr.value).to_string();
+                                if attr.key.as_ref() == "r:embed" {
+                                    let rel_id = attr.value.to_string();
                                     // Create inline image with the relationship ID
                                     let image = InlineImage {
                                         resource_id: rel_id,
@@ -1504,7 +1500,7 @@ impl DocxParser {
                         }
                         // VML image handling: skip mc:Fallback copies, which
                         // duplicate the DrawingML mc:Choice branch
-                        b"v:imagedata" if in_pict && mc_fallback_depth == 0 => {
+                        "v:imagedata" if in_pict && mc_fallback_depth == 0 => {
                             if let Some(image) = vml_inline_image(e) {
                                 if let Some(ref mut para) = current_paragraph {
                                     para.images.push(image);
@@ -1572,7 +1568,7 @@ impl DocxParser {
 
                     // If we're inside a nested table, collect XML and check for end
                     if nested_table_depth > 0 {
-                        if name.as_ref() == b"w:tbl" {
+                        if name.as_ref() == "w:tbl" {
                             nested_table_xml.push_str("</w:tbl>");
                             nested_table_depth -= 1;
                             if nested_table_depth == 0 {
@@ -1583,14 +1579,14 @@ impl DocxParser {
                             }
                         } else {
                             nested_table_xml.push_str("</");
-                            nested_table_xml.push_str(&String::from_utf8_lossy(name.as_ref()));
+                            nested_table_xml.push_str(name.as_ref());
                             nested_table_xml.push('>');
                         }
                         continue;
                     }
 
                     match name.as_ref() {
-                        b"w:tr" => {
+                        "w:tr" => {
                             if let Some(mut row) = current_row.take() {
                                 row.is_header = is_header_row;
                                 table.add_row(row);
@@ -1598,10 +1594,10 @@ impl DocxParser {
                             in_row = false;
                             col_cursor = 0;
                         }
-                        b"w:tcPr" => {
+                        "w:tcPr" => {
                             in_tc_pr = false;
                         }
-                        b"w:tc" => {
+                        "w:tc" => {
                             if row_span > 0 {
                                 // Use collected paragraphs, or empty paragraph if none
                                 // Deduplicate repeated paragraph blocks within cell
@@ -1648,7 +1644,7 @@ impl DocxParser {
                             col_cursor += col_span as usize;
                             in_cell = false;
                         }
-                        b"w:p" if in_cell => {
+                        "w:p" if in_cell => {
                             // Save the completed paragraph
                             if let Some(para) = current_paragraph.take() {
                                 // Only add non-empty paragraphs
@@ -1667,18 +1663,18 @@ impl DocxParser {
                             }
                             in_paragraph = false;
                         }
-                        b"w:r" => {
+                        "w:r" => {
                             in_run = false;
                         }
-                        b"w:rPr" => in_rpr = false,
-                        b"w:t" => in_text = false,
-                        b"w:instrText" => in_instr_text = false,
-                        b"w:drawing" => {
+                        "w:rPr" => in_rpr = false,
+                        "w:t" => in_text = false,
+                        "w:instrText" => in_instr_text = false,
+                        "w:drawing" => {
                             in_drawing = false;
                             current_image_alt = None;
                         }
-                        b"w:pict" | b"w:object" => in_pict = false,
-                        b"mc:Fallback" => mc_fallback_depth = mc_fallback_depth.saturating_sub(1),
+                        "w:pict" | "w:object" => in_pict = false,
+                        "mc:Fallback" => mc_fallback_depth = mc_fallback_depth.saturating_sub(1),
                         _ => {}
                     }
                 }
@@ -1735,9 +1731,9 @@ impl DocxParser {
 
 /// Parse footnotes.xml or endnotes.xml into a map of id → plain text.
 ///
-/// `note_tag` should be `b"w:footnote"` or `b"w:endnote"`.
+/// `note_tag` should be `"w:footnote"` or `"w:endnote"`.
 /// Entries with `w:type="separator"` or `w:type="continuationSeparator"` are skipped.
-fn parse_notes_xml(xml: &str, note_tag: &[u8]) -> HashMap<String, String> {
+fn parse_notes_xml(xml: &str, note_tag: &str) -> HashMap<String, String> {
     let mut notes = HashMap::new();
     let mut reader = crate::decode::reader_for(xml);
     reader.config_mut().trim_text(false);
@@ -1756,11 +1752,11 @@ fn parse_notes_xml(xml: &str, note_tag: &[u8]) -> HashMap<String, String> {
                     let mut note_type = None;
                     for attr in e.attributes().flatten() {
                         match attr.key.as_ref() {
-                            b"w:id" => {
-                                id = Some(String::from_utf8_lossy(&attr.value).to_string());
+                            "w:id" => {
+                                id = Some(attr.value.to_string());
                             }
-                            b"w:type" => {
-                                note_type = Some(String::from_utf8_lossy(&attr.value).to_string());
+                            "w:type" => {
+                                note_type = Some(attr.value.to_string());
                             }
                             _ => {}
                         }
@@ -1778,7 +1774,7 @@ fn parse_notes_xml(xml: &str, note_tag: &[u8]) -> HashMap<String, String> {
                         current_id = Some(id_val);
                         current_text.clear();
                     }
-                } else if in_note && e.name().as_ref() == b"w:t" {
+                } else if in_note && e.name().as_ref() == "w:t" {
                     in_text = true;
                 }
             }
@@ -1799,7 +1795,7 @@ fn parse_notes_xml(xml: &str, note_tag: &[u8]) -> HashMap<String, String> {
                         }
                         in_note = false;
                     }
-                } else if e.name().as_ref() == b"w:t" {
+                } else if e.name().as_ref() == "w:t" {
                     in_text = false;
                 }
             }
@@ -1825,8 +1821,8 @@ fn vml_inline_image(e: &quick_xml::events::BytesStart) -> Option<crate::model::I
     let mut title = None;
     for attr in e.attributes().flatten() {
         match attr.key.as_ref() {
-            b"r:id" => rel_id = Some(String::from_utf8_lossy(&attr.value).to_string()),
-            b"o:title" => title = Some(String::from_utf8_lossy(&attr.value).to_string()),
+            "r:id" => rel_id = Some(attr.value.to_string()),
+            "o:title" => title = Some(attr.value.to_string()),
             _ => {}
         }
     }
@@ -1839,10 +1835,10 @@ fn vml_inline_image(e: &quick_xml::events::BytesStart) -> Option<crate::model::I
 }
 
 /// Helper to get a boolean attribute value.
-fn get_bool_attr(e: &quick_xml::events::BytesStart, key: &[u8]) -> Option<bool> {
+fn get_bool_attr(e: &quick_xml::events::BytesStart, key: &str) -> Option<bool> {
     for attr in e.attributes().flatten() {
         if attr.key.as_ref() == key {
-            let val = String::from_utf8_lossy(&attr.value);
+            let val = attr.value.as_ref();
             return Some(val != "0" && val != "false");
         }
     }
@@ -1854,12 +1850,12 @@ fn get_bool_attr(e: &quick_xml::events::BytesStart, key: &[u8]) -> Option<bool> 
 /// are re-escaped here for the re-parse.
 fn push_start_tag(buf: &mut String, e: &quick_xml::events::BytesStart) {
     buf.push('<');
-    buf.push_str(&String::from_utf8_lossy(e.name().as_ref()));
+    buf.push_str(e.name().as_ref());
     for attr in e.attributes().flatten() {
         buf.push_str(&format!(
             " {}=\"{}\"",
-            String::from_utf8_lossy(attr.key.as_ref()),
-            String::from_utf8_lossy(&attr.value)
+            attr.key.as_ref(),
+            attr.value.as_ref()
         ));
     }
     buf.push('>');
@@ -1868,21 +1864,21 @@ fn push_start_tag(buf: &mut String, e: &quick_xml::events::BytesStart) {
 /// Append a re-serialized empty-element tag (`<name attr="val"/>`) to a buffer.
 fn push_empty_tag(buf: &mut String, e: &quick_xml::events::BytesStart) {
     buf.push('<');
-    buf.push_str(&String::from_utf8_lossy(e.name().as_ref()));
+    buf.push_str(e.name().as_ref());
     for attr in e.attributes().flatten() {
         buf.push_str(&format!(
             " {}=\"{}\"",
-            String::from_utf8_lossy(attr.key.as_ref()),
-            String::from_utf8_lossy(&attr.value)
+            attr.key.as_ref(),
+            attr.value.as_ref()
         ));
     }
     buf.push_str("/>");
 }
 
 /// Append a re-serialized end tag (`</name>`) to a buffer.
-fn push_end_tag(buf: &mut String, name: &[u8]) {
+fn push_end_tag(buf: &mut String, name: &str) {
     buf.push_str("</");
-    buf.push_str(&String::from_utf8_lossy(name));
+    buf.push_str(name);
     buf.push('>');
 }
 
@@ -2365,7 +2361,7 @@ mod tests {
             </w:footnote>
         </w:footnotes>"#;
 
-        let notes = parse_notes_xml(xml, b"w:footnote");
+        let notes = parse_notes_xml(xml, "w:footnote");
 
         // Separator and continuationSeparator should be skipped
         assert!(!notes.contains_key("0"), "separator should be skipped");
@@ -2392,7 +2388,7 @@ mod tests {
             </w:endnote>
         </w:endnotes>"#;
 
-        let notes = parse_notes_xml(xml, b"w:endnote");
+        let notes = parse_notes_xml(xml, "w:endnote");
 
         assert!(!notes.contains_key("0"), "separator should be skipped");
         assert_eq!(notes.get("1").unwrap(), "Endnote content here.");
@@ -2413,7 +2409,7 @@ mod tests {
             </w:footnote>
         </w:footnotes>"#;
 
-        let notes = parse_notes_xml(xml, b"w:footnote");
+        let notes = parse_notes_xml(xml, "w:footnote");
         assert_eq!(notes.get("1").unwrap(), "First second third.");
     }
 
@@ -2426,7 +2422,7 @@ mod tests {
             </w:footnote>
         </w:footnotes>"#;
 
-        let notes = parse_notes_xml(xml, b"w:footnote");
+        let notes = parse_notes_xml(xml, "w:footnote");
         assert_eq!(notes.get("2").unwrap(), "Footnote &bogus; text");
     }
 
@@ -2551,7 +2547,7 @@ mod tests {
             </w:footnote>
         </w:footnotes>"#;
 
-        let notes = parse_notes_xml(xml, b"w:footnote");
+        let notes = parse_notes_xml(xml, "w:footnote");
         assert!(
             !notes.contains_key("1"),
             "Whitespace-only note should be skipped"

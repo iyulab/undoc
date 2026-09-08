@@ -4,7 +4,8 @@
 //!
 //! These benchmarks test parsing performance at various document sizes.
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use std::hint::black_box;
 use std::io::Cursor;
 
 /// Creates a synthetic DOCX document with the given number of paragraphs.

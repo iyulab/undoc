@@ -139,16 +139,16 @@ impl StyleMap {
                 Ok(quick_xml::events::Event::Start(e)) => {
                     let name = e.name();
                     match name.as_ref() {
-                        b"w:style" => {
+                        "w:style" => {
                             let mut style = Style::default();
                             for attr in e.attributes().flatten() {
                                 match attr.key.as_ref() {
-                                    b"w:styleId" => {
-                                        style.id = String::from_utf8_lossy(&attr.value).to_string();
+                                    "w:styleId" => {
+                                        style.id = attr.value.to_string();
                                     }
-                                    b"w:type" => {
-                                        let t = String::from_utf8_lossy(&attr.value);
-                                        style.style_type = match t.as_ref() {
+                                    "w:type" => {
+                                        let t = attr.value.as_ref();
+                                        style.style_type = match t {
                                             "paragraph" => Some(StyleType::Paragraph),
                                             "character" => Some(StyleType::Character),
                                             "table" => Some(StyleType::Table),
@@ -156,9 +156,8 @@ impl StyleMap {
                                             _ => None,
                                         };
                                     }
-                                    b"w:default" => {
-                                        let is_default =
-                                            String::from_utf8_lossy(&attr.value) == "1";
+                                    "w:default" => {
+                                        let is_default = attr.value.as_ref() == "1";
                                         if is_default {
                                             if let Some(ref style_type) = style.style_type {
                                                 match style_type {
@@ -181,10 +180,10 @@ impl StyleMap {
                             current_style = Some(style);
                             in_style = true;
                         }
-                        b"w:pPr" if in_style => {
+                        "w:pPr" if in_style => {
                             in_ppr = true;
                         }
-                        b"w:rPr" if in_style => {
+                        "w:rPr" if in_style => {
                             in_rpr = true;
                         }
                         _ => {}
@@ -194,81 +193,78 @@ impl StyleMap {
                     let name = e.name();
                     if let Some(ref mut style) = current_style {
                         match name.as_ref() {
-                            b"w:name" => {
+                            "w:name" => {
                                 for attr in e.attributes().flatten() {
-                                    if attr.key.as_ref() == b"w:val" {
-                                        style.name =
-                                            String::from_utf8_lossy(&attr.value).to_string();
+                                    if attr.key.as_ref() == "w:val" {
+                                        style.name = attr.value.to_string();
                                     }
                                 }
                             }
-                            b"w:basedOn" => {
+                            "w:basedOn" => {
                                 for attr in e.attributes().flatten() {
-                                    if attr.key.as_ref() == b"w:val" {
-                                        style.based_on =
-                                            Some(String::from_utf8_lossy(&attr.value).to_string());
+                                    if attr.key.as_ref() == "w:val" {
+                                        style.based_on = Some(attr.value.to_string());
                                     }
                                 }
                             }
-                            b"w:outlineLvl" if in_ppr => {
+                            "w:outlineLvl" if in_ppr => {
                                 for attr in e.attributes().flatten() {
-                                    if attr.key.as_ref() == b"w:val" {
-                                        let val = String::from_utf8_lossy(&attr.value);
+                                    if attr.key.as_ref() == "w:val" {
+                                        let val = attr.value.as_ref();
                                         style.outline_level = val.parse().ok();
                                     }
                                 }
                             }
-                            b"w:jc" if in_ppr => {
+                            "w:jc" if in_ppr => {
                                 for attr in e.attributes().flatten() {
-                                    if attr.key.as_ref() == b"w:val" {
+                                    if attr.key.as_ref() == "w:val" {
                                         style.paragraph_props.justification =
-                                            Some(String::from_utf8_lossy(&attr.value).to_string());
+                                            Some(attr.value.to_string());
                                     }
                                 }
                             }
-                            b"w:b" if in_rpr => {
-                                let val = get_bool_attr(&e, b"w:val");
+                            "w:b" if in_rpr => {
+                                let val = get_bool_attr(&e, "w:val");
                                 style.run_props.bold = Some(val.unwrap_or(true));
                             }
-                            b"w:i" if in_rpr => {
-                                let val = get_bool_attr(&e, b"w:val");
+                            "w:i" if in_rpr => {
+                                let val = get_bool_attr(&e, "w:val");
                                 style.run_props.italic = Some(val.unwrap_or(true));
                             }
-                            b"w:u" if in_rpr => {
+                            "w:u" if in_rpr => {
                                 for attr in e.attributes().flatten() {
-                                    if attr.key.as_ref() == b"w:val" {
-                                        let val = String::from_utf8_lossy(&attr.value);
+                                    if attr.key.as_ref() == "w:val" {
+                                        let val = attr.value.as_ref();
                                         style.run_props.underline = Some(val != "none");
                                     }
                                 }
                             }
-                            b"w:strike" if in_rpr => {
-                                let val = get_bool_attr(&e, b"w:val");
+                            "w:strike" if in_rpr => {
+                                let val = get_bool_attr(&e, "w:val");
                                 style.run_props.strike = Some(val.unwrap_or(true));
                             }
-                            b"w:sz" if in_rpr => {
+                            "w:sz" if in_rpr => {
                                 for attr in e.attributes().flatten() {
-                                    if attr.key.as_ref() == b"w:val" {
-                                        let val = String::from_utf8_lossy(&attr.value);
+                                    if attr.key.as_ref() == "w:val" {
+                                        let val = attr.value.as_ref();
                                         style.run_props.font_size = val.parse().ok();
                                     }
                                 }
                             }
-                            b"w:color" if in_rpr => {
+                            "w:color" if in_rpr => {
                                 for attr in e.attributes().flatten() {
-                                    if attr.key.as_ref() == b"w:val" {
-                                        let val = String::from_utf8_lossy(&attr.value);
+                                    if attr.key.as_ref() == "w:val" {
+                                        let val = attr.value.as_ref();
                                         if val != "auto" {
                                             style.run_props.color = Some(val.to_string());
                                         }
                                     }
                                 }
                             }
-                            b"w:rFonts" if in_rpr => {
+                            "w:rFonts" if in_rpr => {
                                 for attr in e.attributes().flatten() {
-                                    if attr.key.as_ref() == b"w:ascii" {
-                                        style.run_props.font_name =
-                                            Some(String::from_utf8_lossy(&attr.value).to_string());
+                                    if attr.key.as_ref() == "w:ascii" {
+                                        style.run_props.font_name = Some(attr.value.to_string());
                                         break;
                                     }
                                 }
@@ -278,7 +274,7 @@ impl StyleMap {
                     }
                 }
                 Ok(quick_xml::events::Event::End(e)) => match e.name().as_ref() {
-                    b"w:style" => {
+                    "w:style" => {
                         if let Some(style) = current_style.take() {
                             map.styles.insert(style.id.clone(), style);
                         }
@@ -286,10 +282,10 @@ impl StyleMap {
                         in_ppr = false;
                         in_rpr = false;
                     }
-                    b"w:pPr" => {
+                    "w:pPr" => {
                         in_ppr = false;
                     }
-                    b"w:rPr" => {
+                    "w:rPr" => {
                         in_rpr = false;
                     }
                     _ => {}
@@ -355,10 +351,10 @@ impl StyleMap {
 }
 
 /// Helper to get a boolean attribute value.
-fn get_bool_attr(e: &quick_xml::events::BytesStart, key: &[u8]) -> Option<bool> {
+fn get_bool_attr(e: &quick_xml::events::BytesStart, key: &str) -> Option<bool> {
     for attr in e.attributes().flatten() {
         if attr.key.as_ref() == key {
-            let val = String::from_utf8_lossy(&attr.value);
+            let val = attr.value.as_ref();
             return Some(val != "0" && val != "false");
         }
     }

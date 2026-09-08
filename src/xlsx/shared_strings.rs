@@ -29,11 +29,11 @@ impl SharedStrings {
         loop {
             match reader.read_event_into(&mut buf) {
                 Ok(quick_xml::events::Event::Start(e)) => match e.name().as_ref() {
-                    b"si" => {
+                    "si" => {
                         in_si = true;
                         current_text.clear();
                     }
-                    b"t" if in_si => {
+                    "t" if in_si => {
                         in_t = true;
                     }
                     _ => {}
@@ -48,7 +48,7 @@ impl SharedStrings {
                     current_text.push_str(&resolve_general_ref(&e));
                 }
                 Ok(quick_xml::events::Event::End(e)) => match e.name().as_ref() {
-                    b"si" => {
+                    "si" => {
                         // Collapse CR that re-entered via &#13;/&#xD; refs (Excel
                         // in-cell breaks); a CRLF pair arrives as two refs, so the
                         // whole accumulated string is normalized once here.
@@ -57,7 +57,7 @@ impl SharedStrings {
                         );
                         in_si = false;
                     }
-                    b"t" => {
+                    "t" => {
                         in_t = false;
                     }
                     _ => {}

@@ -77,17 +77,17 @@ impl PptxParser {
                 Ok(quick_xml::events::Event::Empty(e)) | Ok(quick_xml::events::Event::Start(e)) => {
                     let name = e.name();
                     let local_name = name.local_name();
-                    if local_name.as_ref() == b"sldId" {
+                    if local_name.as_ref() == "sldId" {
                         let mut id = String::new();
                         let mut rel_id = String::new();
 
                         for attr in e.attributes().flatten() {
                             match attr.key.as_ref() {
-                                b"id" => {
-                                    id = String::from_utf8_lossy(&attr.value).to_string();
+                                "id" => {
+                                    id = attr.value.to_string();
                                 }
-                                key if key.ends_with(b"id") && key != b"id" && key.len() > 2 => {
-                                    rel_id = String::from_utf8_lossy(&attr.value).to_string();
+                                key if key.ends_with("id") && key != "id" && key.len() > 2 => {
+                                    rel_id = attr.value.to_string();
                                 }
                                 _ => {}
                             }
@@ -347,7 +347,7 @@ impl PptxParser {
                     let local_name = e.name().local_name();
                     match local_name.as_ref() {
                         // p:pic - picture element
-                        b"pic" => {
+                        "pic" => {
                             in_pic = true;
                             current_name = None;
                             current_rel_id = None;
@@ -355,51 +355,45 @@ impl PptxParser {
                             current_height = None;
                         }
                         // p:nvPicPr - non-visual picture properties (contains name)
-                        b"nvPicPr" if in_pic => {
+                        "nvPicPr" if in_pic => {
                             in_nvpicpr = true;
                         }
                         // p:cNvPr - common non-visual properties (has name attribute)
-                        b"cNvPr" if in_nvpicpr => {
+                        "cNvPr" if in_nvpicpr => {
                             for attr in e.attributes().flatten() {
-                                if attr.key.local_name().as_ref() == b"name" {
-                                    current_name =
-                                        Some(String::from_utf8_lossy(&attr.value).to_string());
+                                if attr.key.local_name().as_ref() == "name" {
+                                    current_name = Some(attr.value.to_string());
                                 }
                             }
                         }
                         // p:blipFill - blip fill (contains the image reference)
-                        b"blipFill" if in_pic => {
+                        "blipFill" if in_pic => {
                             in_blipfill = true;
                         }
                         // a:blip - the actual image reference
-                        b"blip" if in_blipfill => {
+                        "blip" if in_blipfill => {
                             for attr in e.attributes().flatten() {
                                 // r:embed attribute contains the relationship ID
-                                if attr.key.local_name().as_ref() == b"embed" {
-                                    current_rel_id =
-                                        Some(String::from_utf8_lossy(&attr.value).to_string());
+                                if attr.key.local_name().as_ref() == "embed" {
+                                    current_rel_id = Some(attr.value.to_string());
                                 }
                             }
                         }
                         // p:spPr - shape properties (contains size)
-                        b"spPr" if in_pic => {
+                        "spPr" if in_pic => {
                             in_sppr = true;
                         }
                         // a:ext - extent (size)
-                        b"ext" if in_sppr => {
+                        "ext" if in_sppr => {
                             for attr in e.attributes().flatten() {
                                 match attr.key.local_name().as_ref() {
-                                    b"cx" => {
-                                        if let Ok(cx) =
-                                            String::from_utf8_lossy(&attr.value).parse::<u32>()
-                                        {
+                                    "cx" => {
+                                        if let Ok(cx) = attr.value.parse::<u32>() {
                                             current_width = Some(cx);
                                         }
                                     }
-                                    b"cy" => {
-                                        if let Ok(cy) =
-                                            String::from_utf8_lossy(&attr.value).parse::<u32>()
-                                        {
+                                    "cy" => {
+                                        if let Ok(cy) = attr.value.parse::<u32>() {
                                             current_height = Some(cy);
                                         }
                                     }
@@ -414,38 +408,32 @@ impl PptxParser {
                     let local_name = e.name().local_name();
                     match local_name.as_ref() {
                         // Handle self-closing cNvPr
-                        b"cNvPr" if in_nvpicpr => {
+                        "cNvPr" if in_nvpicpr => {
                             for attr in e.attributes().flatten() {
-                                if attr.key.local_name().as_ref() == b"name" {
-                                    current_name =
-                                        Some(String::from_utf8_lossy(&attr.value).to_string());
+                                if attr.key.local_name().as_ref() == "name" {
+                                    current_name = Some(attr.value.to_string());
                                 }
                             }
                         }
                         // Handle self-closing blip
-                        b"blip" if in_blipfill => {
+                        "blip" if in_blipfill => {
                             for attr in e.attributes().flatten() {
-                                if attr.key.local_name().as_ref() == b"embed" {
-                                    current_rel_id =
-                                        Some(String::from_utf8_lossy(&attr.value).to_string());
+                                if attr.key.local_name().as_ref() == "embed" {
+                                    current_rel_id = Some(attr.value.to_string());
                                 }
                             }
                         }
                         // Handle self-closing ext
-                        b"ext" if in_sppr => {
+                        "ext" if in_sppr => {
                             for attr in e.attributes().flatten() {
                                 match attr.key.local_name().as_ref() {
-                                    b"cx" => {
-                                        if let Ok(cx) =
-                                            String::from_utf8_lossy(&attr.value).parse::<u32>()
-                                        {
+                                    "cx" => {
+                                        if let Ok(cx) = attr.value.parse::<u32>() {
                                             current_width = Some(cx);
                                         }
                                     }
-                                    b"cy" => {
-                                        if let Ok(cy) =
-                                            String::from_utf8_lossy(&attr.value).parse::<u32>()
-                                        {
+                                    "cy" => {
+                                        if let Ok(cy) = attr.value.parse::<u32>() {
                                             current_height = Some(cy);
                                         }
                                     }
@@ -459,7 +447,7 @@ impl PptxParser {
                 Ok(quick_xml::events::Event::End(ref e)) => {
                     let local_name = e.name().local_name();
                     match local_name.as_ref() {
-                        b"pic" => {
+                        "pic" => {
                             // Create image block if we have a valid relationship
                             if let Some(rel_id) = current_rel_id.take() {
                                 if let Some(target) = rels.get(&rel_id) {
@@ -477,13 +465,13 @@ impl PptxParser {
                             }
                             in_pic = false;
                         }
-                        b"nvPicPr" => {
+                        "nvPicPr" => {
                             in_nvpicpr = false;
                         }
-                        b"blipFill" => {
+                        "blipFill" => {
                             in_blipfill = false;
                         }
-                        b"spPr" => {
+                        "spPr" => {
                             in_sppr = false;
                         }
                         _ => {}
@@ -616,52 +604,52 @@ impl PptxParser {
                     let local_name = e.name().local_name();
                     match local_name.as_ref() {
                         // a:tbl - table
-                        b"tbl" => {
+                        "tbl" => {
                             in_table = true;
                             current_table = Table::new();
                         }
                         // a:tr - table row
-                        b"tr" if in_table => {
+                        "tr" if in_table => {
                             in_row = true;
                             current_row = Row::new();
                         }
                         // a:tc - table cell
-                        b"tc" if in_row => {
+                        "tc" if in_row => {
                             in_cell = true;
                             current_cell = Cell::new();
                             current_paragraphs.clear();
                         }
                         // a:txBody - text body in cell
-                        b"txBody" if in_cell => {
+                        "txBody" if in_cell => {
                             in_txbody = true;
                         }
                         // a:p - paragraph
-                        b"p" if in_txbody => {
+                        "p" if in_txbody => {
                             in_paragraph = true;
                             current_runs.clear();
                         }
                         // a:r - text run
-                        b"r" if in_paragraph => {
+                        "r" if in_paragraph => {
                             in_run = true;
                             current_text.clear();
                             current_style = TextStyle::default();
                             current_hyperlink = None;
                         }
                         // a:t - text element
-                        b"t" if in_run => {
+                        "t" if in_run => {
                             in_text = true;
                         }
                         // a:rPr - run properties
-                        b"rPr" if in_run => {
+                        "rPr" if in_run => {
                             in_rpr = true;
                             for attr in e.attributes().flatten() {
                                 match attr.key.local_name().as_ref() {
-                                    b"b" => {
-                                        let val = String::from_utf8_lossy(&attr.value);
+                                    "b" => {
+                                        let val = attr.value.as_ref();
                                         current_style.bold = val != "0" && val != "false";
                                     }
-                                    b"i" => {
-                                        let val = String::from_utf8_lossy(&attr.value);
+                                    "i" => {
+                                        let val = attr.value.as_ref();
                                         current_style.italic = val != "0" && val != "false";
                                     }
                                     _ => {}
@@ -669,11 +657,11 @@ impl PptxParser {
                             }
                         }
                         // a:hlinkClick - hyperlink (nested in a:rPr)
-                        b"hlinkClick" if in_rpr => {
+                        "hlinkClick" if in_rpr => {
                             for attr in e.attributes().flatten() {
-                                if attr.key.local_name().as_ref() == b"id" {
-                                    let rel_id = String::from_utf8_lossy(&attr.value);
-                                    if let Some(url) = rels.get(rel_id.as_ref()) {
+                                if attr.key.local_name().as_ref() == "id" {
+                                    let rel_id = attr.value.as_ref();
+                                    if let Some(url) = rels.get(rel_id) {
                                         current_hyperlink = Some(url.clone());
                                     }
                                 }
@@ -686,15 +674,15 @@ impl PptxParser {
                     let local_name = e.name().local_name();
                     match local_name.as_ref() {
                         // Handle self-closing run properties
-                        b"rPr" if in_run => {
+                        "rPr" if in_run => {
                             for attr in e.attributes().flatten() {
                                 match attr.key.local_name().as_ref() {
-                                    b"b" => {
-                                        let val = String::from_utf8_lossy(&attr.value);
+                                    "b" => {
+                                        let val = attr.value.as_ref();
                                         current_style.bold = val != "0" && val != "false";
                                     }
-                                    b"i" => {
-                                        let val = String::from_utf8_lossy(&attr.value);
+                                    "i" => {
+                                        let val = attr.value.as_ref();
                                         current_style.italic = val != "0" && val != "false";
                                     }
                                     _ => {}
@@ -702,11 +690,11 @@ impl PptxParser {
                             }
                         }
                         // a:hlinkClick - hyperlink (self-closing)
-                        b"hlinkClick" if in_run => {
+                        "hlinkClick" if in_run => {
                             for attr in e.attributes().flatten() {
-                                if attr.key.local_name().as_ref() == b"id" {
-                                    let rel_id = String::from_utf8_lossy(&attr.value);
-                                    if let Some(url) = rels.get(rel_id.as_ref()) {
+                                if attr.key.local_name().as_ref() == "id" {
+                                    let rel_id = attr.value.as_ref();
+                                    if let Some(url) = rels.get(rel_id) {
                                         current_hyperlink = Some(url.clone());
                                     }
                                 }
@@ -724,13 +712,13 @@ impl PptxParser {
                 Ok(quick_xml::events::Event::End(ref e)) => {
                     let local_name = e.name().local_name();
                     match local_name.as_ref() {
-                        b"t" => {
+                        "t" => {
                             in_text = false;
                         }
-                        b"rPr" => {
+                        "rPr" => {
                             in_rpr = false;
                         }
-                        b"r" => {
+                        "r" => {
                             if !current_text.is_empty() {
                                 current_runs.push(TextRun {
                                     text: current_text.clone(),
@@ -744,7 +732,7 @@ impl PptxParser {
                             in_run = false;
                             current_hyperlink = None;
                         }
-                        b"p" if in_txbody => {
+                        "p" if in_txbody => {
                             if !current_runs.is_empty() {
                                 current_paragraphs.push(Paragraph {
                                     runs: current_runs.clone(),
@@ -753,15 +741,15 @@ impl PptxParser {
                             }
                             in_paragraph = false;
                         }
-                        b"txBody" => {
+                        "txBody" => {
                             in_txbody = false;
                         }
-                        b"tc" => {
+                        "tc" => {
                             current_cell.content = current_paragraphs.clone();
                             current_row.add_cell(current_cell.clone());
                             in_cell = false;
                         }
-                        b"tr" => {
+                        "tr" => {
                             if !current_row.is_empty() {
                                 // Mark first row as header
                                 if current_table.is_empty() {
@@ -771,7 +759,7 @@ impl PptxParser {
                             }
                             in_row = false;
                         }
-                        b"tbl" => {
+                        "tbl" => {
                             if !current_table.is_empty() {
                                 tables.push(current_table.clone());
                             }
@@ -833,58 +821,58 @@ impl PptxParser {
                     let local_name = e.name().local_name();
                     match local_name.as_ref() {
                         // Track table depth to skip table content
-                        b"tbl" => {
+                        "tbl" => {
                             in_table = true;
                             table_depth += 1;
                         }
                         // p:sp - shape (also matches inner shapes inside p:grpSp groups,
                         // because quick_xml's flat event stream processes nested elements
                         // the same as top-level ones by local name)
-                        b"sp" if !in_table => {
+                        "sp" if !in_table => {
                             in_shape = true;
                             current_heading = HeadingLevel::None;
                             current_ph_key = None;
                             shape_para_start = paragraphs.len();
                         }
                         // p:txBody - text body in shape
-                        b"txBody" if in_shape && !in_table => {
+                        "txBody" if in_shape && !in_table => {
                             in_txbody = true;
                         }
                         // a:p - paragraph (only if not in table, but in shape's txBody)
-                        b"p" if !in_table && in_txbody => {
+                        "p" if !in_table && in_txbody => {
                             in_paragraph = true;
                             current_runs.clear();
                         }
                         // a:r - text run
-                        b"r" if in_paragraph && !in_table => {
+                        "r" if in_paragraph && !in_table => {
                             in_run = true;
                             current_text.clear();
                             current_style = TextStyle::default();
                             current_hyperlink = None;
                         }
                         // a:t - text element
-                        b"t" if in_run && !in_table => {
+                        "t" if in_run && !in_table => {
                             in_text = true;
                         }
                         // a:rPr - run properties
-                        b"rPr" if in_run && !in_table => {
+                        "rPr" if in_run && !in_table => {
                             in_rpr = true;
                             for attr in e.attributes().flatten() {
                                 match attr.key.local_name().as_ref() {
-                                    b"b" => {
-                                        let val = String::from_utf8_lossy(&attr.value);
+                                    "b" => {
+                                        let val = attr.value.as_ref();
                                         current_style.bold = val != "0" && val != "false";
                                     }
-                                    b"i" => {
-                                        let val = String::from_utf8_lossy(&attr.value);
+                                    "i" => {
+                                        let val = attr.value.as_ref();
                                         current_style.italic = val != "0" && val != "false";
                                     }
-                                    b"u" => {
-                                        let val = String::from_utf8_lossy(&attr.value);
+                                    "u" => {
+                                        let val = attr.value.as_ref();
                                         current_style.underline = val != "none";
                                     }
-                                    b"strike" => {
-                                        let val = String::from_utf8_lossy(&attr.value);
+                                    "strike" => {
+                                        let val = attr.value.as_ref();
                                         current_style.strikethrough =
                                             val != "noStrike" && val != "0" && val != "false";
                                     }
@@ -893,33 +881,32 @@ impl PptxParser {
                             }
                         }
                         // a:hlinkClick - hyperlink (nested in a:rPr)
-                        b"hlinkClick" if in_rpr && !in_table => {
+                        "hlinkClick" if in_rpr && !in_table => {
                             for attr in e.attributes().flatten() {
-                                if attr.key.local_name().as_ref() == b"id" {
-                                    let rel_id = String::from_utf8_lossy(&attr.value);
-                                    if let Some(url) = rels.get(rel_id.as_ref()) {
+                                if attr.key.local_name().as_ref() == "id" {
+                                    let rel_id = attr.value.as_ref();
+                                    if let Some(url) = rels.get(rel_id) {
                                         current_hyperlink = Some(url.clone());
                                     }
                                 }
                             }
                         }
                         // p:ph - placeholder type (for heading detection and inheritance key)
-                        b"ph" if in_shape && !in_table => {
+                        "ph" if in_shape && !in_table => {
                             let mut ph_type = String::new();
                             let mut ph_idx: Option<String> = None;
                             for attr in e.attributes().flatten() {
                                 match attr.key.local_name().as_ref() {
-                                    b"type" => {
-                                        ph_type = String::from_utf8_lossy(&attr.value).into_owned();
+                                    "type" => {
+                                        ph_type = attr.value.to_string();
                                         current_heading = match ph_type.as_str() {
                                             "title" | "ctrTitle" => HeadingLevel::H1,
                                             "subTitle" => HeadingLevel::H2,
                                             _ => HeadingLevel::None,
                                         };
                                     }
-                                    b"idx" => {
-                                        ph_idx =
-                                            Some(String::from_utf8_lossy(&attr.value).into_owned());
+                                    "idx" => {
+                                        ph_idx = Some(attr.value.to_string());
                                     }
                                     _ => {}
                                 }
@@ -937,22 +924,21 @@ impl PptxParser {
                     let local_name = e.name().local_name();
                     match local_name.as_ref() {
                         // p:ph - placeholder type (self-closing)
-                        b"ph" if in_shape && !in_table => {
+                        "ph" if in_shape && !in_table => {
                             let mut ph_type = String::new();
                             let mut ph_idx: Option<String> = None;
                             for attr in e.attributes().flatten() {
                                 match attr.key.local_name().as_ref() {
-                                    b"type" => {
-                                        ph_type = String::from_utf8_lossy(&attr.value).into_owned();
+                                    "type" => {
+                                        ph_type = attr.value.to_string();
                                         current_heading = match ph_type.as_str() {
                                             "title" | "ctrTitle" => HeadingLevel::H1,
                                             "subTitle" => HeadingLevel::H2,
                                             _ => HeadingLevel::None,
                                         };
                                     }
-                                    b"idx" => {
-                                        ph_idx =
-                                            Some(String::from_utf8_lossy(&attr.value).into_owned());
+                                    "idx" => {
+                                        ph_idx = Some(attr.value.to_string());
                                     }
                                     _ => {}
                                 }
@@ -963,23 +949,23 @@ impl PptxParser {
                                 format!("idx:{}", ph_idx.as_deref().unwrap_or("0"))
                             });
                         }
-                        b"rPr" if in_run && !in_table => {
+                        "rPr" if in_run && !in_table => {
                             for attr in e.attributes().flatten() {
                                 match attr.key.local_name().as_ref() {
-                                    b"b" => {
-                                        let val = String::from_utf8_lossy(&attr.value);
+                                    "b" => {
+                                        let val = attr.value.as_ref();
                                         current_style.bold = val != "0" && val != "false";
                                     }
-                                    b"i" => {
-                                        let val = String::from_utf8_lossy(&attr.value);
+                                    "i" => {
+                                        let val = attr.value.as_ref();
                                         current_style.italic = val != "0" && val != "false";
                                     }
-                                    b"u" => {
-                                        let val = String::from_utf8_lossy(&attr.value);
+                                    "u" => {
+                                        let val = attr.value.as_ref();
                                         current_style.underline = val != "none";
                                     }
-                                    b"strike" => {
-                                        let val = String::from_utf8_lossy(&attr.value);
+                                    "strike" => {
+                                        let val = attr.value.as_ref();
                                         current_style.strikethrough =
                                             val != "noStrike" && val != "0" && val != "false";
                                     }
@@ -988,11 +974,11 @@ impl PptxParser {
                             }
                         }
                         // a:hlinkClick - hyperlink (self-closing)
-                        b"hlinkClick" if in_run && !in_table => {
+                        "hlinkClick" if in_run && !in_table => {
                             for attr in e.attributes().flatten() {
-                                if attr.key.local_name().as_ref() == b"id" {
-                                    let rel_id = String::from_utf8_lossy(&attr.value);
-                                    if let Some(url) = rels.get(rel_id.as_ref()) {
+                                if attr.key.local_name().as_ref() == "id" {
+                                    let rel_id = attr.value.as_ref();
+                                    if let Some(url) = rels.get(rel_id) {
                                         current_hyperlink = Some(url.clone());
                                     }
                                 }
@@ -1010,19 +996,19 @@ impl PptxParser {
                 Ok(quick_xml::events::Event::End(ref e)) => {
                     let local_name = e.name().local_name();
                     match local_name.as_ref() {
-                        b"tbl" => {
+                        "tbl" => {
                             table_depth -= 1;
                             if table_depth == 0 {
                                 in_table = false;
                             }
                         }
-                        b"t" if !in_table => {
+                        "t" if !in_table => {
                             in_text = false;
                         }
-                        b"rPr" if !in_table => {
+                        "rPr" if !in_table => {
                             in_rpr = false;
                         }
-                        b"r" if !in_table => {
+                        "r" if !in_table => {
                             if !current_text.is_empty() {
                                 current_runs.push(TextRun {
                                     text: current_text.clone(),
@@ -1036,7 +1022,7 @@ impl PptxParser {
                             in_run = false;
                             current_hyperlink = None;
                         }
-                        b"p" if !in_table => {
+                        "p" if !in_table => {
                             if !current_runs.is_empty() {
                                 paragraphs.push(Paragraph {
                                     runs: current_runs.clone(),
@@ -1046,10 +1032,10 @@ impl PptxParser {
                             }
                             in_paragraph = false;
                         }
-                        b"txBody" if !in_table => {
+                        "txBody" if !in_table => {
                             in_txbody = false;
                         }
-                        b"sp" if !in_table => {
+                        "sp" if !in_table => {
                             // If this shape had a placeholder but produced no text,
                             // inherit from layout/master
                             if paragraphs.len() == shape_para_start {
@@ -1110,41 +1096,41 @@ impl PptxParser {
                     let local_name = e.name().local_name();
                     match local_name.as_ref() {
                         // a:p - paragraph
-                        b"p" => {
+                        "p" => {
                             in_paragraph = true;
                             current_runs.clear();
                         }
                         // a:r - text run
-                        b"r" if in_paragraph => {
+                        "r" if in_paragraph => {
                             in_run = true;
                             current_text.clear();
                             current_style = TextStyle::default();
                             current_hyperlink = None;
                         }
                         // a:t - text element
-                        b"t" if in_run => {
+                        "t" if in_run => {
                             in_text = true;
                         }
                         // a:rPr - run properties
-                        b"rPr" if in_run => {
+                        "rPr" if in_run => {
                             in_rpr = true;
                             // Parse run properties for styling
                             for attr in e.attributes().flatten() {
                                 match attr.key.local_name().as_ref() {
-                                    b"b" => {
-                                        let val = String::from_utf8_lossy(&attr.value);
+                                    "b" => {
+                                        let val = attr.value.as_ref();
                                         current_style.bold = val != "0" && val != "false";
                                     }
-                                    b"i" => {
-                                        let val = String::from_utf8_lossy(&attr.value);
+                                    "i" => {
+                                        let val = attr.value.as_ref();
                                         current_style.italic = val != "0" && val != "false";
                                     }
-                                    b"u" => {
-                                        let val = String::from_utf8_lossy(&attr.value);
+                                    "u" => {
+                                        let val = attr.value.as_ref();
                                         current_style.underline = val != "none";
                                     }
-                                    b"strike" => {
-                                        let val = String::from_utf8_lossy(&attr.value);
+                                    "strike" => {
+                                        let val = attr.value.as_ref();
                                         current_style.strikethrough =
                                             val != "noStrike" && val != "0" && val != "false";
                                     }
@@ -1153,11 +1139,11 @@ impl PptxParser {
                             }
                         }
                         // a:hlinkClick - hyperlink (nested in a:rPr)
-                        b"hlinkClick" if in_rpr => {
+                        "hlinkClick" if in_rpr => {
                             for attr in e.attributes().flatten() {
-                                if attr.key.local_name().as_ref() == b"id" {
-                                    let rel_id = String::from_utf8_lossy(&attr.value);
-                                    if let Some(url) = rels.get(rel_id.as_ref()) {
+                                if attr.key.local_name().as_ref() == "id" {
+                                    let rel_id = attr.value.as_ref();
+                                    if let Some(url) = rels.get(rel_id) {
                                         current_hyperlink = Some(url.clone());
                                     }
                                 }
@@ -1170,23 +1156,23 @@ impl PptxParser {
                     let local_name = e.name().local_name();
                     match local_name.as_ref() {
                         // Handle self-closing run properties
-                        b"rPr" if in_run => {
+                        "rPr" if in_run => {
                             for attr in e.attributes().flatten() {
                                 match attr.key.local_name().as_ref() {
-                                    b"b" => {
-                                        let val = String::from_utf8_lossy(&attr.value);
+                                    "b" => {
+                                        let val = attr.value.as_ref();
                                         current_style.bold = val != "0" && val != "false";
                                     }
-                                    b"i" => {
-                                        let val = String::from_utf8_lossy(&attr.value);
+                                    "i" => {
+                                        let val = attr.value.as_ref();
                                         current_style.italic = val != "0" && val != "false";
                                     }
-                                    b"u" => {
-                                        let val = String::from_utf8_lossy(&attr.value);
+                                    "u" => {
+                                        let val = attr.value.as_ref();
                                         current_style.underline = val != "none";
                                     }
-                                    b"strike" => {
-                                        let val = String::from_utf8_lossy(&attr.value);
+                                    "strike" => {
+                                        let val = attr.value.as_ref();
                                         current_style.strikethrough =
                                             val != "noStrike" && val != "0" && val != "false";
                                     }
@@ -1195,11 +1181,11 @@ impl PptxParser {
                             }
                         }
                         // a:hlinkClick - hyperlink (self-closing)
-                        b"hlinkClick" if in_run => {
+                        "hlinkClick" if in_run => {
                             for attr in e.attributes().flatten() {
-                                if attr.key.local_name().as_ref() == b"id" {
-                                    let rel_id = String::from_utf8_lossy(&attr.value);
-                                    if let Some(url) = rels.get(rel_id.as_ref()) {
+                                if attr.key.local_name().as_ref() == "id" {
+                                    let rel_id = attr.value.as_ref();
+                                    if let Some(url) = rels.get(rel_id) {
                                         current_hyperlink = Some(url.clone());
                                     }
                                 }
@@ -1217,13 +1203,13 @@ impl PptxParser {
                 Ok(quick_xml::events::Event::End(ref e)) => {
                     let local_name = e.name().local_name();
                     match local_name.as_ref() {
-                        b"t" => {
+                        "t" => {
                             in_text = false;
                         }
-                        b"rPr" => {
+                        "rPr" => {
                             in_rpr = false;
                         }
-                        b"r" => {
+                        "r" => {
                             if !current_text.is_empty() {
                                 current_runs.push(TextRun {
                                     text: current_text.clone(),
@@ -1237,7 +1223,7 @@ impl PptxParser {
                             in_run = false;
                             current_hyperlink = None;
                         }
-                        b"p" => {
+                        "p" => {
                             // Only add non-empty paragraphs
                             if !current_runs.is_empty() {
                                 paragraphs.push(Paragraph {
@@ -1383,46 +1369,45 @@ fn parse_placeholder_texts_from_xml(xml: &str) -> HashMap<String, Vec<Paragraph>
             Ok(quick_xml::events::Event::Start(ref e)) => {
                 let local = e.name().local_name();
                 match local.as_ref() {
-                    b"tbl" => {
+                    "tbl" => {
                         in_table = true;
                         table_depth += 1;
                     }
-                    b"sp" if !in_table => {
+                    "sp" if !in_table => {
                         in_shape = true;
                         current_ph_key = None;
                         current_heading = HeadingLevel::None;
                         shape_paragraphs.clear();
                     }
-                    b"txBody" if in_shape && !in_table => {
+                    "txBody" if in_shape && !in_table => {
                         in_txbody = true;
                     }
-                    b"p" if in_txbody && !in_table => {
+                    "p" if in_txbody && !in_table => {
                         in_paragraph = true;
                         current_runs.clear();
                     }
-                    b"r" if in_paragraph && !in_table => {
+                    "r" if in_paragraph && !in_table => {
                         in_run = true;
                         current_text.clear();
                     }
-                    b"t" if in_run && !in_table => {
+                    "t" if in_run && !in_table => {
                         in_text = true;
                     }
-                    b"ph" if in_shape && !in_table => {
+                    "ph" if in_shape && !in_table => {
                         let mut ph_type = String::new();
                         let mut ph_idx: Option<String> = None;
                         for attr in e.attributes().flatten() {
                             match attr.key.local_name().as_ref() {
-                                b"type" => {
-                                    ph_type = String::from_utf8_lossy(&attr.value).into_owned();
+                                "type" => {
+                                    ph_type = attr.value.to_string();
                                     current_heading = match ph_type.as_str() {
                                         "title" | "ctrTitle" => HeadingLevel::H1,
                                         "subTitle" => HeadingLevel::H2,
                                         _ => HeadingLevel::None,
                                     };
                                 }
-                                b"idx" => {
-                                    ph_idx =
-                                        Some(String::from_utf8_lossy(&attr.value).into_owned());
+                                "idx" => {
+                                    ph_idx = Some(attr.value.to_string());
                                 }
                                 _ => {}
                             }
@@ -1438,21 +1423,21 @@ fn parse_placeholder_texts_from_xml(xml: &str) -> HashMap<String, Vec<Paragraph>
             }
             Ok(quick_xml::events::Event::Empty(ref e)) => {
                 let local = e.name().local_name();
-                if local.as_ref() == b"ph" && in_shape && !in_table {
+                if local.as_ref() == "ph" && in_shape && !in_table {
                     let mut ph_type = String::new();
                     let mut ph_idx: Option<String> = None;
                     for attr in e.attributes().flatten() {
                         match attr.key.local_name().as_ref() {
-                            b"type" => {
-                                ph_type = String::from_utf8_lossy(&attr.value).into_owned();
+                            "type" => {
+                                ph_type = attr.value.to_string();
                                 current_heading = match ph_type.as_str() {
                                     "title" | "ctrTitle" => HeadingLevel::H1,
                                     "subTitle" => HeadingLevel::H2,
                                     _ => HeadingLevel::None,
                                 };
                             }
-                            b"idx" => {
-                                ph_idx = Some(String::from_utf8_lossy(&attr.value).into_owned());
+                            "idx" => {
+                                ph_idx = Some(attr.value.to_string());
                             }
                             _ => {}
                         }
@@ -1473,16 +1458,16 @@ fn parse_placeholder_texts_from_xml(xml: &str) -> HashMap<String, Vec<Paragraph>
             Ok(quick_xml::events::Event::End(ref e)) => {
                 let local = e.name().local_name();
                 match local.as_ref() {
-                    b"tbl" => {
+                    "tbl" => {
                         table_depth -= 1;
                         if table_depth == 0 {
                             in_table = false;
                         }
                     }
-                    b"t" if !in_table => {
+                    "t" if !in_table => {
                         in_text = false;
                     }
-                    b"r" if !in_table => {
+                    "r" if !in_table => {
                         if !current_text.is_empty() {
                             current_runs.push(TextRun {
                                 text: current_text.clone(),
@@ -1495,7 +1480,7 @@ fn parse_placeholder_texts_from_xml(xml: &str) -> HashMap<String, Vec<Paragraph>
                         }
                         in_run = false;
                     }
-                    b"p" if !in_table => {
+                    "p" if !in_table => {
                         if !current_runs.is_empty() {
                             shape_paragraphs.push(Paragraph {
                                 runs: current_runs.clone(),
@@ -1505,10 +1490,10 @@ fn parse_placeholder_texts_from_xml(xml: &str) -> HashMap<String, Vec<Paragraph>
                         }
                         in_paragraph = false;
                     }
-                    b"txBody" if !in_table => {
+                    "txBody" if !in_table => {
                         in_txbody = false;
                     }
-                    b"sp" if !in_table => {
+                    "sp" if !in_table => {
                         // Only store non-empty shapes with a placeholder key
                         if let Some(ph_key) = current_ph_key.take() {
                             if !shape_paragraphs.is_empty() {

@@ -110,39 +110,37 @@ pub fn parse_chart_xml(xml: &str) -> Result<ChartData> {
             Ok(quick_xml::events::Event::Start(ref e)) => {
                 let local_name = e.name().local_name();
                 match local_name.as_ref() {
-                    b"title" => {
+                    "title" => {
                         in_title = true;
                         current_title.clear();
                     }
-                    b"ser" => {
+                    "ser" => {
                         in_ser = true;
                         current_series_name.clear();
                         current_values.clear();
                     }
-                    b"tx" if in_ser || in_title => {
+                    "tx" if in_ser || in_title => {
                         in_tx = true;
                     }
-                    b"cat" if in_ser => {
+                    "cat" if in_ser => {
                         in_cat = true;
                     }
-                    b"val" if in_ser => {
+                    "val" if in_ser => {
                         in_val = true;
                     }
-                    b"pt" => {
+                    "pt" => {
                         in_pt = true;
                         current_point_text.clear();
                         // Get idx attribute
                         for attr in e.attributes().flatten() {
-                            if attr.key.local_name().as_ref() == b"idx" {
-                                if let Ok(idx) =
-                                    String::from_utf8_lossy(&attr.value).parse::<usize>()
-                                {
+                            if attr.key.local_name().as_ref() == "idx" {
+                                if let Ok(idx) = attr.value.parse::<usize>() {
                                     pt_idx = Some(idx);
                                 }
                             }
                         }
                     }
-                    b"v" | b"t" => {
+                    "v" | "t" => {
                         in_text_node = true;
                         current_text.clear();
                     }
@@ -152,14 +150,14 @@ pub fn parse_chart_xml(xml: &str) -> Result<ChartData> {
             Ok(quick_xml::events::Event::End(ref e)) => {
                 let local_name = e.name().local_name();
                 match local_name.as_ref() {
-                    b"title" => {
+                    "title" => {
                         let title = current_title.trim();
                         if !title.is_empty() {
                             chart_data.title = Some(title.to_string());
                         }
                         in_title = false;
                     }
-                    b"ser" => {
+                    "ser" => {
                         // Save series if we have data
                         if !current_series_name.is_empty() || !current_values.is_empty() {
                             let name = if current_series_name.is_empty() {
@@ -182,16 +180,16 @@ pub fn parse_chart_xml(xml: &str) -> Result<ChartData> {
 
                         in_ser = false;
                     }
-                    b"tx" => {
+                    "tx" => {
                         in_tx = false;
                     }
-                    b"cat" => {
+                    "cat" => {
                         in_cat = false;
                     }
-                    b"val" => {
+                    "val" => {
                         in_val = false;
                     }
-                    b"pt" => {
+                    "pt" => {
                         let point_text = current_point_text.trim();
 
                         if in_title && !point_text.is_empty() {
@@ -220,7 +218,7 @@ pub fn parse_chart_xml(xml: &str) -> Result<ChartData> {
                         pt_idx = None;
                         current_point_text.clear();
                     }
-                    b"v" | b"t" => {
+                    "v" | "t" => {
                         if in_text_node {
                             if in_pt {
                                 current_point_text.push_str(&current_text);

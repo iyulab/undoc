@@ -26,14 +26,14 @@ impl Styles {
             match reader.read_event_into(&mut buf) {
                 Ok(quick_xml::events::Event::Start(ref e)) => {
                     match e.name().as_ref() {
-                        b"numFmts" => in_num_fmts = true,
-                        b"cellXfs" => in_cell_xfs = true,
-                        b"xf" if in_cell_xfs => {
+                        "numFmts" => in_num_fmts = true,
+                        "cellXfs" => in_cell_xfs = true,
+                        "xf" if in_cell_xfs => {
                             // Extract numFmtId from xf element
                             let mut num_fmt_id: u32 = 0;
                             for attr in e.attributes().flatten() {
-                                if attr.key.as_ref() == b"numFmtId" {
-                                    if let Ok(id) = String::from_utf8_lossy(&attr.value).parse() {
+                                if attr.key.as_ref() == "numFmtId" {
+                                    if let Ok(id) = attr.value.parse() {
                                         num_fmt_id = id;
                                     }
                                 }
@@ -45,18 +45,16 @@ impl Styles {
                 }
                 Ok(quick_xml::events::Event::Empty(ref e)) => {
                     match e.name().as_ref() {
-                        b"numFmt" if in_num_fmts => {
+                        "numFmt" if in_num_fmts => {
                             let mut num_fmt_id: Option<u32> = None;
                             let mut format_code = String::new();
                             for attr in e.attributes().flatten() {
                                 match attr.key.as_ref() {
-                                    b"numFmtId" => {
-                                        num_fmt_id =
-                                            String::from_utf8_lossy(&attr.value).parse().ok();
+                                    "numFmtId" => {
+                                        num_fmt_id = attr.value.parse().ok();
                                     }
-                                    b"formatCode" => {
-                                        format_code =
-                                            String::from_utf8_lossy(&attr.value).to_string();
+                                    "formatCode" => {
+                                        format_code = attr.value.to_string();
                                     }
                                     _ => {}
                                 }
@@ -65,12 +63,12 @@ impl Styles {
                                 styles.num_fmts.insert(id, format_code);
                             }
                         }
-                        b"xf" if in_cell_xfs => {
+                        "xf" if in_cell_xfs => {
                             // Empty xf element (self-closing)
                             let mut num_fmt_id: u32 = 0;
                             for attr in e.attributes().flatten() {
-                                if attr.key.as_ref() == b"numFmtId" {
-                                    if let Ok(id) = String::from_utf8_lossy(&attr.value).parse() {
+                                if attr.key.as_ref() == "numFmtId" {
+                                    if let Ok(id) = attr.value.parse() {
                                         num_fmt_id = id;
                                     }
                                 }
@@ -81,8 +79,8 @@ impl Styles {
                     }
                 }
                 Ok(quick_xml::events::Event::End(ref e)) => match e.name().as_ref() {
-                    b"numFmts" => in_num_fmts = false,
-                    b"cellXfs" => in_cell_xfs = false,
+                    "numFmts" => in_num_fmts = false,
+                    "cellXfs" => in_cell_xfs = false,
                     _ => {}
                 },
                 Ok(quick_xml::events::Event::Eof) => break,

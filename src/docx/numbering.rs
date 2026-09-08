@@ -83,20 +83,20 @@ impl NumberingMap {
         loop {
             match reader.read_event_into(&mut buf) {
                 Ok(quick_xml::events::Event::Start(e)) => match e.name().as_ref() {
-                    b"w:abstractNum" => {
+                    "w:abstractNum" => {
                         let mut abstract_num = AbstractNum {
                             id: String::new(),
                             levels: Vec::new(),
                         };
                         for attr in e.attributes().flatten() {
-                            if attr.key.as_ref() == b"w:abstractNumId" {
-                                abstract_num.id = String::from_utf8_lossy(&attr.value).to_string();
+                            if attr.key.as_ref() == "w:abstractNumId" {
+                                abstract_num.id = attr.value.to_string();
                             }
                         }
                         current_abstract = Some(abstract_num);
                         in_abstract_num = true;
                     }
-                    b"w:lvl" if in_abstract_num => {
+                    "w:lvl" if in_abstract_num => {
                         let mut level = NumLevel {
                             level: 0,
                             start: 1,
@@ -104,8 +104,8 @@ impl NumberingMap {
                             level_text: String::new(),
                         };
                         for attr in e.attributes().flatten() {
-                            if attr.key.as_ref() == b"w:ilvl" {
-                                let val = String::from_utf8_lossy(&attr.value);
+                            if attr.key.as_ref() == "w:ilvl" {
+                                let val = attr.value.as_ref();
                                 level.level = val.parse().unwrap_or(0);
                             }
                         }
@@ -116,51 +116,49 @@ impl NumberingMap {
                 },
                 Ok(quick_xml::events::Event::Empty(e)) => {
                     match e.name().as_ref() {
-                        b"w:start" if in_lvl => {
+                        "w:start" if in_lvl => {
                             if let Some(ref mut level) = current_level {
                                 for attr in e.attributes().flatten() {
-                                    if attr.key.as_ref() == b"w:val" {
-                                        let val = String::from_utf8_lossy(&attr.value);
+                                    if attr.key.as_ref() == "w:val" {
+                                        let val = attr.value.as_ref();
                                         level.start = val.parse().unwrap_or(1);
                                     }
                                 }
                             }
                         }
-                        b"w:numFmt" if in_lvl => {
+                        "w:numFmt" if in_lvl => {
                             if let Some(ref mut level) = current_level {
                                 for attr in e.attributes().flatten() {
-                                    if attr.key.as_ref() == b"w:val" {
-                                        level.num_fmt =
-                                            String::from_utf8_lossy(&attr.value).to_string();
+                                    if attr.key.as_ref() == "w:val" {
+                                        level.num_fmt = attr.value.to_string();
                                     }
                                 }
                             }
                         }
-                        b"w:lvlText" if in_lvl => {
+                        "w:lvlText" if in_lvl => {
                             if let Some(ref mut level) = current_level {
                                 for attr in e.attributes().flatten() {
-                                    if attr.key.as_ref() == b"w:val" {
-                                        level.level_text =
-                                            String::from_utf8_lossy(&attr.value).to_string();
+                                    if attr.key.as_ref() == "w:val" {
+                                        level.level_text = attr.value.to_string();
                                     }
                                 }
                             }
                         }
-                        b"w:abstractNumId" => {
+                        "w:abstractNumId" => {
                             // This is in w:num element
                         }
                         _ => {}
                     }
                 }
                 Ok(quick_xml::events::Event::End(e)) => match e.name().as_ref() {
-                    b"w:abstractNum" => {
+                    "w:abstractNum" => {
                         if let Some(abstract_num) = current_abstract.take() {
                             map.abstract_nums
                                 .insert(abstract_num.id.clone(), abstract_num);
                         }
                         in_abstract_num = false;
                     }
-                    b"w:lvl" => {
+                    "w:lvl" => {
                         if let Some(level) = current_level.take() {
                             if let Some(ref mut abstract_num) = current_abstract {
                                 abstract_num.levels.push(level);
@@ -193,20 +191,20 @@ impl NumberingMap {
 
         loop {
             match reader.read_event_into(&mut buf) {
-                Ok(quick_xml::events::Event::Start(e)) if e.name().as_ref() == b"w:num" => {
+                Ok(quick_xml::events::Event::Start(e)) if e.name().as_ref() == "w:num" => {
                     for attr in e.attributes().flatten() {
-                        if attr.key.as_ref() == b"w:numId" {
-                            current_num_id = Some(String::from_utf8_lossy(&attr.value).to_string());
+                        if attr.key.as_ref() == "w:numId" {
+                            current_num_id = Some(attr.value.to_string());
                         }
                     }
                 }
                 Ok(quick_xml::events::Event::Empty(e))
-                    if e.name().as_ref() == b"w:abstractNumId" =>
+                    if e.name().as_ref() == "w:abstractNumId" =>
                 {
                     if let Some(ref num_id) = current_num_id {
                         for attr in e.attributes().flatten() {
-                            if attr.key.as_ref() == b"w:val" {
-                                let abstract_id = String::from_utf8_lossy(&attr.value).to_string();
+                            if attr.key.as_ref() == "w:val" {
+                                let abstract_id = attr.value.to_string();
                                 self.instances.insert(
                                     num_id.clone(),
                                     NumInstance {
@@ -218,7 +216,7 @@ impl NumberingMap {
                         }
                     }
                 }
-                Ok(quick_xml::events::Event::End(e)) if e.name().as_ref() == b"w:num" => {
+                Ok(quick_xml::events::Event::End(e)) if e.name().as_ref() == "w:num" => {
                     current_num_id = None;
                 }
                 Ok(quick_xml::events::Event::Eof) => break,

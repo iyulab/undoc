@@ -407,9 +407,7 @@ impl OoxmlContainer {
                     match reader.read_event_into(&mut buf) {
                         Ok(quick_xml::events::Event::Start(e)) => {
                             let name = e.name();
-                            current_element = Some(
-                                String::from_utf8_lossy(name.local_name().as_ref()).to_string(),
-                            );
+                            current_element = Some(name.local_name().as_ref().to_string());
                             current_text.clear();
                         }
                         Ok(quick_xml::events::Event::Text(e)) if current_element.is_some() => {
@@ -491,8 +489,7 @@ impl OoxmlContainer {
             match reader.read_event_into(&mut buf) {
                 Ok(quick_xml::events::Event::Start(e)) => {
                     let name = e.name();
-                    current_element =
-                        Some(String::from_utf8_lossy(name.local_name().as_ref()).to_string());
+                    current_element = Some(name.local_name().as_ref().to_string());
                     current_text.clear();
                 }
                 Ok(quick_xml::events::Event::Text(e)) if current_element.is_some() => {
@@ -578,13 +575,10 @@ fn parse_relationship_element(
 
     for attr in e.attributes().flatten() {
         match attr.key.as_ref() {
-            b"Id" => id = String::from_utf8_lossy(attr.value.as_ref()).to_string(),
-            b"Type" => rel_type = String::from_utf8_lossy(attr.value.as_ref()).to_string(),
-            b"Target" => target = String::from_utf8_lossy(attr.value.as_ref()).to_string(),
-            b"TargetMode" => {
-                external =
-                    String::from_utf8_lossy(attr.value.as_ref()).eq_ignore_ascii_case("external")
-            }
+            "Id" => id = attr.value.as_ref().to_string(),
+            "Type" => rel_type = attr.value.as_ref().to_string(),
+            "Target" => target = attr.value.as_ref().to_string(),
+            "TargetMode" => external = attr.value.as_ref().eq_ignore_ascii_case("external"),
             _ => {}
         }
     }
@@ -634,7 +628,7 @@ pub(crate) fn parse_relationships_xml(content: &str, location: &str) -> Result<R
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(quick_xml::events::Event::Empty(e)) | Ok(quick_xml::events::Event::Start(e))
-                if e.name().as_ref() == b"Relationship" =>
+                if e.name().as_ref() == "Relationship" =>
             {
                 rels.add(parse_relationship_element(&e, location)?);
             }

@@ -104,7 +104,7 @@ impl XlsxParser {
         loop {
             match reader.read_event_into(&mut buf) {
                 Ok(quick_xml::events::Event::Empty(e)) | Ok(quick_xml::events::Event::Start(e))
-                    if e.name().as_ref() == b"sheet" =>
+                    if e.name().as_ref() == "sheet" =>
                 {
                     let mut name = String::new();
                     let mut sheet_id = String::new();
@@ -112,14 +112,14 @@ impl XlsxParser {
 
                     for attr in e.attributes().flatten() {
                         match attr.key.as_ref() {
-                            b"name" => {
-                                name = String::from_utf8_lossy(&attr.value).to_string();
+                            "name" => {
+                                name = attr.value.to_string();
                             }
-                            b"sheetId" => {
-                                sheet_id = String::from_utf8_lossy(&attr.value).to_string();
+                            "sheetId" => {
+                                sheet_id = attr.value.to_string();
                             }
-                            b"r:id" => {
-                                rel_id = String::from_utf8_lossy(&attr.value).to_string();
+                            "r:id" => {
+                                rel_id = attr.value.to_string();
                             }
                             _ => {}
                         }
@@ -306,11 +306,11 @@ impl XlsxParser {
             match reader.read_event_into(&mut buf) {
                 Ok(quick_xml::events::Event::Empty(ref e))
                 | Ok(quick_xml::events::Event::Start(ref e))
-                    if e.name().as_ref() == b"mergeCell" =>
+                    if e.name().as_ref() == "mergeCell" =>
                 {
                     for attr in e.attributes().flatten() {
-                        if attr.key.as_ref() == b"ref" {
-                            let range = String::from_utf8_lossy(&attr.value);
+                        if attr.key.as_ref() == "ref" {
+                            let range = attr.value.as_ref();
                             // Parse range like "A1:C3" or "G11:H11"
                             if let Some((start, end)) = range.split_once(':') {
                                 if let (Some((start_col, start_row)), Some((end_col, end_row))) =
@@ -402,7 +402,7 @@ impl XlsxParser {
         loop {
             match reader.read_event_into(&mut buf) {
                 Ok(quick_xml::events::Event::Start(ref e)) => match e.name().as_ref() {
-                    b"row" => {
+                    "row" => {
                         in_row = true;
                         current_row = Some(Row {
                             cells: Vec::new(),
@@ -410,7 +410,7 @@ impl XlsxParser {
                             height: None,
                         });
                     }
-                    b"c" if in_row => {
+                    "c" if in_row => {
                         in_cell = true;
                         current_cell_type = None;
                         current_cell_ref = None;
@@ -425,17 +425,17 @@ impl XlsxParser {
                             &mut current_cell_vm,
                         );
                     }
-                    b"v" if in_cell => {
+                    "v" if in_cell => {
                         in_value = true;
                     }
-                    b"t" if in_cell => {
+                    "t" if in_cell => {
                         // Inline string
                         in_value = true;
                     }
                     _ => {}
                 },
                 Ok(quick_xml::events::Event::Empty(ref e)) => match e.name().as_ref() {
-                    b"c" if in_row => {
+                    "c" if in_row => {
                         current_cell_type = None;
                         current_cell_ref = None;
                         current_cell_style = None;
@@ -492,14 +492,14 @@ impl XlsxParser {
                     current_cell_value.push_str(&resolve_general_ref(e));
                 }
                 Ok(quick_xml::events::Event::End(ref e)) => match e.name().as_ref() {
-                    b"row" => {
+                    "row" => {
                         if let Some(row) = current_row.take() {
                             table.add_row(row);
                         }
                         in_row = false;
                         is_first_row = false;
                     }
-                    b"c" => {
+                    "c" => {
                         // Collapse CR that re-entered via &#13;/&#xD; refs (Excel
                         // in-cell breaks). A CRLF pair arrives as two refs, so
                         // normalize the whole accumulated value once here.
@@ -537,7 +537,7 @@ impl XlsxParser {
                         current_cell_ref = None;
                         current_cell_vm = None;
                     }
-                    b"v" | b"t" => {
+                    "v" | "t" => {
                         in_value = false;
                     }
                     _ => {}
@@ -591,17 +591,17 @@ impl XlsxParser {
     ) {
         for attr in e.attributes().flatten() {
             match attr.key.as_ref() {
-                b"t" => {
-                    *current_cell_type = Some(String::from_utf8_lossy(&attr.value).to_string());
+                "t" => {
+                    *current_cell_type = Some(attr.value.to_string());
                 }
-                b"r" => {
-                    *current_cell_ref = Some(String::from_utf8_lossy(&attr.value).to_uppercase());
+                "r" => {
+                    *current_cell_ref = Some(attr.value.to_uppercase());
                 }
-                b"s" => {
-                    *current_cell_style = String::from_utf8_lossy(&attr.value).parse().ok();
+                "s" => {
+                    *current_cell_style = attr.value.parse().ok();
                 }
-                b"vm" => {
-                    *current_cell_vm = String::from_utf8_lossy(&attr.value).parse().ok();
+                "vm" => {
+                    *current_cell_vm = attr.value.parse().ok();
                 }
                 _ => {}
             }
@@ -750,20 +750,20 @@ impl XlsxParser {
         loop {
             match reader.read_event_into(&mut buf) {
                 Ok(quick_xml::events::Event::Start(ref e)) => match e.name().as_ref() {
-                    b"hyperlinks" => {
+                    "hyperlinks" => {
                         in_hyperlinks = true;
                     }
-                    b"hyperlink" if in_hyperlinks => {
+                    "hyperlink" if in_hyperlinks => {
                         Self::collect_hyperlink_attrs(e, sheet_rels, &mut hyperlinks);
                     }
                     _ => {}
                 },
                 Ok(quick_xml::events::Event::Empty(ref e))
-                    if in_hyperlinks && e.name().as_ref() == b"hyperlink" =>
+                    if in_hyperlinks && e.name().as_ref() == "hyperlink" =>
                 {
                     Self::collect_hyperlink_attrs(e, sheet_rels, &mut hyperlinks);
                 }
-                Ok(quick_xml::events::Event::End(ref e)) if e.name().as_ref() == b"hyperlinks" => {
+                Ok(quick_xml::events::Event::End(ref e)) if e.name().as_ref() == "hyperlinks" => {
                     break; // Done with hyperlinks section
                 }
                 Ok(quick_xml::events::Event::Eof) => break,
@@ -787,11 +787,11 @@ impl XlsxParser {
 
         for attr in e.attributes().flatten() {
             match attr.key.as_ref() {
-                b"ref" => {
-                    cell_ref = String::from_utf8_lossy(&attr.value).to_uppercase();
+                "ref" => {
+                    cell_ref = attr.value.to_uppercase();
                 }
-                b"r:id" => {
-                    r_id = String::from_utf8_lossy(&attr.value).to_string();
+                "r:id" => {
+                    r_id = attr.value.to_string();
                 }
                 _ => {}
             }
@@ -839,21 +839,20 @@ impl XlsxParser {
                 Ok(quick_xml::events::Event::Start(ref e)) => {
                     let local = e.name().local_name();
                     match local.as_ref() {
-                        b"comment" => {
+                        "comment" => {
                             in_comment = true;
                             current_ref.clear();
                             current_text.clear();
                             for attr in e.attributes().flatten() {
-                                if attr.key.as_ref() == b"ref" {
-                                    current_ref =
-                                        String::from_utf8_lossy(&attr.value).to_uppercase();
+                                if attr.key.as_ref() == "ref" {
+                                    current_ref = attr.value.to_uppercase();
                                 }
                             }
                         }
-                        b"text" if in_comment => {
+                        "text" if in_comment => {
                             in_text = true;
                         }
-                        b"t" if in_text => {
+                        "t" if in_text => {
                             in_t = true;
                             // Separate consecutive <t> runs with a space. This must
                             // happen at the run boundary, not per Text event: under
@@ -876,7 +875,7 @@ impl XlsxParser {
                 Ok(quick_xml::events::Event::End(ref e)) => {
                     let local = e.name().local_name();
                     match local.as_ref() {
-                        b"comment" => {
+                        "comment" => {
                             if !current_ref.is_empty() && !current_text.is_empty() {
                                 let text = normalize_line_endings(Cow::Borrowed(&current_text))
                                     .into_owned();
@@ -886,10 +885,10 @@ impl XlsxParser {
                             in_text = false;
                             in_t = false;
                         }
-                        b"text" => {
+                        "text" => {
                             in_text = false;
                         }
-                        b"t" => {
+                        "t" => {
                             in_t = false;
                         }
                         _ => {}
@@ -1089,39 +1088,36 @@ impl XlsxParser {
                 Ok(quick_xml::events::Event::Start(ref e))
                 | Ok(quick_xml::events::Event::Empty(ref e)) => {
                     match e.name().local_name().as_ref() {
-                        b"metadataType" => {
+                        "metadataType" => {
                             for attr in e.attributes().flatten() {
-                                if attr.key.local_name().as_ref() == b"name" {
-                                    metadata_type_names
-                                        .push(String::from_utf8_lossy(&attr.value).to_string());
+                                if attr.key.local_name().as_ref() == "name" {
+                                    metadata_type_names.push(attr.value.to_string());
                                 }
                             }
                         }
-                        b"futureMetadata" => {
+                        "futureMetadata" => {
                             in_future_xlrichvalue = e.attributes().flatten().any(|attr| {
-                                attr.key.local_name().as_ref() == b"name"
-                                    && attr.value.as_ref() == b"XLRICHVALUE"
+                                attr.key.local_name().as_ref() == "name"
+                                    && attr.value.as_ref() == "XLRICHVALUE"
                             });
                         }
-                        b"rvb" if in_future_xlrichvalue => {
+                        "rvb" if in_future_xlrichvalue => {
                             for attr in e.attributes().flatten() {
-                                if attr.key.local_name().as_ref() == b"i" {
-                                    if let Ok(i) =
-                                        String::from_utf8_lossy(&attr.value).parse::<usize>()
-                                    {
+                                if attr.key.local_name().as_ref() == "i" {
+                                    if let Ok(i) = attr.value.parse::<usize>() {
                                         future_rvb.push(i);
                                     }
                                 }
                             }
                         }
-                        b"valueMetadata" => in_value_metadata = true,
-                        b"rc" if in_value_metadata => {
+                        "valueMetadata" => in_value_metadata = true,
+                        "rc" if in_value_metadata => {
                             let mut t = None;
                             let mut v = None;
                             for attr in e.attributes().flatten() {
                                 match attr.key.local_name().as_ref() {
-                                    b"t" => t = String::from_utf8_lossy(&attr.value).parse().ok(),
-                                    b"v" => v = String::from_utf8_lossy(&attr.value).parse().ok(),
+                                    "t" => t = attr.value.parse().ok(),
+                                    "v" => v = attr.value.parse().ok(),
                                     _ => {}
                                 }
                             }
@@ -1133,8 +1129,8 @@ impl XlsxParser {
                     }
                 }
                 Ok(quick_xml::events::Event::End(ref e)) => match e.name().local_name().as_ref() {
-                    b"futureMetadata" => in_future_xlrichvalue = false,
-                    b"valueMetadata" => in_value_metadata = false,
+                    "futureMetadata" => in_future_xlrichvalue = false,
+                    "valueMetadata" => in_value_metadata = false,
                     _ => {}
                 },
                 Ok(quick_xml::events::Event::Eof) => break,
@@ -1179,14 +1175,14 @@ impl XlsxParser {
                 Ok(quick_xml::events::Event::Start(ref e))
                 | Ok(quick_xml::events::Event::Empty(ref e)) => {
                     match e.name().local_name().as_ref() {
-                        b"s" => {
+                        "s" => {
                             structures.push(None);
                             current_key_index = 0;
                         }
-                        b"k" => {
+                        "k" => {
                             let is_image_key = e.attributes().flatten().any(|attr| {
-                                attr.key.local_name().as_ref() == b"n"
-                                    && attr.value.as_ref() == b"_rvRel:LocalImageIdentifier"
+                                attr.key.local_name().as_ref() == "n"
+                                    && attr.value.as_ref() == "_rvRel:LocalImageIdentifier"
                             });
                             if is_image_key {
                                 if let Some(last) = structures.last_mut() {
@@ -1229,16 +1225,16 @@ impl XlsxParser {
             match reader.read_event_into(&mut buf) {
                 Ok(quick_xml::events::Event::Start(ref e)) => {
                     match e.name().local_name().as_ref() {
-                        b"rv" => {
+                        "rv" => {
                             let mut s = 0usize;
                             for attr in e.attributes().flatten() {
-                                if attr.key.local_name().as_ref() == b"s" {
-                                    s = String::from_utf8_lossy(&attr.value).parse().unwrap_or(0);
+                                if attr.key.local_name().as_ref() == "s" {
+                                    s = attr.value.parse().unwrap_or(0);
                                 }
                             }
                             values.push((s, Vec::new()));
                         }
-                        b"v" => {
+                        "v" => {
                             in_v = true;
                             if let Some((_, slots)) = values.last_mut() {
                                 slots.push(String::new());
@@ -1258,7 +1254,7 @@ impl XlsxParser {
                     }
                 }
                 Ok(quick_xml::events::Event::End(ref e))
-                    if e.name().local_name().as_ref() == b"v" =>
+                    if e.name().local_name().as_ref() == "v" =>
                 {
                     in_v = false;
                 }
@@ -1283,11 +1279,11 @@ impl XlsxParser {
             match reader.read_event_into(&mut buf) {
                 Ok(quick_xml::events::Event::Start(ref e))
                 | Ok(quick_xml::events::Event::Empty(ref e))
-                    if e.name().local_name().as_ref() == b"rel" =>
+                    if e.name().local_name().as_ref() == "rel" =>
                 {
                     for attr in e.attributes().flatten() {
-                        if attr.key.local_name().as_ref() == b"id" {
-                            ids.push(String::from_utf8_lossy(&attr.value).to_string());
+                        if attr.key.local_name().as_ref() == "id" {
+                            ids.push(attr.value.to_string());
                         }
                     }
                 }
@@ -1392,52 +1388,46 @@ impl XlsxParser {
                 Ok(quick_xml::events::Event::Start(ref e)) => {
                     let local_name = e.name().local_name();
                     match local_name.as_ref() {
-                        b"pic" => {
+                        "pic" => {
                             in_pic = true;
                             current_name = None;
                             current_rel_id = None;
                             current_width = None;
                             current_height = None;
                         }
-                        b"nvPicPr" if in_pic => {
+                        "nvPicPr" if in_pic => {
                             in_nvpicpr = true;
                         }
-                        b"cNvPr" if in_nvpicpr => {
+                        "cNvPr" if in_nvpicpr => {
                             for attr in e.attributes().flatten() {
-                                if attr.key.local_name().as_ref() == b"name" {
-                                    current_name =
-                                        Some(String::from_utf8_lossy(&attr.value).to_string());
+                                if attr.key.local_name().as_ref() == "name" {
+                                    current_name = Some(attr.value.to_string());
                                 }
                             }
                         }
-                        b"blipFill" if in_pic => {
+                        "blipFill" if in_pic => {
                             in_blipfill = true;
                         }
-                        b"blip" if in_blipfill => {
+                        "blip" if in_blipfill => {
                             for attr in e.attributes().flatten() {
-                                if attr.key.local_name().as_ref() == b"embed" {
-                                    current_rel_id =
-                                        Some(String::from_utf8_lossy(&attr.value).to_string());
+                                if attr.key.local_name().as_ref() == "embed" {
+                                    current_rel_id = Some(attr.value.to_string());
                                 }
                             }
                         }
-                        b"spPr" if in_pic => {
+                        "spPr" if in_pic => {
                             in_sppr = true;
                         }
-                        b"ext" if in_sppr => {
+                        "ext" if in_sppr => {
                             for attr in e.attributes().flatten() {
                                 match attr.key.local_name().as_ref() {
-                                    b"cx" => {
-                                        if let Ok(cx) =
-                                            String::from_utf8_lossy(&attr.value).parse::<u32>()
-                                        {
+                                    "cx" => {
+                                        if let Ok(cx) = attr.value.parse::<u32>() {
                                             current_width = Some(cx);
                                         }
                                     }
-                                    b"cy" => {
-                                        if let Ok(cy) =
-                                            String::from_utf8_lossy(&attr.value).parse::<u32>()
-                                        {
+                                    "cy" => {
+                                        if let Ok(cy) = attr.value.parse::<u32>() {
                                             current_height = Some(cy);
                                         }
                                     }
@@ -1451,36 +1441,30 @@ impl XlsxParser {
                 Ok(quick_xml::events::Event::Empty(ref e)) => {
                     let local_name = e.name().local_name();
                     match local_name.as_ref() {
-                        b"cNvPr" if in_nvpicpr => {
+                        "cNvPr" if in_nvpicpr => {
                             for attr in e.attributes().flatten() {
-                                if attr.key.local_name().as_ref() == b"name" {
-                                    current_name =
-                                        Some(String::from_utf8_lossy(&attr.value).to_string());
+                                if attr.key.local_name().as_ref() == "name" {
+                                    current_name = Some(attr.value.to_string());
                                 }
                             }
                         }
-                        b"blip" if in_blipfill => {
+                        "blip" if in_blipfill => {
                             for attr in e.attributes().flatten() {
-                                if attr.key.local_name().as_ref() == b"embed" {
-                                    current_rel_id =
-                                        Some(String::from_utf8_lossy(&attr.value).to_string());
+                                if attr.key.local_name().as_ref() == "embed" {
+                                    current_rel_id = Some(attr.value.to_string());
                                 }
                             }
                         }
-                        b"ext" if in_sppr => {
+                        "ext" if in_sppr => {
                             for attr in e.attributes().flatten() {
                                 match attr.key.local_name().as_ref() {
-                                    b"cx" => {
-                                        if let Ok(cx) =
-                                            String::from_utf8_lossy(&attr.value).parse::<u32>()
-                                        {
+                                    "cx" => {
+                                        if let Ok(cx) = attr.value.parse::<u32>() {
                                             current_width = Some(cx);
                                         }
                                     }
-                                    b"cy" => {
-                                        if let Ok(cy) =
-                                            String::from_utf8_lossy(&attr.value).parse::<u32>()
-                                        {
+                                    "cy" => {
+                                        if let Ok(cy) = attr.value.parse::<u32>() {
                                             current_height = Some(cy);
                                         }
                                     }
@@ -1494,7 +1478,7 @@ impl XlsxParser {
                 Ok(quick_xml::events::Event::End(ref e)) => {
                     let local_name = e.name().local_name();
                     match local_name.as_ref() {
-                        b"pic" => {
+                        "pic" => {
                             if let Some(rel_id) = current_rel_id.take() {
                                 if let Some(filename) = rels.get(&rel_id) {
                                     images.push(Block::Image {
@@ -1507,13 +1491,13 @@ impl XlsxParser {
                             }
                             in_pic = false;
                         }
-                        b"nvPicPr" => {
+                        "nvPicPr" => {
                             in_nvpicpr = false;
                         }
-                        b"blipFill" => {
+                        "blipFill" => {
                             in_blipfill = false;
                         }
-                        b"spPr" => {
+                        "spPr" => {
                             in_sppr = false;
                         }
                         _ => {}
