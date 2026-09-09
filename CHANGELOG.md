@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.10.0] - 2026-09-09
 
 ### Added
 
@@ -44,6 +44,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   removed rather than translated — they suggested a tolerance for malformed bytes that the parser
   has never had. Invalid UTF-8 is still rejected where it is actually read, as
   `ErrorKind::Encoding`.
+
+- The declared minimum supported Rust version is now 1.88. It had said 1.87, which the crate
+  has not actually built on for some time — a dependency in the tree raised its own floor —
+  so anyone taking the manifest at its word got a compile error rather than a clear refusal.
+  CI now builds the workspace on exactly the declared version, so the two cannot drift apart
+  again.
+  The CLI crate, published alongside the library, now declares it as well — it named no
+  minimum at all, which reads as "any version" to anyone checking.
 
 ## [0.9.0] - 2026-08-20
 
