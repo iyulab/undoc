@@ -106,6 +106,56 @@ jobs:
       - name: Build with FFI
         run: cargo build --release --features ffi
 
+  # The manifest declares rust-version, and consumers build against it. Every
+  # other job here runs on stable, where a raised floor is invisible -- which is
+  # exactly how the declaration came to name a version the crate did not build on.
+  #
+  # This checks the workspace rather than running the test suite, unlike the
+  # sibling crates' equivalent job. rust-version is a promise about building this
+  # crate, and dev-dependencies are not part of what a consumer compiles; binding
+  # the declaration to them could only push it above what consumers actually need,
+  # which is the same false declaration in the other direction.
+  msrv:
+    name: MSRV
+    needs: version-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read rust-version from the manifest
+        id: msrv
+        shell: bash
+        run: |
+          version=$(grep -m1 '^rust-version = ' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+          echo "toolchain=$version" >> "$GITHUB_OUTPUT"
+          echo "Declared MSRV: $version"
+
+      - name: Install the declared toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.msrv.outputs.toolchain }}
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-msrv-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-msrv-
+
+      - name: Check the workspace on the declared MSRV
+        run: cargo check --workspace
+
+      - name: Check it again with every feature enabled
+        # Features are part of the published surface, and a feature-gated
+        # dependency can carry a floor of its own that the default build never
+        # compiles.
+        run: cargo check --workspace --all-features
+
   build-wasm:
     name: Build WASM
     needs: version-check
