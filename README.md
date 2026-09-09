@@ -666,12 +666,21 @@ Complete document structure with metadata:
 
 | Feature | Description | Default |
 |---------|-------------|---------|
+| `docx` | Word document support | Yes |
+| `xlsx` | Excel workbook support | Yes |
+| `pptx` | PowerPoint presentation support | Yes |
+| `refine` | Markdown shape-refinement pass (`RenderOptions::refine`) | Yes |
 | `ffi` | C-ABI foreign function interface | No |
+| `async` | Async I/O with Tokio | No |
 
-```toml
-# Cargo.toml - enable FFI
-[dependencies]
-undoc = { version = "0.3", features = ["ffi"] }
+```bash
+cargo add undoc --features ffi
+```
+
+To take only one format, or to drop the refinement pass and the CommonMark parser it pulls in:
+
+```bash
+cargo add undoc --no-default-features --features docx
 ```
 
 ---
