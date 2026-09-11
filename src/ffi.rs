@@ -68,33 +68,33 @@
 use std::ffi::{c_char, c_int};
 use std::ptr;
 
-use uncore::ffi::{self, invalid_argument, FfiError, LastErrorSlot};
+use unparser_shared::ffi::{self, invalid_argument, FfiError, LastErrorSlot};
 
 use crate::error::ErrorKind;
 use crate::model::Document;
 use crate::render::{JsonFormat, RenderOptions};
 
 // Thread-local storage for the last error message and its classification. Declared
-// here rather than in `uncore` — see that crate's `ffi` module docs for why the slot
+// here rather than in `unparser-shared` — see that crate's `ffi` module docs for why the slot
 // must live in the consuming crate.
 thread_local! {
     static LAST_ERROR: LastErrorSlot = const { LastErrorSlot::new() };
 }
 
-uncore::export_last_error_abi!(LAST_ERROR, undoc_last_error, undoc_last_error_kind);
+unparser_shared::export_last_error_abi!(LAST_ERROR, undoc_last_error, undoc_last_error_kind);
 
 /// `undoc_last_error_kind` value when no error is recorded on this thread.
-pub const UNDOC_ERROR_NONE: c_int = uncore::kind::NONE;
+pub const UNDOC_ERROR_NONE: c_int = unparser_shared::kind::NONE;
 
 // Values 1..=13 are [`ErrorKind`] discriminants — core failure reasons.
 // Values 100+ are FFI-boundary reasons with no core `Error` counterpart.
 
 /// An argument was null or not valid UTF-8.
-pub const UNDOC_ERROR_INVALID_ARGUMENT: c_int = uncore::kind::INVALID_ARGUMENT;
+pub const UNDOC_ERROR_INVALID_ARGUMENT: c_int = unparser_shared::kind::INVALID_ARGUMENT;
 /// A panic was caught at the FFI boundary.
-pub const UNDOC_ERROR_PANIC: c_int = uncore::kind::PANIC;
+pub const UNDOC_ERROR_PANIC: c_int = unparser_shared::kind::PANIC;
 /// The produced output contains an interior NUL byte and cannot cross the C ABI.
-pub const UNDOC_ERROR_INVALID_OUTPUT: c_int = uncore::kind::INVALID_OUTPUT;
+pub const UNDOC_ERROR_INVALID_OUTPUT: c_int = unparser_shared::kind::INVALID_OUTPUT;
 
 /// Classify a core error and render its message, for return from a closure.
 fn ffi_err(e: crate::Error) -> FfiError {
@@ -106,7 +106,7 @@ fn json_err(e: serde_json::Error) -> FfiError {
     (ErrorKind::Render as c_int, e.to_string())
 }
 
-uncore::export_handle! {
+unparser_shared::export_handle! {
     /// Opaque handle to a parsed document.
     handle UndocDocument { inner: Document },
 
@@ -151,7 +151,7 @@ pub unsafe extern "C" fn undoc_parse_file(path: *const c_char) -> *mut UndocDocu
     LAST_ERROR.with(|slot| slot.clear());
 
     let result: Result<*mut UndocDocument, FfiError> = ffi::catch(|| {
-        let path_str = uncore::with_c_str!(path)?;
+        let path_str = unparser_shared::with_c_str!(path)?;
 
         crate::parse_file(path_str)
             .map(|doc| Box::into_raw(Box::new(UndocDocument { inner: doc })))
@@ -200,7 +200,7 @@ pub unsafe extern "C" fn undoc_parse_bytes(data: *const u8, len: usize) -> *mut 
     }
 }
 
-uncore::export_string_getter!(
+unparser_shared::export_string_getter!(
     /// Convert a document to Markdown.
     ///
     /// # Safety
@@ -234,7 +234,7 @@ uncore::export_string_getter!(
     }
 );
 
-uncore::export_string_getter!(
+unparser_shared::export_string_getter!(
     /// Convert a document to plain text.
     ///
     /// # Safety
@@ -251,7 +251,7 @@ uncore::export_string_getter!(
     }
 );
 
-uncore::export_string_getter!(
+unparser_shared::export_string_getter!(
     /// Convert a document to JSON.
     ///
     /// # Safety
@@ -273,7 +273,7 @@ uncore::export_string_getter!(
     }
 );
 
-uncore::export_string_getter!(
+unparser_shared::export_string_getter!(
     /// Get the plain text content of a document.
     ///
     /// # Safety
@@ -290,7 +290,7 @@ uncore::export_string_getter!(
     }
 );
 
-uncore::export_count_getter!(
+unparser_shared::export_count_getter!(
     /// Get the number of sections in a document.
     ///
     /// # Safety
@@ -305,7 +305,7 @@ uncore::export_count_getter!(
     }
 );
 
-uncore::export_count_getter!(
+unparser_shared::export_count_getter!(
     /// Get the number of resources in a document.
     ///
     /// # Safety
@@ -320,7 +320,7 @@ uncore::export_count_getter!(
     }
 );
 
-uncore::export_optional_string_getter!(
+unparser_shared::export_optional_string_getter!(
     /// Get the document title.
     ///
     /// # Safety
@@ -339,7 +339,7 @@ uncore::export_optional_string_getter!(
     }
 );
 
-uncore::export_optional_string_getter!(
+unparser_shared::export_optional_string_getter!(
     /// Get the document author.
     ///
     /// # Safety
@@ -358,7 +358,7 @@ uncore::export_optional_string_getter!(
     }
 );
 
-uncore::export_free_string!(
+unparser_shared::export_free_string!(
     /// Free a string allocated by this library.
     ///
     /// # Safety
@@ -368,7 +368,7 @@ uncore::export_free_string!(
     undoc_free_string
 );
 
-uncore::export_string_getter!(
+unparser_shared::export_string_getter!(
     /// Get all resource IDs as a JSON array.
     ///
     /// # Safety
@@ -390,7 +390,7 @@ uncore::export_string_getter!(
     }
 );
 
-uncore::export_string_getter!(
+unparser_shared::export_string_getter!(
     /// Get resource metadata as JSON (without binary data).
     ///
     /// # Safety
@@ -407,7 +407,7 @@ uncore::export_string_getter!(
     LAST_ERROR,
     undoc_get_resource_info(doc: UndocDocument, resource_id: *const c_char),
     {
-        let id_str = uncore::with_c_str!(resource_id)?;
+        let id_str = unparser_shared::with_c_str!(resource_id)?;
 
         let document = &(*doc).inner;
 
@@ -430,7 +430,7 @@ uncore::export_string_getter!(
     }
 );
 
-uncore::export_bytes_getter!(
+unparser_shared::export_bytes_getter!(
     /// Get resource binary data.
     ///
     /// # Safety
@@ -443,7 +443,7 @@ uncore::export_bytes_getter!(
     LAST_ERROR,
     undoc_get_resource_data(doc: UndocDocument, resource_id, out out_len),
     {
-        let id_str = uncore::ffi::c_str_utf8(resource_id)?;
+        let id_str = unparser_shared::ffi::c_str_utf8(resource_id)?;
 
         let document = &(*doc).inner;
 
@@ -454,7 +454,7 @@ uncore::export_bytes_getter!(
     }
 );
 
-uncore::export_free_bytes!(
+unparser_shared::export_free_bytes!(
     /// Free binary data allocated by `undoc_get_resource_data`.
     ///
     /// # Safety

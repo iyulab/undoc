@@ -286,7 +286,7 @@ fn finalize(output: String, options: &RenderOptions) -> String {
 
     #[cfg(feature = "refine")]
     let trimmed = match options.refine {
-        Some(ref refine_options) => unrefine::refine(&trimmed, refine_options),
+        Some(ref refine_options) => unparser_shared::refine::refine(&trimmed, refine_options),
         None => trimmed,
     };
 
@@ -1337,7 +1337,7 @@ mod tests {
 
     /// `RenderOptions::default()` leaves `refine` off — the last line of
     /// defense protecting deployed consumers. A backslash-separated
-    /// hyperlink path is exactly the kind of value `unrefine`'s link
+    /// hyperlink path is exactly the kind of value `unparser_shared::refine`'s link
     /// normalization pass would touch, so its survival here proves refine
     /// did not run.
     #[cfg(feature = "refine")]
@@ -1361,9 +1361,9 @@ mod tests {
         );
     }
 
-    /// `finalize()` wires `RenderOptions.refine` into `unrefine::refine`
+    /// `finalize()` wires `RenderOptions.refine` into `unparser_shared::refine::refine`
     /// after cleanup — this exercises that wiring end to end, not
-    /// `unrefine`'s own pass logic (that's `unrefine`'s test suite).
+    /// the refine pass's own logic (that's `unparser-shared`'s test suite).
     #[cfg(feature = "refine")]
     #[test]
     fn test_refine_on_normalizes_backslash_link_paths() {

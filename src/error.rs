@@ -356,7 +356,7 @@ mod tests {
     // `undoc_last_error_kind` values. Pinning every one of them here — via the same
     // macro the sibling crates use — is what makes an accidental renumbering a test
     // failure instead of a silent consumer break.
-    uncore::assert_stable_kinds! {
+    unparser_shared::assert_stable_kinds! {
         ErrorKind, test_error_kind_discriminants_are_stable,
         Other = 1,
         Io = 2,
