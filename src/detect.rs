@@ -434,34 +434,52 @@ mod tests {
         assert_eq!(err.kind(), crate::ErrorKind::ZipArchive, "got: {err}");
     }
 
+    /// A package whose only content is its main part, declared under `content_type`.
+    fn package(main_part: &str, content_type: &str) -> Vec<u8> {
+        use std::io::Write;
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        zip.start_file("[Content_Types].xml", options).unwrap();
+        write!(
+            zip,
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Override PartName="/{main_part}" ContentType="{content_type}"/>
+</Types>"#
+        )
+        .unwrap();
+        zip.start_file(main_part, options).unwrap();
+        zip.write_all(b"<root/>").unwrap();
+        zip.finish().unwrap().into_inner()
+    }
+
+    /// Each format is told apart by the content type of its main part -- the only thing
+    /// available for bytes that arrive without a file name.
     #[test]
-    fn test_detect_docx_from_file() {
-        let path = "test-files/file-sample_1MB.docx";
-        if std::path::Path::new(path).exists() {
-            let result = detect_format_from_path(path);
-            assert!(result.is_ok());
-            assert_eq!(result.unwrap(), FormatType::Docx);
+    fn test_detects_each_format_from_its_content_type() {
+        for (main_part, content_type, expected) in [
+            ("word/document.xml", DOCX_CONTENT_TYPE, FormatType::Docx),
+            ("xl/workbook.xml", XLSX_CONTENT_TYPE, FormatType::Xlsx),
+            ("ppt/presentation.xml", PPTX_CONTENT_TYPE, FormatType::Pptx),
+        ] {
+            let data = package(main_part, content_type);
+            assert_eq!(
+                detect_format_from_bytes(&data).unwrap(),
+                expected,
+                "{main_part}"
+            );
         }
     }
 
+    /// The path-based entry point reads the same bytes from disk.
     #[test]
-    fn test_detect_xlsx_from_file() {
-        let path = "test-files/file_example_XLSX_5000.xlsx";
-        if std::path::Path::new(path).exists() {
-            let result = detect_format_from_path(path);
-            assert!(result.is_ok());
-            assert_eq!(result.unwrap(), FormatType::Xlsx);
-        }
-    }
+    fn test_detects_format_from_a_file_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("deck.pptx");
+        std::fs::write(&path, package("ppt/presentation.xml", PPTX_CONTENT_TYPE)).unwrap();
 
-    #[test]
-    fn test_detect_pptx_from_file() {
-        let path = "test-files/file_example_PPT_1MB.pptx";
-        if std::path::Path::new(path).exists() {
-            let result = detect_format_from_path(path);
-            assert!(result.is_ok());
-            assert_eq!(result.unwrap(), FormatType::Pptx);
-        }
+        assert_eq!(detect_format_from_path(&path).unwrap(), FormatType::Pptx);
     }
 
     #[test]

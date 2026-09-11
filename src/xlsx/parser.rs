@@ -1887,93 +1887,6 @@ mod tests {
     }
 
     #[test]
-    fn test_open_xlsx() {
-        let path = "test-files/file_example_XLSX_5000.xlsx";
-        if std::path::Path::new(path).exists() {
-            let parser = XlsxParser::open(path);
-            assert!(parser.is_ok());
-        }
-    }
-
-    #[test]
-    fn test_parse_xlsx() {
-        let path = "test-files/file_example_XLSX_5000.xlsx";
-        if std::path::Path::new(path).exists() {
-            let mut parser = XlsxParser::open(path).unwrap();
-            let doc = parser.parse().unwrap();
-
-            // Should have at least one section (sheet)
-            assert!(!doc.sections.is_empty());
-
-            // First section should have a table
-            if let Some(Block::Table(table)) = doc.sections[0].content.first() {
-                assert!(!table.rows.is_empty());
-                // Check first row is header
-                assert!(table.rows[0].is_header);
-            }
-        }
-    }
-
-    #[test]
-    fn test_sheet_names() {
-        let path = "test-files/file_example_XLSX_5000.xlsx";
-        if std::path::Path::new(path).exists() {
-            let parser = XlsxParser::open(path).unwrap();
-            let names = parser.sheet_names();
-            assert!(!names.is_empty());
-        }
-    }
-
-    #[test]
-    fn test_shared_strings() {
-        let path = "test-files/file_example_XLSX_5000.xlsx";
-        if std::path::Path::new(path).exists() {
-            let mut parser = XlsxParser::open(path).unwrap();
-            let doc = parser.parse().unwrap();
-
-            // Get plain text and check for expected content
-            let text = doc.plain_text();
-            assert!(text.contains("First Name"));
-            assert!(text.contains("Last Name"));
-        }
-    }
-
-    #[test]
-    fn test_merged_cells() {
-        let path = "test-files/Basic Invoice.xlsx";
-        if std::path::Path::new(path).exists() {
-            let mut parser = XlsxParser::open(path).unwrap();
-            let doc = parser.parse().unwrap();
-
-            // Find merged cells
-            let mut found_merged = false;
-            for section in &doc.sections {
-                for block in &section.content {
-                    if let Block::Table(table) = block {
-                        for row in &table.rows {
-                            for cell in &row.cells {
-                                if cell.col_span > 1 || cell.row_span > 1 {
-                                    found_merged = true;
-                                    println!(
-                                        "Found merged cell: col_span={}, row_span={}, text='{}'",
-                                        cell.col_span,
-                                        cell.row_span,
-                                        cell.plain_text()
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            assert!(
-                found_merged,
-                "Expected to find merged cells in Basic Invoice.xlsx"
-            );
-        }
-    }
-
-    #[test]
     fn test_parse_cell_ref() {
         // Test cell reference parsing
         assert_eq!(XlsxParser::parse_cell_ref("A1"), Some((0, 1)));
@@ -2041,6 +1954,54 @@ mod tests {
             XlsxParser::resolve_relative_path("", "xl/media/image1.png"),
             "xl/media/image1.png"
         );
+    }
+
+    /// Shared-string cells resolve to their text, the sheet is listed by name before
+    /// parsing, and only the first row of the sheet is marked as the header.
+    #[test]
+    fn test_shared_strings_sheet_names_and_header_row() {
+        let workbook_rels = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+</Relationships>"#;
+        let shared_strings = r#"<?xml version="1.0" encoding="UTF-8"?>
+<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="4" uniqueCount="4">
+  <si><t>First Name</t></si><si><t>Last Name</t></si><si><t>Ada</t></si><si><t>Lovelace</t></si>
+</sst>"#;
+        let sheet_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    <row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c></row>
+    <row r="2"><c r="A2" t="s"><v>2</v></c><c r="B2" t="s"><v>3</v></c></row>
+  </sheetData>
+</worksheet>"#;
+        let data = create_minimal_xlsx_with_parts(
+            Some(workbook_rels),
+            None,
+            Some(shared_strings),
+            sheet_xml,
+        );
+
+        let mut parser = XlsxParser::from_bytes(data).unwrap();
+        assert_eq!(parser.sheet_names(), ["Sheet1"]);
+
+        let doc = parser.parse().unwrap();
+        let table = doc.sections[0]
+            .content
+            .iter()
+            .find_map(|block| match block {
+                Block::Table(table) => Some(table),
+                _ => None,
+            })
+            .expect("the sheet becomes a table");
+        let texts: Vec<Vec<String>> = table
+            .rows
+            .iter()
+            .map(|row| row.cells.iter().map(|cell| cell.plain_text()).collect())
+            .collect();
+        assert_eq!(texts, [["First Name", "Last Name"], ["Ada", "Lovelace"]]);
+        assert!(table.rows[0].is_header);
+        assert!(!table.rows[1].is_header);
     }
 
     fn create_minimal_xlsx(
@@ -2738,29 +2699,6 @@ mod tests {
         let rels = HashMap::new();
         let images = XlsxParser::parse_drawing_images(drawing_xml, &rels).unwrap();
         assert!(images.is_empty());
-    }
-
-    #[test]
-    fn test_xlsx_with_drawing_no_images() {
-        // Test that existing test files with drawings but no images still parse correctly
-        let path = "test-files/Auto Expense Report.xlsx";
-        if std::path::Path::new(path).exists() {
-            let mut parser = XlsxParser::open(path).unwrap();
-            let doc = parser.parse().unwrap();
-
-            // Should parse without errors and have sections
-            assert!(!doc.sections.is_empty());
-
-            // No Block::Image should be present (this file has shapes, not images)
-            for section in &doc.sections {
-                for block in &section.content {
-                    assert!(
-                        !matches!(block, Block::Image { .. }),
-                        "Expected no images in Auto Expense Report.xlsx"
-                    );
-                }
-            }
-        }
     }
 
     #[test]

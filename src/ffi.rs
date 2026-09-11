@@ -470,7 +470,6 @@ mod tests {
     use super::*;
     use crate::model::Document;
     use std::ffi::{CStr, CString};
-    use std::path::Path;
 
     #[test]
     fn test_version() {
@@ -499,37 +498,75 @@ mod tests {
         assert!(!error.is_null());
     }
 
+    const HELLO: &str = "Hello from the C ABI";
+
+    /// A one-paragraph DOCX, assembled in memory.
+    fn hello_docx() -> Vec<u8> {
+        use std::io::Write;
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        zip.start_file("[Content_Types].xml", options).unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>"#).unwrap();
+        zip.start_file("_rels/.rels", options).unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>"#).unwrap();
+        zip.start_file("word/document.xml", options).unwrap();
+        write!(
+            zip,
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body><w:p><w:r><w:t>{HELLO}</w:t></w:r></w:p></w:body>
+</w:document>"#
+        )
+        .unwrap();
+        zip.finish().unwrap().into_inner()
+    }
+
+    /// Takes an owned copy of a returned string and frees the original.
+    fn take_string(ptr: *mut c_char) -> String {
+        assert!(!ptr.is_null());
+        let owned = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap().to_owned();
+        unsafe { undoc_free_string(ptr) };
+        owned
+    }
+
     #[test]
     fn test_parse_and_convert() {
-        let path = "test-files/file-sample_1MB.docx";
-        if !Path::new(path).exists() {
-            return;
-        }
-
-        let path_cstr = CString::new(path).unwrap();
-        let doc = unsafe { undoc_parse_file(path_cstr.as_ptr()) };
+        let data = hello_docx();
+        let doc = unsafe { undoc_parse_bytes(data.as_ptr(), data.len()) };
         assert!(!doc.is_null());
+        assert_eq!(undoc_last_error_kind(), UNDOC_ERROR_NONE);
 
-        // Test markdown conversion
-        let md = unsafe { undoc_to_markdown(doc, 0) };
-        assert!(!md.is_null());
-        unsafe { undoc_free_string(md) };
+        assert_eq!(take_string(unsafe { undoc_to_text(doc) }).trim(), HELLO);
+        let md = take_string(unsafe { undoc_to_markdown(doc, 0) });
+        assert!(md.contains(HELLO), "markdown: {md}");
+        let json = take_string(unsafe { undoc_to_json(doc, UNDOC_JSON_PRETTY) });
+        assert!(json.contains(HELLO), "json: {json}");
+        assert_eq!(unsafe { undoc_section_count(doc) }, 1);
 
-        // Test text conversion
-        let text = unsafe { undoc_to_text(doc) };
-        assert!(!text.is_null());
-        unsafe { undoc_free_string(text) };
+        unsafe { undoc_free_document(doc) };
+    }
 
-        // Test JSON conversion
-        let json = unsafe { undoc_to_json(doc, UNDOC_JSON_PRETTY) };
-        assert!(!json.is_null());
-        unsafe { undoc_free_string(json) };
+    /// The file-path entry point -- otherwise reached only by the missing-file failure.
+    #[test]
+    fn test_parse_file_reads_a_document_from_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hello.docx");
+        std::fs::write(&path, hello_docx()).unwrap();
 
-        // Test section count
-        let count = unsafe { undoc_section_count(doc) };
-        assert!(count >= 0);
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+        let doc = unsafe { undoc_parse_file(c_path.as_ptr()) };
+        assert!(!doc.is_null());
+        assert_eq!(take_string(unsafe { undoc_to_text(doc) }).trim(), HELLO);
 
-        // Free document
         unsafe { undoc_free_document(doc) };
     }
 

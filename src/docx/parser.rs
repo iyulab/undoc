@@ -1947,68 +1947,6 @@ fn deduplicate_paragraph_block(paragraphs: Vec<Paragraph>) -> Vec<Paragraph> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_open_docx() {
-        let path = "test-files/file-sample_1MB.docx";
-        if std::path::Path::new(path).exists() {
-            let parser = DocxParser::open(path);
-            assert!(parser.is_ok());
-        }
-    }
-
-    #[test]
-    fn test_parse_docx() {
-        let path = "test-files/file-sample_1MB.docx";
-        if std::path::Path::new(path).exists() {
-            let mut parser = DocxParser::open(path).unwrap();
-            let doc = parser.parse().unwrap();
-
-            assert!(!doc.sections.is_empty());
-
-            let text = doc.plain_text();
-            assert!(!text.is_empty());
-            assert!(text.contains("Lorem ipsum"));
-        }
-    }
-
-    #[test]
-    fn test_parse_headings() {
-        let path = "test-files/file-sample_1MB.docx";
-        if std::path::Path::new(path).exists() {
-            let mut parser = DocxParser::open(path).unwrap();
-            let doc = parser.parse().unwrap();
-
-            let headings: Vec<_> = doc.sections[0]
-                .content
-                .iter()
-                .filter_map(|block| {
-                    if let Block::Paragraph(p) = block {
-                        if p.is_heading() {
-                            return Some(p);
-                        }
-                    }
-                    None
-                })
-                .collect();
-
-            assert!(!headings.is_empty());
-        }
-    }
-
-    #[test]
-    fn test_extract_resources() {
-        let path = "test-files/file-sample_1MB.docx";
-        if std::path::Path::new(path).exists() {
-            let mut parser = DocxParser::open(path).unwrap();
-            let doc = parser.parse().unwrap();
-
-            if !doc.resources.is_empty() {
-                let resource = doc.resources.values().next().unwrap();
-                assert!(resource.is_image());
-            }
-        }
-    }
-
     // =========================================================================
     // Whitespace Preservation Tests (GitHub Issue #2)
     // =========================================================================
@@ -2631,6 +2569,78 @@ mod tests {
     // =========================================================================
     // Text Box Content Extraction Tests (w:txbxContent)
     // =========================================================================
+
+    const EMPTY_DOCUMENT_RELS: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/>"#;
+
+    /// A body paragraph whose style has outline level 0 becomes a level-1 heading; the
+    /// paragraph after it, with no style, stays body text.
+    #[test]
+    fn test_heading_style_makes_a_body_paragraph_a_heading() {
+        use crate::model::HeadingLevel;
+
+        let document_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Introduction</w:t></w:r></w:p>
+    <w:p><w:r><w:t>Body text</w:t></w:r></w:p>
+  </w:body>
+</w:document>"#;
+        let styles = r#"<?xml version="1.0" encoding="UTF-8"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:style w:type="paragraph" w:styleId="Heading1">
+    <w:name w:val="Heading 1"/>
+    <w:pPr><w:outlineLvl w:val="0"/></w:pPr>
+  </w:style>
+</w:styles>"#;
+        let data = create_docx_with_parts(
+            document_xml,
+            EMPTY_DOCUMENT_RELS,
+            &[("word/styles.xml", styles)],
+        );
+        let doc = DocxParser::from_bytes(data).unwrap().parse().unwrap();
+
+        let paras: Vec<&crate::model::Paragraph> = doc.sections[0]
+            .content
+            .iter()
+            .filter_map(|block| match block {
+                crate::model::Block::Paragraph(p) => Some(p),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(paras[0].plain_text(), "Introduction");
+        assert_eq!(paras[0].heading, HeadingLevel::H1);
+        assert_eq!(paras[1].plain_text(), "Body text");
+        assert!(!paras[1].heading.is_heading());
+    }
+
+    /// An internal image relationship whose media part exists becomes one image resource,
+    /// keyed by the relationship id and carrying the part's bytes.
+    #[test]
+    fn test_image_relationship_becomes_a_resource() {
+        let document_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+            xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+            xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <w:body><w:p><w:r><w:drawing><a:blip r:embed="rIdImg"/></w:drawing></w:r></w:p></w:body>
+</w:document>"#;
+        let rels = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rIdImg" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image1.png"/>
+</Relationships>"#;
+        let data = create_docx_with_parts(
+            document_xml,
+            rels,
+            &[("word/media/image1.png", "stand-in image bytes")],
+        );
+        let doc = DocxParser::from_bytes(data).unwrap().parse().unwrap();
+
+        assert_eq!(doc.resources.len(), 1);
+        let resource = &doc.resources["rIdImg"];
+        assert!(resource.is_image());
+        assert_eq!(resource.filename.as_deref(), Some("image1.png"));
+        assert_eq!(resource.data, b"stand-in image bytes");
+    }
 
     /// Helper to create a minimal DOCX in memory with given document.xml content.
     fn create_minimal_docx(document_xml: &str) -> Vec<u8> {

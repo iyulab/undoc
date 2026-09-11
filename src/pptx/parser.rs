@@ -1542,76 +1542,6 @@ mod tests {
     use super::*;
     use crate::error::Error;
 
-    #[test]
-    fn test_open_pptx() {
-        let path = "test-files/file_example_PPT_1MB.pptx";
-        if std::path::Path::new(path).exists() {
-            let parser = PptxParser::open(path);
-            assert!(parser.is_ok());
-        }
-    }
-
-    #[test]
-    fn test_parse_pptx() {
-        let path = "test-files/file_example_PPT_1MB.pptx";
-        if std::path::Path::new(path).exists() {
-            let mut parser = PptxParser::open(path).unwrap();
-            let doc = parser.parse().unwrap();
-
-            // Should have at least one section (slide)
-            assert!(!doc.sections.is_empty());
-            println!("Parsed {} slides", doc.sections.len());
-
-            // Check metadata has slide count
-            assert!(doc.metadata.page_count.is_some());
-        }
-    }
-
-    #[test]
-    fn test_slide_count() {
-        let path = "test-files/file_example_PPT_1MB.pptx";
-        if std::path::Path::new(path).exists() {
-            let parser = PptxParser::open(path).unwrap();
-            let count = parser.slide_count();
-            assert!(count > 0);
-            println!("Slide count: {}", count);
-        }
-    }
-
-    #[test]
-    fn test_extract_text() {
-        let path = "test-files/file_example_PPT_1MB.pptx";
-        if std::path::Path::new(path).exists() {
-            let mut parser = PptxParser::open(path).unwrap();
-            let doc = parser.parse().unwrap();
-            let text = doc.plain_text();
-
-            // Should have some text content
-            assert!(!text.trim().is_empty());
-            println!("Extracted text length: {} chars", text.len());
-            println!("First 500 chars:\n{}", &text[..text.len().min(500)]);
-        }
-    }
-
-    #[test]
-    fn test_extract_resources() {
-        let path = "test-files/file_example_PPT_1MB.pptx";
-        if std::path::Path::new(path).exists() {
-            let parser = PptxParser::open(path).unwrap();
-            let resources = parser.extract_resources().unwrap();
-
-            println!("Found {} resources", resources.len());
-            for res in &resources {
-                println!(
-                    "  - {:?}: {} ({} bytes)",
-                    res.resource_type,
-                    res.filename.as_deref().unwrap_or("unnamed"),
-                    res.size
-                );
-            }
-        }
-    }
-
     fn empty_parser() -> PptxParser {
         use std::io::Cursor;
         let zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
@@ -1661,120 +1591,253 @@ mod tests {
         assert_eq!(text, "R&D dept");
     }
 
+    /// Each `a:p` becomes a paragraph with its text, and run formatting survives: the
+    /// run marked `b="1"` is bold and the other is not.
     #[test]
     fn test_parse_text_content() {
-        // Test XML parsing directly
-        let _xml = r#"<?xml version="1.0"?>
+        let shape = r#"<p:sp><p:nvSpPr><p:cNvPr id="2" name="Body"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:txBody><a:bodyPr/><a:p><a:r><a:t>Hello World</a:t></a:r></a:p><a:p><a:r><a:rPr b="1"/><a:t>Bold Text</a:t></a:r></a:p></p:txBody></p:sp>"#;
+        let data = deck(&[(&slide(shape), EMPTY_RELS)], &[]);
+        let doc = PptxParser::from_bytes(data).unwrap().parse().unwrap();
+
+        let paras = paragraphs(&doc.sections[0]);
+        assert_eq!(paras.len(), 2);
+        assert_eq!(paras[0].plain_text(), "Hello World");
+        assert!(!paras[0].runs[0].style.bold);
+        assert_eq!(paras[1].plain_text(), "Bold Text");
+        assert!(paras[1].runs[0].style.bold);
+    }
+
+    const EMPTY_RELS: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/>"#;
+
+    /// A deck of `slides` (each with its relationships part), plus arbitrary extra parts
+    /// such as media. The single-slide helpers below cannot express either.
+    fn deck(slides: &[(&str, &str)], extra_parts: &[(&str, &[u8])]) -> Vec<u8> {
+        use std::io::{Cursor, Write};
+        let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+
+        let mut overrides = String::new();
+        let mut presentation_rels = String::new();
+        let mut slide_ids = String::new();
+        for n in 1..=slides.len() {
+            overrides.push_str(&format!(
+                r#"<Override PartName="/ppt/slides/slide{n}.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>"#
+            ));
+            presentation_rels.push_str(&format!(
+                r#"<Relationship Id="rId{n}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide{n}.xml"/>"#
+            ));
+            slide_ids.push_str(&format!(r#"<p:sldId id="{}" r:id="rId{n}"/>"#, 255 + n));
+        }
+
+        zip.start_file("[Content_Types].xml", options).unwrap();
+        write!(
+            zip,
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>
+  {overrides}
+</Types>"#
+        )
+        .unwrap();
+
+        zip.start_file("_rels/.rels", options).unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="ppt/presentation.xml"/>
+</Relationships>"#).unwrap();
+
+        zip.start_file("ppt/_rels/presentation.xml.rels", options)
+            .unwrap();
+        write!(
+            zip,
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">{presentation_rels}</Relationships>"#
+        )
+        .unwrap();
+
+        zip.start_file("ppt/presentation.xml", options).unwrap();
+        write!(
+            zip,
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
+                xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <p:sldIdLst>{slide_ids}</p:sldIdLst>
+</p:presentation>"#
+        )
+        .unwrap();
+
+        for (i, (slide_xml, slide_rels)) in slides.iter().enumerate() {
+            let n = i + 1;
+            zip.start_file(format!("ppt/slides/_rels/slide{n}.xml.rels"), options)
+                .unwrap();
+            zip.write_all(slide_rels.as_bytes()).unwrap();
+            zip.start_file(format!("ppt/slides/slide{n}.xml"), options)
+                .unwrap();
+            zip.write_all(slide_xml.as_bytes()).unwrap();
+        }
+
+        for (path, data) in extra_parts {
+            zip.start_file(*path, options).unwrap();
+            zip.write_all(data).unwrap();
+        }
+
+        zip.finish().unwrap().into_inner()
+    }
+
+    fn slide(shapes: &str) -> String {
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
 <p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
-       xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
-  <p:cSld>
-    <p:spTree>
-      <p:sp>
-        <p:txBody>
-          <a:p>
-            <a:r>
-              <a:t>Hello World</a:t>
-            </a:r>
-          </a:p>
-          <a:p>
-            <a:r>
-              <a:rPr b="1"/>
-              <a:t>Bold Text</a:t>
-            </a:r>
-          </a:p>
-        </p:txBody>
-      </p:sp>
-    </p:spTree>
-  </p:cSld>
-</p:sld>"#;
-
-        let container = OoxmlContainer::from_bytes(Vec::new());
-        // Can't test fully without a real container, but we can test the parse logic
-        // by creating a minimal parser
-        if container.is_ok() {
-            // Just verify XML parsing logic compiles
-        }
+       xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
+       xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <p:cSld><p:spTree>{shapes}</p:spTree></p:cSld>
+</p:sld>"#
+        )
     }
 
-    #[test]
-    fn test_metadata() {
-        let path = "test-files/file_example_PPT_1MB.pptx";
-        if std::path::Path::new(path).exists() {
-            let mut parser = PptxParser::open(path).unwrap();
-            let doc = parser.parse().unwrap();
-
-            println!("Title: {:?}", doc.metadata.title);
-            println!("Author: {:?}", doc.metadata.author);
-            println!("Page count: {:?}", doc.metadata.page_count);
-        }
+    /// A text shape; `placeholder` is the `<p:ph>` element, or empty for a plain box.
+    fn text_shape(placeholder: &str, text: &str) -> String {
+        format!(
+            r#"<p:sp><p:nvSpPr><p:cNvPr id="2" name="Shape"/><p:cNvSpPr/><p:nvPr>{placeholder}</p:nvPr></p:nvSpPr><p:txBody><a:bodyPr/><a:p><a:r><a:t>{text}</a:t></a:r></a:p></p:txBody></p:sp>"#
+        )
     }
 
-    #[test]
-    fn test_parse_tables() {
-        let path = "test-files/file_example_PPT_1MB.pptx";
-        if std::path::Path::new(path).exists() {
-            let mut parser = PptxParser::open(path).unwrap();
-            let doc = parser.parse().unwrap();
-
-            // Find tables in the document
-            let mut table_count = 0;
-            for section in &doc.sections {
-                for block in &section.content {
-                    if let Block::Table(table) = block {
-                        table_count += 1;
-                        println!(
-                            "Found table in {}: {} rows, {} cols",
-                            section.name.as_deref().unwrap_or("unnamed"),
-                            table.row_count(),
-                            table.column_count()
-                        );
-                        // Print table content
-                        for (i, row) in table.rows.iter().enumerate() {
-                            let cells: Vec<String> =
-                                row.cells.iter().map(|c| c.plain_text()).collect();
-                            println!("  Row {}: {:?}", i, cells);
-                        }
-                    }
-                }
-            }
-            println!("Total tables found: {}", table_count);
-            // The test file should have at least one table (Slide 3)
-            assert!(table_count > 0, "Expected at least one table in the PPTX");
-        }
+    fn paragraphs(section: &crate::model::Section) -> Vec<&crate::model::Paragraph> {
+        section
+            .content
+            .iter()
+            .filter_map(|block| match block {
+                crate::model::Block::Paragraph(p) => Some(p),
+                _ => None,
+            })
+            .collect()
     }
 
+    /// Every slide becomes one section, in order, and the metadata's page count is the
+    /// number of slides.
     #[test]
-    fn test_parse_hyperlinks() {
-        let path = "test-files/officedissector/test/govdocs/036279.pptx";
-        if std::path::Path::new(path).exists() {
-            let mut parser = PptxParser::open(path).unwrap();
-            let doc = parser.parse().unwrap();
+    fn test_each_slide_becomes_a_section() {
+        let first = slide(&text_shape("", "First slide"));
+        let second = slide(&text_shape("", "Second slide"));
+        let data = deck(&[(&first, EMPTY_RELS), (&second, EMPTY_RELS)], &[]);
 
-            // Find hyperlinks in the document
-            let mut hyperlink_count = 0;
-            let mut found_email = false;
-            for section in &doc.sections {
-                for block in &section.content {
-                    if let Block::Paragraph(para) = block {
-                        for run in &para.runs {
-                            if let Some(ref link) = run.hyperlink {
-                                hyperlink_count += 1;
-                                println!("Found hyperlink: {} -> {}", run.text, link);
-                                if link.contains("ncicb@pop.nci.nih.gov") {
-                                    found_email = true;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            println!("Total hyperlinks found: {}", hyperlink_count);
-            assert!(hyperlink_count > 0, "Expected at least one hyperlink");
-            assert!(
-                found_email,
-                "Expected to find email link ncicb@pop.nci.nih.gov"
-            );
-        }
+        let mut parser = PptxParser::from_bytes(data).unwrap();
+        assert_eq!(parser.slide_count(), 2);
+
+        let doc = parser.parse().unwrap();
+        assert_eq!(doc.sections.len(), 2);
+        assert_eq!(doc.metadata.page_count, Some(2));
+        assert_eq!(paragraphs(&doc.sections[0])[0].plain_text(), "First slide");
+        assert_eq!(paragraphs(&doc.sections[1])[0].plain_text(), "Second slide");
+    }
+
+    /// Title and subtitle placeholders map to heading levels 1 and 2; a plain text box
+    /// stays body text.
+    #[test]
+    fn test_title_placeholders_become_headings() {
+        use crate::model::HeadingLevel;
+
+        let shapes = [
+            text_shape(r#"<p:ph type="title"/>"#, "Deck Title"),
+            text_shape(r#"<p:ph type="subTitle" idx="1"/>"#, "The Subtitle"),
+            text_shape("", "Body text"),
+        ]
+        .concat();
+        let data = deck(&[(&slide(&shapes), EMPTY_RELS)], &[]);
+        let doc = PptxParser::from_bytes(data).unwrap().parse().unwrap();
+
+        let paras = paragraphs(&doc.sections[0]);
+        let seen: Vec<(String, HeadingLevel)> =
+            paras.iter().map(|p| (p.plain_text(), p.heading)).collect();
+        assert_eq!(seen[0], ("Deck Title".to_string(), HeadingLevel::H1));
+        assert_eq!(seen[1], ("The Subtitle".to_string(), HeadingLevel::H2));
+        assert_eq!(seen[2].0, "Body text");
+        assert!(!seen[2].1.is_heading());
+    }
+
+    /// A slide table becomes a table block with its cells in place, and renders as a
+    /// Markdown table.
+    #[test]
+    fn test_slide_table_becomes_a_table() {
+        let cell = |text: &str| {
+            format!(
+                r#"<a:tc><a:txBody><a:bodyPr/><a:p><a:r><a:t>{text}</a:t></a:r></a:p></a:txBody></a:tc>"#
+            )
+        };
+        let table = format!(
+            r#"<p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="4" name="Table"/><p:cNvGraphicFramePr/><p:nvPr/></p:nvGraphicFramePr><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/table"><a:tbl><a:tr h="370840">{}{}</a:tr><a:tr h="370840">{}{}</a:tr></a:tbl></a:graphicData></a:graphic></p:graphicFrame>"#,
+            cell("Name"),
+            cell("Score"),
+            cell("Ada"),
+            cell("99")
+        );
+        let data = deck(&[(&slide(&table), EMPTY_RELS)], &[]);
+        let doc = PptxParser::from_bytes(data).unwrap().parse().unwrap();
+
+        let tables: Vec<&crate::model::Table> = doc.sections[0]
+            .content
+            .iter()
+            .filter_map(|block| match block {
+                crate::model::Block::Table(t) => Some(t),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(tables.len(), 1);
+        let texts: Vec<Vec<String>> = tables[0]
+            .rows
+            .iter()
+            .map(|row| row.cells.iter().map(|c| c.plain_text()).collect())
+            .collect();
+        assert_eq!(texts, [["Name", "Score"], ["Ada", "99"]]);
+
+        let md =
+            crate::render::to_markdown(&doc, &crate::render::RenderOptions::default()).unwrap();
+        assert!(md.contains("| Name | Score |"), "markdown: {md}");
+        assert!(md.contains("| Ada | 99 |"), "markdown: {md}");
+    }
+
+    /// A run's hyperlink resolves through the slide's own relationships to the external URL.
+    #[test]
+    fn test_hyperlink_resolves_through_the_slide_relationships() {
+        let shape = r#"<p:sp><p:nvSpPr><p:cNvPr id="2" name="Link"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:txBody><a:bodyPr/><a:p><a:r><a:rPr><a:hlinkClick r:id="rIdLink"/></a:rPr><a:t>the spec</a:t></a:r></a:p></p:txBody></p:sp>"#;
+        let rels = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rIdLink" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://example.com/spec" TargetMode="External"/>
+</Relationships>"#;
+        let data = deck(&[(&slide(shape), rels)], &[]);
+        let doc = PptxParser::from_bytes(data).unwrap().parse().unwrap();
+
+        let run = paragraphs(&doc.sections[0])
+            .iter()
+            .flat_map(|p| p.runs.iter())
+            .find(|r| r.text == "the spec")
+            .expect("the linked run");
+        assert_eq!(run.hyperlink.as_deref(), Some("https://example.com/spec"));
+    }
+
+    /// Every part under `ppt/media/` is listed, typed by its extension.
+    #[test]
+    fn test_extract_resources_lists_the_media_parts() {
+        let data = deck(
+            &[(&slide(&text_shape("", "x")), EMPTY_RELS)],
+            &[
+                ("ppt/media/image1.png", b"\x89PNG\r\n\x1a\n"),
+                ("ppt/media/clip.mp4", b"not really a video"),
+            ],
+        );
+        let parser = PptxParser::from_bytes(data).unwrap();
+
+        let mut resources = parser.extract_resources().unwrap();
+        resources.sort_by(|a, b| a.filename.cmp(&b.filename));
+        let names: Vec<_> = resources.iter().map(|r| r.filename.as_deref()).collect();
+        assert_eq!(names, [Some("clip.mp4"), Some("image1.png")]);
+        assert!(!resources[0].is_image());
+        assert!(resources[1].is_image());
+        assert_eq!(resources[1].data, b"\x89PNG\r\n\x1a\n");
     }
 
     /// Helper to create a minimal PPTX in memory with given slide XML content.
@@ -2522,46 +2585,6 @@ mod tests {
             "Should contain inner (nested) group shape text, got: {}",
             text
         );
-    }
-
-    #[test]
-    fn test_parse_headings() {
-        use crate::model::HeadingLevel;
-
-        let path = "test-files/file_example_PPT_1MB.pptx";
-        if std::path::Path::new(path).exists() {
-            let mut parser = PptxParser::open(path).unwrap();
-            let doc = parser.parse().unwrap();
-
-            // Find headings in the document
-            let mut h1_count = 0;
-            let mut h2_count = 0;
-            let mut found_lorem = false;
-            for section in &doc.sections {
-                for block in &section.content {
-                    if let Block::Paragraph(para) = block {
-                        let text = para.plain_text();
-                        match para.heading {
-                            HeadingLevel::H1 => {
-                                h1_count += 1;
-                                println!("Found H1: {}", text);
-                                if text.contains("Lorem ipsum") {
-                                    found_lorem = true;
-                                }
-                            }
-                            HeadingLevel::H2 => {
-                                h2_count += 1;
-                                println!("Found H2: {}", text);
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-            }
-            println!("Total H1: {}, H2: {}", h1_count, h2_count);
-            assert!(h1_count > 0, "Expected at least one H1 heading (title)");
-            assert!(found_lorem, "Expected to find 'Lorem ipsum' as H1 title");
-        }
     }
 
     #[test]
