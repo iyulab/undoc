@@ -228,7 +228,7 @@ impl PptxParser {
             let slide_full_rels = self
                 .container
                 .read_optional_relationships_for_part(&slide_path)?;
-            let inherited_phs = self.build_inherited_phs(&slide_path, &slide_full_rels);
+            let inherited_phs = self.build_inherited_phs(&slide_path, &slide_full_rels)?;
             let slide_rels = slide_full_rels.into_targets_by_id();
 
             if let Some(xml) = self.container.read_xml_optional(&slide_path)? {
@@ -1248,11 +1248,15 @@ impl PptxParser {
 
     /// Build a map of placeholder key → fallback paragraphs from layout and master XMLs.
     /// Layout takes precedence over master; slide-defined text takes precedence over both.
+    ///
+    /// The layout, its relationships and the master are optional: an absent part is
+    /// skipped. One that is present and unreadable is an error, as for every other
+    /// optional part.
     fn build_inherited_phs(
         &self,
         slide_path: &str,
         slide_full_rels: &crate::container::Relationships,
-    ) -> HashMap<String, Vec<Paragraph>> {
+    ) -> Result<HashMap<String, Vec<Paragraph>>> {
         const SLIDE_LAYOUT_TYPE: &str =
             "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout";
         const SLIDE_MASTER_TYPE: &str =
@@ -1267,23 +1271,22 @@ impl PptxParser {
             .map(|rel| OoxmlContainer::resolve_path(slide_path, &rel.target));
 
         let Some(layout_path) = layout_path else {
-            return inherited;
+            return Ok(inherited);
         };
 
         // Parse master first (lower priority), then overlay layout
         let layout_full_rels = self
             .container
-            .read_optional_relationships_for_part(&layout_path)
-            .unwrap_or_default();
+            .read_optional_relationships_for_part(&layout_path)?;
 
         if let Some(master_rel) = layout_full_rels.get_by_type(SLIDE_MASTER_TYPE).first() {
             let master_path = OoxmlContainer::resolve_path(&layout_path, &master_rel.target);
-            if let Ok(Some(master_xml)) = self.container.read_xml_optional(&master_path) {
+            if let Some(master_xml) = self.container.read_xml_optional(&master_path)? {
                 inherited = parse_placeholder_texts_from_xml(&master_xml);
             }
         }
 
-        if let Ok(Some(layout_xml)) = self.container.read_xml_optional(&layout_path) {
+        if let Some(layout_xml) = self.container.read_xml_optional(&layout_path)? {
             // Layout overrides master
             for (key, paras) in parse_placeholder_texts_from_xml(&layout_xml) {
                 inherited.insert(key, paras);
@@ -1295,7 +1298,7 @@ impl PptxParser {
         const PRESENTATIONAL: &[&str] = &["dt", "sldNum", "ftr", "hdr", "sldImg"];
         inherited.retain(|k, _| !PRESENTATIONAL.contains(&k.as_str()));
 
-        inherited
+        Ok(inherited)
     }
 
     /// Extract resources (images, media) from the presentation.
@@ -1838,6 +1841,49 @@ mod tests {
         assert!(!resources[0].is_image());
         assert!(resources[1].is_image());
         assert_eq!(resources[1].data, b"\x89PNG\r\n\x1a\n");
+    }
+
+    /// A one-slide deck whose slide points at `slideLayout1.xml`, with the layout's own
+    /// relationships part holding `layout_rels`.
+    fn deck_with_layout(layout_rels: &[u8]) -> Vec<u8> {
+        let slide_rels = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rIdLayout" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/slideLayout1.xml"/>
+</Relationships>"#;
+        let layout: &[u8] = br#"<?xml version="1.0" encoding="UTF-8"?>
+<p:sldLayout xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"/>"#;
+        deck(
+            &[(&slide(&text_shape("", "body")), slide_rels)],
+            &[
+                ("ppt/slideLayouts/slideLayout1.xml", layout),
+                ("ppt/slideLayouts/_rels/slideLayout1.xml.rels", layout_rels),
+            ],
+        )
+    }
+
+    /// Control: with readable layout relationships the deck parses, so the test below is
+    /// about the relationships part and not about the layout path being skipped.
+    #[test]
+    fn test_deck_with_a_layout_parses() {
+        let doc = PptxParser::from_bytes(deck_with_layout(EMPTY_RELS.as_bytes()))
+            .unwrap()
+            .parse()
+            .unwrap();
+
+        assert_eq!(paragraphs(&doc.sections[0])[0].plain_text(), "body");
+    }
+
+    /// A layout's relationships part is optional, but one that is present and unreadable is
+    /// damage, not absence -- the contract every other optional part in this crate keeps.
+    /// It used to be read as "no relationships", which silently dropped inherited
+    /// placeholders.
+    #[test]
+    fn test_malformed_layout_relationships_are_reported() {
+        let data = deck_with_layout(b"<Relationships>caf\xe9</Relationships>");
+
+        let err = PptxParser::from_bytes(data).unwrap().parse().unwrap_err();
+
+        assert!(matches!(err, Error::Encoding(_)), "got {err:?}");
     }
 
     /// Helper to create a minimal PPTX in memory with given slide XML content.

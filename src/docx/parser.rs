@@ -161,13 +161,22 @@ impl DocxParser {
         let doc = match self.parse() {
             Ok(d) => d,
             Err(e) if opts.lenient => {
-                // Emit a degenerate stream with a single failure
-                let _ = f(crate::streaming::ParseEvent::DocumentStart {
+                // Emit a degenerate stream with a single failure. `Break` ends it at any
+                // point, as it does on every event of the PPTX and XLSX streams.
+                if f(crate::streaming::ParseEvent::DocumentStart {
                     metadata: &metadata,
                     section_count: 0,
                     image_map: HashMap::new(),
-                });
-                let _ = f(crate::streaming::ParseEvent::SectionFailed { index: 0, error: e });
+                })
+                .is_break()
+                {
+                    return Ok(());
+                }
+                if f(crate::streaming::ParseEvent::SectionFailed { index: 0, error: e }).is_break()
+                {
+                    return Ok(());
+                }
+                // The last event: nothing follows that a `Break` could stop.
                 let _ = f(crate::streaming::ParseEvent::DocumentEnd);
                 return Ok(());
             }
@@ -2569,6 +2578,69 @@ mod tests {
     // =========================================================================
     // Text Box Content Extraction Tests (w:txbxContent)
     // =========================================================================
+
+    /// A package whose main document part holds bytes that are not UTF-8. Construction
+    /// succeeds -- it does not read that part -- and `parse` fails, which is exactly the
+    /// path a lenient stream takes when the whole document cannot be parsed.
+    fn docx_with_unreadable_document() -> Vec<u8> {
+        use std::io::{Cursor, Write};
+        let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        zip.start_file("[Content_Types].xml", options).unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>"#).unwrap();
+        zip.start_file("_rels/.rels", options).unwrap();
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>"#).unwrap();
+        zip.start_file("word/document.xml", options).unwrap();
+        zip.write_all(b"<w:document>caf\xe9</w:document>").unwrap();
+        zip.finish().unwrap().into_inner()
+    }
+
+    /// Counts the events a lenient stream delivers when every callback returns `flow`.
+    fn lenient_events_after_a_failed_parse(flow: std::ops::ControlFlow<()>) -> usize {
+        let mut parser = DocxParser::from_bytes(docx_with_unreadable_document()).unwrap();
+        let opts = crate::streaming::SectionStreamOptions {
+            lenient: true,
+            ..Default::default()
+        };
+        let mut events = 0;
+        parser
+            .for_each_section(opts, |_| {
+                events += 1;
+                flow
+            })
+            .unwrap();
+        events
+    }
+
+    /// Control: a consumer that keeps going sees start, the failure, and the end -- so the
+    /// failure path is really the one being exercised below.
+    #[test]
+    fn test_lenient_stream_reports_a_failed_parse_as_three_events() {
+        assert_eq!(
+            lenient_events_after_a_failed_parse(std::ops::ControlFlow::Continue(())),
+            3
+        );
+    }
+
+    /// `ControlFlow::Break` stops the stream -- the streaming API's documented contract,
+    /// which the PPTX and XLSX streams keep on every event. This path used to ignore it.
+    #[test]
+    fn test_lenient_stream_stops_when_the_consumer_breaks_after_a_failed_parse() {
+        assert_eq!(
+            lenient_events_after_a_failed_parse(std::ops::ControlFlow::Break(())),
+            1,
+            "Break on DocumentStart must end the stream"
+        );
+    }
 
     const EMPTY_DOCUMENT_RELS: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/>"#;

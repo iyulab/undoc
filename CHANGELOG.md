@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- A PPTX slide layout or master whose parts are present but unreadable is now reported as an
+  error. Their relationships and XML were read as "absent" whenever reading failed, so the
+  placeholders a slide inherits from them disappeared without any failure — unlike every other
+  optional part, which is skipped only when it is actually missing.
+- In the streaming API, a DOCX whose document cannot be parsed in lenient mode now stops as soon
+  as the callback returns `ControlFlow::Break`. That path delivered all three of its events
+  regardless, while every other event in the DOCX, XLSX and PPTX streams honoured the break.
+
 ## [0.11.0] - 2026-09-11
 
 ### Changed
