@@ -128,7 +128,7 @@ jobs:
     name: Binding Tests
     needs: check-version
     if: needs.check-version.outputs.should_release == 'true'
-    uses: iyulab/uncore/.github/workflows/bindings-reusable.yml@main
+    uses: iyulab/unparser-shared/.github/workflows/bindings-reusable.yml@main
     with:
       package-name: undoc
       csharp-project-name: Undoc

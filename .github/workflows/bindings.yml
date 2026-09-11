@@ -14,7 +14,7 @@ on:
 jobs:
   bindings:
     if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
-    uses: iyulab/uncore/.github/workflows/bindings-reusable.yml@main
+    uses: iyulab/unparser-shared/.github/workflows/bindings-reusable.yml@main
     with:
       package-name: undoc
       csharp-project-name: Undoc
