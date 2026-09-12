@@ -428,6 +428,30 @@ let json     = undoc::to_json("document.docx", undoc::render::JsonFormat::Pretty
 let doc = undoc::parse_bytes(&file_bytes)?;
 ```
 
+### Error Handling Defaults
+
+**There is no error mode: a part that cannot be read is always an error.** An OOXML package is
+a set of named parts, and a damaged one is a specific, identifiable thing — a slide layout, a
+document stream, a worksheet — rather than an unrecoverable region of a byte stream. Reporting
+it is therefore always possible, and a caller that receives a deck missing a slide has no way
+to notice on its own.
+
+So `undoc` has a single contract in place of a mode: every function returns an error naming
+what failed, and a successful result is the whole document. A caller that wants to continue
+past a damaged file decides that for itself, at the level where it knows what the file is for:
+
+```rust
+match undoc::parse_file(path) {
+    Ok(doc) => index(&doc),
+    // The error says which part failed; the caller decides whether to skip the file.
+    Err(e) => eprintln!("{}: {e}", path.display()),
+}
+```
+
+Its sibling parsers do have a mode, because their formats leave less to name: `unpdf` defaults
+to lenient and `undoc`'s strict-only behaviour matches `unhwp`'s default. Code that drives all
+three should not assume a shared default.
+
 ### Render Options
 
 ```rust

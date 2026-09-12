@@ -17,6 +17,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as the callback returns `ControlFlow::Break`. That path delivered all three of its events
   regardless, while every other event in the DOCX, XLSX and PPTX streams honoured the break.
 
+### Documentation
+
+- The README states that there is no error mode: a part that cannot be read is always an
+  error, and a successful result is the whole document. The reasoning is now written down
+  rather than inferred from the absence of an option, and the section notes that the sibling
+  parsers do have a mode.
+
 ## [0.11.0] - 2026-09-11
 
 ### Changed
