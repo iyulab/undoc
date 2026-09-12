@@ -245,7 +245,7 @@ impl From<TableMode> for TableFallback {
 }
 
 /// Cleanup mode
-#[derive(Clone, ValueEnum)]
+#[derive(Clone, Copy, ValueEnum)]
 enum CleanupMode {
     /// No cleanup
     None,
@@ -426,11 +426,11 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             pb.finish_and_clear();
             write_output(output.as_ref(), &markdown)?;
 
-            if output.is_some() {
+            if let Some(path) = &output {
                 println!(
                     "{} Converted to Markdown: {}",
                     "✓".green().bold(),
-                    output.unwrap().display()
+                    path.display()
                 );
             }
         }
@@ -468,11 +468,11 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             pb.finish_and_clear();
             write_output(output.as_ref(), &text)?;
 
-            if output.is_some() {
+            if let Some(path) = &output {
                 println!(
                     "{} Converted to text: {}",
                     "✓".green().bold(),
-                    output.unwrap().display()
+                    path.display()
                 );
             }
         }
@@ -497,11 +497,11 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             pb.finish_and_clear();
             write_output(output.as_ref(), &json)?;
 
-            if output.is_some() {
+            if let Some(path) = &output {
                 println!(
                     "{} Converted to JSON: {}",
                     "✓".green().bold(),
-                    output.unwrap().display()
+                    path.display()
                 );
             }
         }

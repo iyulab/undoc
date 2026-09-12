@@ -208,7 +208,10 @@ jobs:
         # --all-targets covers tests, benches and examples; --all-features covers
         # the feature-gated code. Bare `cargo clippy` lints only the default
         # target of the default feature set.
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        # --workspace covers the cli and wasm crates. Without it clippy lints only
+        # the root package, which left two published crates unlinted -- the same
+        # gap `cargo test --workspace` on the line above had already closed.
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
   security-audit:
     name: Security Audit

@@ -76,9 +76,10 @@ impl<'a> MultiFormatWriter<'a> {
         let want_txt = self.formats.contains(&OutputFormat::Text);
         let want_json = self.formats.contains(&OutputFormat::Json);
 
-        let mut summary = WriteSummary::default();
-
-        summary.section_count = doc.sections.len();
+        let mut summary = WriteSummary {
+            section_count: doc.sections.len(),
+            ..Default::default()
+        };
 
         if want_md {
             let markdown = to_markdown(doc, self.render_opts)
