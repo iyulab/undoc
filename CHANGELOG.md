@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The OLE/CFB reader behind legacy-container detection moved to cfb 0.15 (was 0.14). Its
+  permissive parser now tolerates a FAT entry that points past the end of the file, so such
+  a container is opened and named as the legacy binary format it is, instead of being
+  reported as one whose directory could not be read. Detection still never reports these as
+  supported -- only the wording of the error changes.
+
 ### Fixed
 
 - A PPTX slide layout or master whose parts are present but unreadable is now reported as an
