@@ -352,6 +352,36 @@ mod tests {
         );
     }
 
+    /// A CFB whose header is intact but whose directory sector is not readable.
+    ///
+    /// Built by filling the first directory sector of a valid container with `0xFF`. The
+    /// header still passes every check that gets the file this far -- magic, version,
+    /// sector size -- so the failure is exactly the one the branch documents: a container
+    /// that is provably an Office file and provably unopenable. A truncated header does
+    /// not exercise that; it fails before the directory is ever read.
+    fn cfb_with_unreadable_directory() -> Vec<u8> {
+        const SECTOR_SHIFT_OFFSET: usize = 0x1E;
+        const FIRST_DIR_SECTOR_OFFSET: usize = 0x30;
+
+        let mut data = cfb_with_streams(&["/WordDocument"]);
+        let le_u16 = |at: usize| u16::from_le_bytes(data[at..at + 2].try_into().unwrap());
+        let le_u32 = |at: usize| u32::from_le_bytes(data[at..at + 4].try_into().unwrap());
+
+        // Sector size is declared, not assumed: this crate's containers are version 4
+        // (4096-byte sectors), while a file written by Office 97-2003 is version 3 (512).
+        let sector_size = 1usize << le_u16(SECTOR_SHIFT_OFFSET);
+        let first_dir_sector = le_u32(FIRST_DIR_SECTOR_OFFSET) as usize;
+        // The header occupies sector 0, so sector N begins one sector later.
+        let start = sector_size * (first_dir_sector + 1);
+        assert!(
+            start + sector_size <= data.len(),
+            "the directory sector should lie inside the file"
+        );
+
+        data[start..start + sector_size].fill(0xFF);
+        data
+    }
+
     /// Build a CFB container holding the named root streams, and nothing else.
     fn cfb_with_streams(names: &[&str]) -> Vec<u8> {
         let mut container = cfb::CompoundFile::create(std::io::Cursor::new(Vec::new()))
@@ -399,6 +429,33 @@ mod tests {
                 "{stream} should be named in: {message}"
             );
         }
+    }
+
+    /// The branch that exists for a container whose header proves it is an Office file
+    /// and whose directory proves nothing else. It must not claim which kind -- naming one
+    /// would send the caller after a password or a converter on no evidence -- and it must
+    /// not be indistinguishable from the "recognised nothing" answer, which is reached only
+    /// when the directory *was* read.
+    #[test]
+    fn test_cfb_with_unreadable_directory_names_neither_kind() {
+        let err = detect_format_from_bytes(&cfb_with_unreadable_directory()).unwrap_err();
+
+        assert_eq!(
+            err.kind(),
+            crate::ErrorKind::UnsupportedFormat,
+            "got: {err}"
+        );
+        let message = err.to_string();
+        assert!(
+            message.contains("directory could not be read"),
+            "should say the directory is what failed: {message}"
+        );
+        // The same bytes name a Word stream when the directory is intact, so a message
+        // that still names it would be reporting a directory it never read.
+        assert!(
+            !message.contains("Word 97-2003"),
+            "must not name a format it could not read: {message}"
+        );
     }
 
     /// A CFB that is neither encrypted OOXML nor a format we can name stays unsupported.
