@@ -14,6 +14,16 @@ use std::path::PathBuf;
 use undoc::render::{CleanupPreset, HeadingConfig, JsonFormat, RenderOptions, TableFallback};
 use writer::{MultiFormatWriter, OutputFormat, StreamingWriter};
 
+/// The subdirectory `convert` extracts images into, relative to its output directory.
+///
+/// The markdown link prefix is derived from this constant rather than written out a
+/// second time: the command writes the files and renders the links that point at them,
+/// and those two halves must not be able to disagree about where the images are.
+const IMAGES_SUBDIR: &str = "images";
+
+/// The subdirectory `convert` extracts non-image media into.
+const MEDIA_SUBDIR: &str = "media";
+
 /// Microsoft Office document extraction to Markdown, text, and JSON
 #[derive(Parser)]
 #[command(
@@ -230,8 +240,6 @@ enum TableMode {
     Markdown,
     /// HTML tables (for complex layouts)
     Html,
-    /// ASCII art tables
-    Ascii,
 }
 
 impl From<TableMode> for TableFallback {
@@ -239,7 +247,6 @@ impl From<TableMode> for TableFallback {
         match mode {
             TableMode::Markdown => TableFallback::Markdown,
             TableMode::Html => TableFallback::Html,
-            TableMode::Ascii => TableFallback::Ascii,
         }
     }
 }
@@ -647,6 +654,16 @@ fn run_convert(p: ConvertParams<'_>) -> Result<(), Box<dyn std::error::Error>> {
     let mut options = base
         .with_frontmatter(true)
         .with_heading_config(heading_config);
+    if p.no_images {
+        // The files are not written, so the references must not be rendered either --
+        // markdown that looks complete and resolves to nothing is the worse failure.
+        options = options.with_images(false);
+    } else {
+        // `convert` lays out the directory itself, so the links it renders must carry
+        // the subdirectory it writes into. Without this the markdown points at
+        // `image1.png` beside `extract.md`, where nothing is ever written.
+        options = options.with_image_prefix(format!("{}/", IMAGES_SUBDIR));
+    }
     if p.section_markers {
         options = options.with_section_markers(undoc::SectionMarkerStyle::Comment);
     }
@@ -769,8 +786,8 @@ fn run_convert_streaming(
     let mut sw: Option<StreamingWriter> = None;
     let mut image_count = 0usize;
     let mut media_count = 0usize;
-    let images_dir = output_dir.join("images");
-    let media_dir = output_dir.join("media");
+    let images_dir = output_dir.join(IMAGES_SUBDIR);
+    let media_dir = output_dir.join(MEDIA_SUBDIR);
 
     parse_file_streaming(input, stream_opts, |event| {
         match event {
@@ -836,8 +853,8 @@ fn extract_resources_to_dir(
     let mut media_count = 0;
 
     if !no_images && !doc.resources.is_empty() {
-        let images_dir = output_dir.join("images");
-        let media_dir = output_dir.join("media");
+        let images_dir = output_dir.join(IMAGES_SUBDIR);
+        let media_dir = output_dir.join(MEDIA_SUBDIR);
 
         for (id, resource) in &doc.resources {
             let raw = resource.suggested_filename(id);

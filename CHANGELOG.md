@@ -7,15 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
+### Removed
 
-- The OLE/CFB reader behind legacy-container detection moved to cfb 0.15 (was 0.14). Its
-  permissive parser now tolerates a FAT entry that points past the end of the file, so such
-  a container is opened and named as the legacy binary format it is, instead of being
-  reported as one whose directory could not be read. Detection still never reports these as
-  supported -- only the wording of the error changes.
+- **`TableFallback::Ascii`**, and the CLI's `--table-mode ascii` with it. Nothing compared
+  against the variant, so selecting it rendered ordinary pipe tables — the documented "ASCII
+  art tables" never existed. The option is removed rather than implemented: no consumer asked
+  for it, and a name that describes an output nobody produces is worse than no name.
+  `Markdown` (the default) and `Html` (which keeps `colspan`/`rowspan` on merged cells) are
+  unaffected.
+
+### Added
+
+- `RenderOptions::include_images` (builder: `with_images`) decides whether `![alt](path)`
+  references are rendered at all. It defaults to on, so nothing changes unless a caller
+  asks for it off -- which is what a caller who is not writing the image files should ask
+  for: a reference to a file nobody wrote looks complete and only fails where it is read.
 
 ### Fixed
+
+- The `convert` command renders image links that carry the subdirectory it writes the
+  images into (`images/image1.png`). The command extracts the files into `images/` and
+  rendered the links without that segment, so every converted document with an image
+  pointed at a name that exists nowhere -- and nothing failed while doing it. The
+  subdirectory is now named once and used for both halves.
+- `convert --no-images` no longer renders image references. It skipped writing the files
+  but still emitted links to them, which is the same broken document by another route.
 
 - A PPTX slide layout or master whose parts are present but unreadable is now reported as an
   error. Their relationships and XML were read as "absent" whenever reading failed, so the
@@ -24,6 +40,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - In the streaming API, a DOCX whose document cannot be parsed in lenient mode now stops as soon
   as the callback returns `ControlFlow::Break`. That path delivered all three of its events
   regardless, while every other event in the DOCX, XLSX and PPTX streams honoured the break.
+
+### Changed
+
+- The OLE/CFB reader behind legacy-container detection moved to cfb 0.15 (was 0.14). Its
+  permissive parser now tolerates a FAT entry that points past the end of the file, so such
+  a container is opened and named as the legacy binary format it is, instead of being
+  reported as one whose directory could not be read. Detection still never reports these as
+  supported -- only the wording of the error changes.
 
 ### Documentation
 
@@ -197,6 +221,7 @@ below. Output produced with a cleanup preset is unaffected. Rust callers that se
 `CleanupOptions::detect_mojibake` must drop the field; it never did anything.
 
 ### Removed
+
 - **`CleanupOptions::detect_mojibake`.** No stage ever read it, so a preset that set it
   promised a behaviour that never ran. The `detect_mojibake()` function stays: it reports
   what it finds and changes nothing, which is a diagnostic a caller invokes deliberately

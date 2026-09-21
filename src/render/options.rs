@@ -19,8 +19,6 @@ pub enum TableFallback {
     /// Keeps `colspan`/`rowspan` rather than flattening them, at the cost of emitting
     /// HTML into the Markdown. Tables without merges still render as pipe tables.
     Html,
-    /// Use ASCII art tables
-    Ascii,
 }
 
 /// Cleanup preset for LLM training data preparation.
@@ -188,6 +186,13 @@ pub struct RenderOptions {
     /// Style for PPTX slide / XLSX sheet boundary markers.
     /// DOCX is unaffected regardless of this setting.
     pub section_markers: SectionMarkerStyle,
+
+    /// Emit `![alt](path)` references for the document's images. On by default.
+    ///
+    /// Turn it off when the caller is not writing the image files: a reference to a
+    /// file nobody wrote is worse than no reference, because the markdown looks
+    /// complete and only fails where it is read.
+    pub include_images: bool,
 }
 
 /// How to handle tracked changes in the output.
@@ -218,6 +223,7 @@ impl Default for RenderOptions {
         Self {
             image_dir: None,
             image_path_prefix: String::new(),
+            include_images: true,
             table_fallback: TableFallback::Markdown,
             max_heading_level: 4,
             include_frontmatter: false,
@@ -256,6 +262,12 @@ impl RenderOptions {
     /// Set the image path prefix for markdown references.
     pub fn with_image_prefix(mut self, prefix: impl Into<String>) -> Self {
         self.image_path_prefix = prefix.into();
+        self
+    }
+
+    /// Emit image references, or leave them out entirely.
+    pub fn with_images(mut self, include: bool) -> Self {
+        self.include_images = include;
         self
     }
 

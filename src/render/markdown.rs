@@ -221,10 +221,12 @@ fn render_section_impl(
                 alt_text,
                 ..
             } => {
-                let alt = alt_text.as_deref().unwrap_or("image");
-                let path =
-                    resolve_image_path(resource_id, resource_map, &options.image_path_prefix);
-                output.push_str(&format!("![{}]({})\n\n", alt, path));
+                if options.include_images {
+                    let alt = alt_text.as_deref().unwrap_or("image");
+                    let path =
+                        resolve_image_path(resource_id, resource_map, &options.image_path_prefix);
+                    output.push_str(&format!("![{}]({})\n\n", alt, path));
+                }
             }
         }
     }
@@ -387,10 +389,15 @@ fn to_markdown_with_analyzer(
                     alt_text,
                     ..
                 } => {
-                    let alt = alt_text.as_deref().unwrap_or("image");
-                    let path =
-                        resolve_image_path(resource_id, &resource_map, &options.image_path_prefix);
-                    output.push_str(&format!("![{}]({})\n\n", alt, path));
+                    if options.include_images {
+                        let alt = alt_text.as_deref().unwrap_or("image");
+                        let path = resolve_image_path(
+                            resource_id,
+                            &resource_map,
+                            &options.image_path_prefix,
+                        );
+                        output.push_str(&format!("![{}]({})\n\n", alt, path));
+                    }
                 }
             }
         }
@@ -614,7 +621,7 @@ fn render_paragraph(
     }
 
     // Render inline images
-    for image in &para.images {
+    for image in para.images.iter().filter(|_| options.include_images) {
         if !output.is_empty() {
             output.push('\n');
         }
@@ -917,7 +924,7 @@ fn render_cell_content(
         }
 
         // Render inline images from paragraph (like render_paragraph does)
-        for image in &para.images {
+        for image in para.images.iter().filter(|_| options.include_images) {
             let alt = image.alt_text.as_deref().unwrap_or("image");
             let path =
                 resolve_image_path(&image.resource_id, resource_map, &options.image_path_prefix);
