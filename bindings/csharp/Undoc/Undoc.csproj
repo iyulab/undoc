@@ -8,7 +8,7 @@
 
     <!-- Package metadata -->
     <PackageId>Undoc</PackageId>
-    <Version>0.11.0</Version>
+    <Version>0.12.0</Version>
     <AssemblyName>Undoc.Net</AssemblyName>
     <Authors>iyulab</Authors>
     <Company>iyulab</Company>
