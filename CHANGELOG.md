@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Breaking — the CLI's default output directory now carries the input's extension and
+  sits next to the input:** `document.docx` converts into `document_docx_output/` instead of `document_output/`.
+  With the stem alone, two inputs differing only in extension (`report.docx` and `report.pptx`) shared one
+  directory and the second conversion silently overwrote the first one's `extract.md`
+  and images. The extension is lowercased, since `report.DOCX` and `report.docx` are
+  the same file where case is ignored. Pass `-o` to choose the directory explicitly, as
+  before.
+
 ## [0.12.0] - 2026-09-22
 
 ### Removed

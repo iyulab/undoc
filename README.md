@@ -180,16 +180,17 @@ undoc document.docx --cleanup aggressive
 ### Output Structure
 
 ```
-document_output/
+document_docx_output/
 ├── extract.md      # Markdown output
-└── media/          # Extracted images and media
-    └── image1.jpeg
+├── images/         # Extracted images
+│   └── image1.jpeg
+└── media/          # Other embedded media (if any)
 ```
 
 Use `undoc convert <file> --all` to produce all three formats at once:
 
 ```
-document_output/
+document_docx_output/
 ├── extract.md      # Markdown output
 ├── extract.txt     # Plain text output
 ├── content.json    # Full structured JSON
@@ -236,7 +237,7 @@ undoc convert presentation.pptx --section-markers
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `-o, --output` | Output directory | `<stem>_output/` |
+| `-o, --output` | Output directory | `<stem>_<ext>_output/` next to the input |
 | `--formats` | Comma-separated formats: `md,txt,json` | `md` |
 | `--all` | Output all formats (MD + TXT + JSON) | false |
 | `--no-images` | Skip media extraction | false |
