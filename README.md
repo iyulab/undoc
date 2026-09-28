@@ -284,7 +284,7 @@ undoc markdown document.docx --lossless -o output.md
 |--------|-------------|---------|
 | `-o, --output` | Output file path | stdout |
 | `-f, --frontmatter` | Include YAML frontmatter | false |
-| `--table-mode` | Table rendering: `markdown`, `html`, `ascii` | markdown |
+| `--table-mode` | Table rendering: `markdown`, `html` | markdown |
 | `--cleanup` | Text cleanup: `minimal`, `standard`, `aggressive` | none |
 | `--max-heading` | Maximum heading level (1-6) | 4 |
 | `--section-markers` | Insert `<!-- slide/sheet N: Name -->` markers (PPTX/XLSX) | false |
@@ -647,7 +647,7 @@ Structured Markdown with preserved formatting:
 
 - **Headings**: Document headings → `#`, `##`, `###`
 - **Lists**: Ordered and unordered with nesting
-- **Tables**: Markdown tables (with HTML/ASCII fallback for complex layouts)
+- **Tables**: Markdown tables (with an HTML fallback for merged cells)
 - **Inline styles**: Bold (`**`), italic (`*`), underline (`<u>`), strikethrough, superscript/subscript
 - **Hyperlinks**: Preserved as Markdown links (DOCX, XLSX, PPTX)
 - **Images**: Linked image references from document drawings
