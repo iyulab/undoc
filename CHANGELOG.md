@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **.NET:** `GetResourceIds` threw `InvalidOperationException` in apps that disable
+  reflection-based `System.Text.Json` serialization — trimmed and Native AOT apps, and
+  file-based apps (`dotnet run app.cs`). The binding now uses source-generated serialization
+  and is marked `IsAotCompatible`, so the trim, AOT and single-file analyzers keep it that way.
+
 ## [0.13.2] - 2026-10-03
 
 ### Fixed

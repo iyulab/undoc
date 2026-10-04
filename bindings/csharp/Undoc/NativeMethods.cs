@@ -1,6 +1,7 @@
 using System;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Reflection;
 using System.Runtime.InteropServices;
@@ -54,6 +55,8 @@ internal static class NativeMethods
         return IntPtr.Zero;
     }
 
+    [UnconditionalSuppressMessage("SingleFile", "IL3000",
+        Justification = "Assembly.Location is empty in a single-file app; the empty directory is skipped and AppContext.BaseDirectory is probed instead.")]
     private static string[] GetCandidatePaths(Assembly assembly)
     {
         var assemblyDir = Path.GetDirectoryName(assembly.Location);

@@ -412,7 +412,7 @@ public class UndocDocument : IDisposable
             "Failed to get resource IDs",
             nativeFailure,
             free);
-        return JsonSerializer.Deserialize<string[]>(json) ?? Array.Empty<string>();
+        return JsonSerializer.Deserialize(json, UndocJsonContext.Default.StringArray) ?? Array.Empty<string>();
     }
 
     internal static string PtrToStringUtf8(IntPtr ptr)
