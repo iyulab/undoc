@@ -592,6 +592,13 @@ impl PptxParser {
         let mut current_table = Table::new();
         let mut current_row = Row::new();
         let mut current_cell = Cell::new();
+        // The current `a:tc` is a position another cell's merge covers — it has no cell of
+        // its own in the model (see `Table::cell_columns`).
+        let mut cell_covered = false;
+        // The current row holds a position a vertical merge from above covers. Such a row
+        // stays even when it reads as empty: dropping it would leave the merge's
+        // `row_span` counting a row that is not there.
+        let mut row_under_merge = false;
         let mut current_paragraphs: Vec<Paragraph> = Vec::new();
         let mut current_runs: Vec<TextRun> = Vec::new();
         let mut current_text = String::new();
@@ -611,12 +618,15 @@ impl PptxParser {
                         // a:tr - table row
                         "tr" if in_table => {
                             in_row = true;
+                            row_under_merge = false;
                             current_row = Row::new();
                         }
                         // a:tc - table cell
                         "tc" if in_row => {
                             in_cell = true;
                             current_cell = Cell::new();
+                            cell_covered = read_table_cell_merge(e, &mut current_cell);
+                            row_under_merge |= cell_covered && is_vertically_covered(e);
                             current_paragraphs.clear();
                         }
                         // a:txBody - text body in cell
@@ -673,6 +683,15 @@ impl PptxParser {
                 Ok(quick_xml::events::Event::Empty(ref e)) => {
                     let local_name = e.name().local_name();
                     match local_name.as_ref() {
+                        // A self-closing a:tc: an empty cell, or a covered position.
+                        "tc" if in_row => {
+                            let mut cell = Cell::new();
+                            let covered = read_table_cell_merge(e, &mut cell);
+                            row_under_merge |= covered && is_vertically_covered(e);
+                            if !covered {
+                                current_row.add_cell(cell);
+                            }
+                        }
                         // Handle self-closing run properties
                         "rPr" if in_run => {
                             for attr in e.attributes().flatten() {
@@ -745,12 +764,14 @@ impl PptxParser {
                             in_txbody = false;
                         }
                         "tc" => {
-                            current_cell.content = current_paragraphs.clone();
-                            current_row.add_cell(current_cell.clone());
+                            if !cell_covered {
+                                current_cell.content = current_paragraphs.clone();
+                                current_row.add_cell(current_cell.clone());
+                            }
                             in_cell = false;
                         }
                         "tr" => {
-                            if !current_row.is_empty() {
+                            if !current_row.is_empty() || row_under_merge {
                                 // Mark first row as header
                                 if current_table.is_empty() {
                                     current_row.is_header = true;
@@ -1540,6 +1561,38 @@ fn guess_mime_type(path: &str) -> Option<String> {
     }
 }
 
+/// Read a DrawingML table cell's merge attributes into `cell`, returning whether the
+/// cell is a covered position.
+///
+/// DrawingML writes every grid position as an `a:tc`: the owner of a merge carries
+/// `gridSpan`/`rowSpan`, and the positions it covers are present with `hMerge="1"` or
+/// `vMerge="1"`. The model records the merge once, on the owner, and gives covered
+/// positions no cell.
+fn read_table_cell_merge(e: &quick_xml::events::BytesStart<'_>, cell: &mut Cell) -> bool {
+    let mut covered = false;
+    for attr in e.attributes().flatten() {
+        let value = attr.value.as_ref();
+        match attr.key.local_name().as_ref() {
+            "gridSpan" => cell.col_span = value.parse().unwrap_or(1).max(1),
+            "rowSpan" => cell.row_span = value.parse().unwrap_or(1).max(1),
+            "hMerge" | "vMerge" => covered |= is_true(value),
+            _ => {}
+        }
+    }
+    covered
+}
+
+/// Whether a covered `a:tc` is covered from a row above (`vMerge`).
+fn is_vertically_covered(e: &quick_xml::events::BytesStart<'_>) -> bool {
+    e.attributes()
+        .flatten()
+        .any(|a| a.key.local_name().as_ref() == "vMerge" && is_true(a.value.as_ref()))
+}
+
+fn is_true(value: &str) -> bool {
+    value == "1" || value == "true"
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1801,6 +1854,89 @@ mod tests {
             crate::render::to_markdown(&doc, &crate::render::RenderOptions::default()).unwrap();
         assert!(md.contains("| Name | Score |"), "markdown: {md}");
         assert!(md.contains("| Ada | 99 |"), "markdown: {md}");
+    }
+
+    /// DrawingML writes every grid position as an `a:tc`, marking the ones a merge covers
+    /// with `hMerge`/`vMerge`. The merge is recorded on its owner, the covered positions
+    /// are not cells, and the table renders one column per grid column — including a row
+    /// that holds nothing but a covered position and an empty cell.
+    #[test]
+    fn test_slide_table_merges_are_recorded_on_their_owner() {
+        let tc = |attrs: &str, text: &str| {
+            format!(
+                r#"<a:tc{attrs}><a:txBody><a:bodyPr/><a:p><a:r><a:t>{text}</a:t></a:r></a:p></a:txBody></a:tc>"#
+            )
+        };
+        let empty_tc =
+            |attrs: &str| format!(r#"<a:tc{attrs}><a:txBody><a:bodyPr/><a:p/></a:txBody></a:tc>"#);
+        let rows = [
+            // A header spanning columns 1-2, then column 3.
+            format!(
+                "{}{}{}",
+                tc(r#" gridSpan="2""#, "Pair"),
+                empty_tc(r#" hMerge="1""#),
+                tc("", "C")
+            ),
+            // A label covering this row and the next.
+            format!(
+                "{}{}{}",
+                tc(r#" rowSpan="2""#, "G"),
+                tc("", "x"),
+                tc("", "1")
+            ),
+            format!(
+                "{}{}{}",
+                empty_tc(r#" vMerge="1""#),
+                empty_tc(""),
+                empty_tc("")
+            ),
+            format!("{}{}{}", tc("", "H"), tc("", "z"), tc("", "3")),
+        ];
+        let body: String = rows
+            .iter()
+            .map(|r| format!(r#"<a:tr h="370840">{r}</a:tr>"#))
+            .collect();
+        let table = format!(
+            r#"<p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="4" name="Table"/><p:cNvGraphicFramePr/><p:nvPr/></p:nvGraphicFramePr><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/table"><a:tbl>{body}</a:tbl></a:graphicData></a:graphic></p:graphicFrame>"#
+        );
+        let data = deck(&[(&slide(&table), EMPTY_RELS)], &[]);
+        let doc = PptxParser::from_bytes(data).unwrap().parse().unwrap();
+        let table = doc.sections[0]
+            .content
+            .iter()
+            .find_map(|block| match block {
+                crate::model::Block::Table(t) => Some(t),
+                _ => None,
+            })
+            .expect("a table");
+
+        let texts: Vec<Vec<String>> = table
+            .rows
+            .iter()
+            .map(|row| row.cells.iter().map(|c| c.plain_text()).collect())
+            .collect();
+        assert_eq!(
+            texts,
+            vec![
+                vec!["Pair", "C"],
+                vec!["G", "x", "1"],
+                vec!["", ""],
+                vec!["H", "z", "3"],
+            ]
+        );
+        assert_eq!(table.rows[0].cells[0].col_span, 2);
+        assert_eq!(table.rows[1].cells[0].row_span, 2);
+        assert_eq!(table.cell_columns()[2], vec![1, 2]);
+
+        let md =
+            crate::render::to_markdown(&doc, &crate::render::RenderOptions::default()).unwrap();
+        assert!(md.contains("| H | z | 3 |"), "markdown: {md}");
+        assert!(
+            md.lines()
+                .filter(|l| l.starts_with('|'))
+                .all(|l| l.matches('|').count() == 4),
+            "every table line must have three columns:\n{md}"
+        );
     }
 
     /// A run's hyperlink resolves through the slide's own relationships to the external URL.

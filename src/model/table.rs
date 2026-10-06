@@ -224,13 +224,79 @@ impl Table {
         self.rows.len()
     }
 
-    /// Get the maximum number of columns across all rows.
+    /// Get the number of grid columns the table occupies.
+    ///
+    /// Derived from [`cell_columns`](Self::cell_columns), not from summing each row's
+    /// spans: a vertical span from above pushes a row's cells rightward, so a row can
+    /// reach further than its own spans add up to.
     pub fn column_count(&self) -> usize {
-        self.rows
+        self.cell_columns()
             .iter()
-            .map(|r| r.effective_columns())
+            .zip(&self.rows)
+            .flat_map(|(cols, row)| {
+                cols.iter()
+                    .zip(&row.cells)
+                    .map(|(&col, cell)| col + cell.col_span.max(1) as usize)
+            })
             .max()
             .unwrap_or(0)
+    }
+
+    /// The grid column each cell starts in, one `Vec` per row, parallel to `row.cells`.
+    ///
+    /// A merge is recorded once, on the cell that owns it: the positions it covers —
+    /// the tail of a horizontal span, and the columns a vertical span occupies in the
+    /// rows below — have no `Cell` of their own. So a cell's index in its row is not its
+    /// column once a vertical span from above sits to its left; this walks the spans to
+    /// recover it. Every parser builds tables to that contract, and every renderer that
+    /// needs a flat grid places cells with this.
+    pub fn cell_columns(&self) -> Vec<Vec<usize>> {
+        // For each column, how many further rows a vertical span from above still covers.
+        let mut carried: Vec<usize> = Vec::new();
+        let mut out = Vec::with_capacity(self.rows.len());
+
+        for row in &self.rows {
+            let mut cols = Vec::with_capacity(row.cells.len());
+            // Columns this row has already passed; a span ending here frees them for the
+            // next row.
+            let mut col = 0usize;
+            let mut seen = 0usize;
+
+            for cell in &row.cells {
+                while carried.get(col).is_some_and(|&rows| rows > 0) {
+                    col += 1;
+                }
+                // Each covered column this row steps over is consumed once.
+                for c in seen..col {
+                    if let Some(rows) = carried.get_mut(c) {
+                        *rows = rows.saturating_sub(1);
+                    }
+                }
+
+                let col_span = cell.col_span.max(1) as usize;
+                let row_span = cell.row_span.max(1) as usize;
+                cols.push(col);
+
+                if carried.len() < col + col_span {
+                    carried.resize(col + col_span, 0);
+                }
+                for covered in &mut carried[col..col + col_span] {
+                    // The span covers this many rows *below* this one.
+                    *covered = row_span - 1;
+                }
+
+                col += col_span;
+                seen = col;
+            }
+
+            // Columns still covered past this row's last cell belong to this row too.
+            for rows in carried.iter_mut().skip(seen) {
+                *rows = rows.saturating_sub(1);
+            }
+
+            out.push(cols);
+        }
+        out
     }
 
     /// Check if the table is empty.
@@ -287,6 +353,58 @@ mod tests {
         assert!(cell.has_col_span());
         assert!(cell.has_row_span());
         assert!(cell.has_spans());
+    }
+
+    fn spanned(text: &str, col_span: u32, row_span: u32) -> Cell {
+        Cell {
+            col_span,
+            row_span,
+            ..Cell::with_text(text)
+        }
+    }
+
+    #[test]
+    fn test_cell_columns_follow_spans() {
+        // | A (2 rows) | B (2 cols)  |
+        // |            | c  | d      |
+        // | e          | f  | g      |
+        let mut table = Table::new();
+        table.add_row(Row {
+            cells: vec![spanned("A", 1, 2), spanned("B", 2, 1)],
+            ..Row::new()
+        });
+        table.add_row(Row {
+            cells: vec![Cell::with_text("c"), Cell::with_text("d")],
+            ..Row::new()
+        });
+        table.add_row(Row {
+            cells: vec![
+                Cell::with_text("e"),
+                Cell::with_text("f"),
+                Cell::with_text("g"),
+            ],
+            ..Row::new()
+        });
+        assert_eq!(
+            table.cell_columns(),
+            vec![vec![0, 1], vec![1, 2], vec![0, 1, 2]]
+        );
+        assert_eq!(table.column_count(), 3);
+    }
+
+    #[test]
+    fn test_column_count_includes_columns_pushed_right_by_a_vertical_span() {
+        // Row 2 sums to two columns but starts in column 1.
+        let mut table = Table::new();
+        table.add_row(Row {
+            cells: vec![spanned("A", 1, 2), Cell::with_text("b")],
+            ..Row::new()
+        });
+        table.add_row(Row {
+            cells: vec![Cell::with_text("c"), Cell::with_text("d")],
+            ..Row::new()
+        });
+        assert_eq!(table.column_count(), 3);
     }
 
     #[test]

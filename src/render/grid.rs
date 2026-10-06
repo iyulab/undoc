@@ -17,62 +17,23 @@ use crate::model::{Cell, Table};
 /// vertical span occupies from a row above — and renders as an empty cell. Every row
 /// comes back the same width, so callers do not pad.
 ///
-/// The grid's width is derived here rather than taken from
-/// [`Table::column_count`](crate::model::Table::column_count): a vertical span pushes
-/// later cells rightward, so a row can need more columns than its own spans sum to.
+/// Cells are placed at [`Table::cell_columns`], which is also where the grid's width
+/// comes from: a vertical span pushes later cells rightward, so a row can need more
+/// columns than its own spans sum to.
 pub(super) fn lay_out(table: &Table) -> Vec<Vec<Option<&Cell>>> {
-    // For each column, how many further rows a vertical span from above still covers.
-    let mut carried: Vec<usize> = Vec::new();
-    let mut grid: Vec<Vec<Option<&Cell>>> = Vec::with_capacity(table.rows.len());
-
-    for row in &table.rows {
-        let mut slots: Vec<Option<&Cell>> = Vec::new();
-        let mut col = 0usize;
-
-        for cell in &row.cells {
-            // Step over columns a vertical span from an earlier row still covers.
-            while carried.get(col).is_some_and(|&rows| rows > 0) {
-                carried[col] -= 1;
-                slots.push(None);
-                col += 1;
+    let width = table.column_count();
+    table
+        .cell_columns()
+        .into_iter()
+        .zip(&table.rows)
+        .map(|(cols, row)| {
+            let mut slots: Vec<Option<&Cell>> = vec![None; width];
+            for (col, cell) in cols.into_iter().zip(&row.cells) {
+                slots[col] = Some(cell);
             }
-
-            let col_span = (cell.col_span.max(1)) as usize;
-            let row_span = (cell.row_span.max(1)) as usize;
-
-            slots.push(Some(cell));
-            for _ in 1..col_span {
-                slots.push(None);
-            }
-
-            if row_span > 1 {
-                if carried.len() < col + col_span {
-                    carried.resize(col + col_span, 0);
-                }
-                for covered in &mut carried[col..col + col_span] {
-                    *covered = row_span - 1;
-                }
-            }
-
-            col += col_span;
-        }
-
-        // Columns still covered past this row's last cell belong to this row as well —
-        // a table whose last column is vertically merged ends every following row here.
-        while carried.get(col).is_some_and(|&rows| rows > 0) {
-            carried[col] -= 1;
-            slots.push(None);
-            col += 1;
-        }
-
-        grid.push(slots);
-    }
-
-    let width = grid.iter().map(Vec::len).max().unwrap_or(0);
-    for row in &mut grid {
-        row.resize(width, None);
-    }
-    grid
+            slots
+        })
+        .collect()
 }
 
 #[cfg(test)]

@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **A merged cell is recorded once, on the cell that owns it, in every format.** The positions
+  a merge covers — the tail of a horizontal span, and the columns a vertical span occupies in
+  the rows below — have no cell of their own in the document model and the JSON output. DOCX
+  already worked this way; XLSX did not. A worksheet may write a `<c>` for a covered position
+  (Excel does when the range is styled), and those became cells of their own. **JSON consumers
+  of XLSX tables:** a row under a vertical merge now has fewer cells than the grid has columns;
+  use `Table::cell_columns()` (or walk `col_span`/`row_span`) to place cells on the grid.
+- `Table::column_count()` counts grid columns, including columns a vertical span from an
+  earlier row pushes a row's cells into. It used to sum each row's own spans.
+
+### Added
+
+- `Table::cell_columns()` — the grid column each cell starts in.
+- PowerPoint tables keep their merges: `gridSpan`/`rowSpan` set `col_span`/`row_span`, and the
+  positions marked `hMerge`/`vMerge` are not cells. They used to be read as unmerged empty cells,
+  so the HTML table output had no `colspan`/`rowspan`.
+
+### Fixed
+
+- In XLSX, Markdown and text output padded a vertically merged cell twice — once for the
+  covered cell the worksheet wrote, once for the merge — so every row under a merge gained a
+  column and its values moved out from under their headings (an 8-column sheet rendered as 11).
+  A horizontally merged range whose covered cells were written gained columns the same way.
+- In XLSX, an empty merged range the worksheet does not write at all now keeps its spans, and a
+  merge over rows the worksheet omits spans only the rows that are there.
+- In XLSX, trimming empty trailing columns measured a cell's index in its row instead of its
+  grid column, which cut content from rows under a vertical merge.
+
 ## [0.13.4] - 2026-10-06
 
 ### Fixed
