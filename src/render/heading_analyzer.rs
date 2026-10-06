@@ -14,13 +14,84 @@ use std::collections::HashMap;
 use super::style_mapping::StyleMapping;
 use crate::model::{Block, Document, HeadingLevel, Paragraph, Section};
 
+/// Bullet and symbol markers that open a list item rather than a title, Korean document
+/// conventions included. Numbered prefixes (`1.`, `가.`) are not here: a standalone
+/// "1. 서론" is a heading, and runs of them are told apart by sequence analysis.
+const LIST_MARKERS: &[char] = &[
+    '-', '*', '>', '–', '—', '※', '○', '•', '●', '◦', '◎', '□', '■', '▪', '▫', '◇', '◆', '★', '☆',
+    '☐', '☑', '☒', '✓', '✗', 'ㅇ', // Korean jamo (circle)
+    'ㆍ', // Korean middle dot (U+318D)
+    '·',  // Middle dot (U+00B7)
+    '∙',  // Bullet operator (U+2219)
+    '→', '←', '↔', '⇒', '⇐', '⇔', '►', '▶', '▷', '▹', '▻', '◀', '◁', '◃', '◂',
+];
+
+/// Whether `text` opens with a bullet or symbol list marker.
+pub(crate) fn looks_like_list_item(text: &str) -> bool {
+    text.chars()
+        .next()
+        .is_some_and(|c| LIST_MARKERS.contains(&c))
+}
+
+/// Whether a paragraph with an explicit heading style is not a heading after all.
+///
+/// The style is the author's statement and is taken unless the paragraph plainly reads as
+/// something else: a list item (it opens with a bullet marker), or body text — more than
+/// one sentence. Length alone does not decide it: a long, single-sentence title
+/// ("3. Perspective of supply and demand balance of wood pellets and cost structure in
+/// Japan") is a title, while a paragraph of running text set in a heading style, as some
+/// documents do, is several sentences.
+pub(crate) fn explicit_heading_misused(text: &str) -> bool {
+    looks_like_list_item(text) || reads_as_several_sentences(text)
+}
+
+/// Whether `text` holds a sentence boundary followed by more text: a terminator closing a
+/// sentence of at least three words, then whitespace, then more. The word count keeps
+/// "3. Overview", "Fig. 2 shows" and "Part II. Methods" from counting — what precedes
+/// their full stop is a number or a label, not a sentence — and a short Latin word before
+/// the stop ("vs.", "et al.") is an abbreviation.
+fn reads_as_several_sentences(text: &str) -> bool {
+    const TERMINATORS: &[char] = &['.', '!', '?', '。', '！', '？'];
+    const MIN_SENTENCE_WORDS: usize = 3;
+
+    let mut sentence_start = 0;
+    let mut chars = text.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
+        if !TERMINATORS.contains(&c) {
+            continue;
+        }
+        let end = i + c.len_utf8();
+        let followed_by_text = chars.peek().is_some_and(|&(_, next)| next.is_whitespace())
+            && !text[end..].trim().is_empty();
+        if !followed_by_text {
+            continue;
+        }
+        let sentence = &text[sentence_start..i];
+        // A short Latin word before the stop is an abbreviation ("vs.", "etc.", "Dr.",
+        // "et al.", "No."), not a sentence end.
+        let abbreviation = sentence.split_whitespace().last().is_some_and(|word| {
+            word.chars().count() <= 3 && word.chars().all(|ch| ch.is_ascii_alphabetic())
+        });
+        if abbreviation {
+            continue;
+        }
+        if sentence.split_whitespace().count() >= MIN_SENTENCE_WORDS {
+            return true;
+        }
+        sentence_start = end;
+    }
+    false
+}
+
 /// Configuration for heading analysis.
 #[derive(Debug, Clone)]
 pub struct HeadingConfig {
     /// Maximum heading level to emit (1-6).
     pub max_heading_level: u8,
 
-    /// Maximum text length for a paragraph to be considered a heading.
+    /// Maximum text length for a paragraph *without* a heading style to be inferred as a
+    /// heading. A paragraph with an explicit heading style is not measured by length: a
+    /// long title is a title. See [`explicit_heading_misused`].
     pub max_text_length: usize,
 
     /// Font size ratio threshold (compared to base font).
@@ -314,23 +385,18 @@ impl HeadingAnalyzer {
             return HeadingDecision::Explicit(level);
         }
 
-        // P3: Exclusion conditions - bullet markers (NOT numbered patterns)
-        // Numbered patterns are handled in sequence analysis only
-        if self.looks_like_list_item(trimmed) {
-            return if para.heading.is_heading() {
-                HeadingDecision::Demoted
-            } else {
-                HeadingDecision::None
-            };
-        }
-
-        // Check text length
-        if trimmed.chars().count() > self.config.max_text_length {
-            return if para.heading.is_heading() {
-                HeadingDecision::Demoted
-            } else {
-                HeadingDecision::None
-            };
+        // P3: Exclusion conditions. An explicit heading style is demoted only when the
+        // paragraph reads as something else — the same contract the renderer applies when
+        // no analyzer runs.
+        if para.heading.is_heading() {
+            if explicit_heading_misused(trimmed) {
+                return HeadingDecision::Demoted;
+            }
+        } else if looks_like_list_item(trimmed)
+            || trimmed.chars().count() > self.config.max_text_length
+        {
+            // Numbered patterns are handled in sequence analysis only.
+            return HeadingDecision::None;
         }
 
         // P2: Statistical inference (for paragraphs without explicit style)
@@ -348,30 +414,6 @@ impl HeadingAnalyzer {
         }
 
         HeadingDecision::None
-    }
-
-    /// Check if text looks like a list item (bullet markers only).
-    ///
-    /// Note: Numbered patterns (1., 가., a.) are NOT checked here.
-    /// They are handled separately in sequence analysis, because:
-    /// - "1. 서론" (standalone) → likely a heading
-    /// - "1. 항목", "2. 항목" (consecutive) → likely a list
-    fn looks_like_list_item(&self, text: &str) -> bool {
-        if text.is_empty() {
-            return false;
-        }
-
-        // Check for common bullet/symbol markers (NOT numbered patterns)
-        const LIST_MARKERS: &[char] = &[
-            'ㅇ', 'ㆍ', '○', '●', '◎', '■', '□', '▪', '▫', '◆', '◇', '★', '☆', '※', '•', '-', '–',
-            '—', '→', '▶', '►', '▷', '▹', '◁', '◀', '◃', '◂',
-        ];
-
-        // Safety: text.is_empty() checked above, so first char exists
-        text.chars()
-            .next()
-            .map(|c| LIST_MARKERS.contains(&c))
-            .unwrap_or(false)
     }
 
     /// Infer heading level from text style (font size + bold).
@@ -715,6 +757,50 @@ mod tests {
         assert!(matches!(
             decision,
             HeadingDecision::Explicit(HeadingLevel::H2)
+        ));
+    }
+
+    #[test]
+    fn test_several_sentences_read_as_body_text() {
+        assert!(reads_as_several_sentences(
+            "이것은 매우 긴 문장입니다. 제목으로 쓰기에는 너무 깁니다."
+        ));
+        assert!(reads_as_several_sentences(
+            "The results were mixed overall. Further work is needed."
+        ));
+        // A label or a number before the full stop is not a sentence.
+        assert!(!reads_as_several_sentences("3. Overview of the method"));
+        assert!(!reads_as_several_sentences("Fig. 2 shows the setup"));
+        assert!(!reads_as_several_sentences(
+            "Part II. Methods and materials"
+        ));
+        // Abbreviations inside a title.
+        assert!(!reads_as_several_sentences(
+            "HOMO ECONOMICUS VS. HOMO SAPIENS"
+        ));
+        assert!(!reads_as_several_sentences(
+            "Results of Kim et al. on rice yield"
+        ));
+        // One sentence, however long, ending in its full stop.
+        assert!(!reads_as_several_sentences(
+            "A single long title that happens to end with a full stop."
+        ));
+    }
+
+    /// The analyzer and the renderer's no-analyzer path apply one contract to an
+    /// explicit heading style: a long single-sentence title stays a heading even when
+    /// explicit styles are not trusted unconditionally.
+    #[test]
+    fn test_long_single_sentence_explicit_heading_kept_when_untrusted() {
+        let config = HeadingConfig::default().with_trust_explicit(false);
+        let analyzer = HeadingAnalyzer::new(config);
+        let para = make_paragraph(
+            "3. Perspective of supply and demand balance of wood pellets and cost structure in Japan",
+            HeadingLevel::H1,
+        );
+        assert!(matches!(
+            analyzer.decide_heading(&para),
+            HeadingDecision::Explicit(HeadingLevel::H1)
         ));
     }
 

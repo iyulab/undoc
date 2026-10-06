@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- A paragraph in a `Heading` style longer than 80 characters is a heading. The default
+  renderer demoted it to a plain paragraph by length, while the heading analyzer trusted the
+  same style — one input, two outcomes. Both now apply one rule to an explicit heading style:
+  it is kept unless the paragraph reads as something else, a list item (it opens with a
+  bullet marker) or body text (more than one sentence). Abbreviations (`vs.`, `et al.`) and
+  numbered or labelled prefixes (`3. Overview`, `Fig. 2`) do not count as sentence ends.
+  The two paths also shared no list of bullet markers; they use one now.
+
 ## [0.13.3] - 2026-10-04
 
 ### Fixed

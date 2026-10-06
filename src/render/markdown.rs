@@ -14,24 +14,6 @@ use super::options::{RenderOptions, RevisionHandling, SectionMarkerStyle};
 /// Map of resource IDs to their filenames
 type ResourceMap = HashMap<String, String>;
 
-/// Maximum character length for a heading.
-/// Text longer than this is unlikely to be a semantic heading.
-const MAX_HEADING_TEXT_LENGTH: usize = 80;
-
-/// Common list/bullet markers including Korean characters.
-/// Used to detect paragraphs that should not be rendered as headings.
-const LIST_MARKERS: &[char] = &[
-    // ASCII markers
-    '-', '*', '>', // Korean/Asian markers
-    '※', '○', '•', '●', '◦', '◎', '□', '■', '▪', '▫', '◇', '◆', '☐', '☑', '☒', '✓', '✗',
-    'ㅇ', // Korean jamo (circle)
-    'ㆍ', // Korean middle dot (U+318D)
-    '·',  // Middle dot (U+00B7)
-    '∙',  // Bullet operator (U+2219)
-    // Arrows (commonly used as list markers in Korean documents)
-    '→', '←', '↔', '⇒', '⇐', '⇔', '►', '▶', '▷', '◀', '◁', '▻',
-];
-
 /// Convert a Document to Markdown.
 pub fn to_markdown(doc: &Document, options: &RenderOptions) -> Result<String> {
     // If heading analysis is enabled, use the analyzer
@@ -527,22 +509,11 @@ fn render_paragraph(
             HeadingDecision::Demoted | HeadingDecision::None => None,
         }
     } else {
-        // Fallback: simple heading detection (legacy behavior)
+        // No analyzer: the explicit heading style decides, under the same exclusion the
+        // analyzer applies to it.
         if merged_para.heading.is_heading() {
             let plain_text = merged_para.plain_text();
-            let trimmed_text = plain_text.trim();
-
-            // Check if paragraph looks like a list item (starts with list-like markers)
-            let looks_like_list_item = trimmed_text
-                .chars()
-                .next()
-                .is_some_and(|c| LIST_MARKERS.contains(&c));
-
-            // Check if text is too long to be a meaningful heading
-            let text_too_long = trimmed_text.chars().count() > MAX_HEADING_TEXT_LENGTH;
-
-            // Apply heading only if it's truly semantic
-            if !looks_like_list_item && !text_too_long {
+            if !super::heading_analyzer::explicit_heading_misused(plain_text.trim()) {
                 let level = merged_para.heading.level().min(options.max_heading_level);
                 Some(HeadingLevel::from_number(level))
             } else {
@@ -1748,6 +1719,22 @@ mod tests {
             "Content should still be present: {}",
             md
         );
+    }
+
+    /// A long title is a title: the explicit style decides, and a single sentence of any
+    /// length does not read as body text. Measured by length, this was a plain paragraph.
+    #[test]
+    fn test_long_single_sentence_heading_kept() {
+        let title = "3. Perspective of supply and demand balance of wood pellets and cost structure in Japan";
+        assert!(title.chars().count() > 80);
+        let para = Paragraph::heading(HeadingLevel::H1, title);
+        let md = render_paragraph(
+            &para,
+            &RenderOptions::default(),
+            None,
+            &empty_resource_map(),
+        );
+        assert!(md.starts_with("# 3. Perspective"), "{}", md);
     }
 
     #[test]
