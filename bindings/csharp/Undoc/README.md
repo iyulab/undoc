@@ -70,7 +70,13 @@ foreach (var id in resourceIds)
 {
     // Get resource metadata
     using var info = doc.GetResourceInfo(id);
-    var filename = info?.RootElement.GetProperty("filename").GetString();
+    // "primary": an image the document shows. "alternate" (a picture's SVG original) and
+    // "layer" (an HD Photo effects layer) belong to the primary named by "companion_of".
+    if (info is null || info.RootElement.GetProperty("role").GetString() != "primary")
+    {
+        continue;
+    }
+    var filename = info.RootElement.GetProperty("filename").GetString();
     Console.WriteLine($"Resource: {filename}");
 
     // Get resource binary data

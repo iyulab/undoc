@@ -286,6 +286,37 @@ public class NativeLibraryTests
         Assert.Contains("Привет из C#", doc.ToText());
     }
 
+    /// <summary>
+    /// A picture with an SVG original is one picture: the resource info says which file the
+    /// document shows and which is its alternate.
+    /// </summary>
+    [Fact]
+    public void GetResourceInfo_MarksAnSvgOriginalAsAlternateOfItsPicture()
+    {
+        NativeTestSupport.EnsureNativeLibraryPrepared();
+
+        using var doc = UndocDocument.ParseBytes(NativeTestSupport.CreateDocxBytes(
+            """<w:p><w:r><w:drawing><wp:inline><wp:docPr id="1" name="Picture 1" descr="Floor plan"/><a:blip r:embed="rIdPng"><a:extLst><a:ext uri="{96DAC541-7B7A-43D3-8B79-37D633B846F1}"><asvg:svgBlip r:embed="rIdSvg"/></a:ext></a:extLst></a:blip></wp:inline></w:drawing></w:r></w:p>""",
+            """
+            <Relationship Id="rIdPng" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image1.png"/>
+            <Relationship Id="rIdSvg" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image2.svg"/>
+            """,
+            ("word/media/image1.png", "png"),
+            ("word/media/image2.svg", "<svg/>")));
+
+        using var png = doc.GetResourceInfo("rIdPng");
+        Assert.NotNull(png);
+        Assert.Equal("primary", png!.RootElement.GetProperty("role").GetString());
+        Assert.Equal("Floor plan", png.RootElement.GetProperty("alt_text").GetString());
+
+        using var svg = doc.GetResourceInfo("rIdSvg");
+        Assert.NotNull(svg);
+        Assert.Equal("alternate", svg!.RootElement.GetProperty("role").GetString());
+        Assert.Equal("rIdPng", svg.RootElement.GetProperty("companion_of").GetString());
+
+        Assert.Contains("Floor plan", doc.ToMarkdown());
+    }
+
     [Fact]
     public void CandidatePaths_Include_Windows_Runtime_Native_UndocDll()
     {
@@ -392,7 +423,17 @@ internal static class NativeTestSupport
 
     public static string StagedLibraryPath => _stagedLibraryPath ?? string.Empty;
 
-    public static byte[] CreateMinimalDocxBytes(string text)
+    public static byte[] CreateMinimalDocxBytes(string text) =>
+        CreateDocxBytes($"<w:p><w:r><w:t>{text}</w:t></w:r></w:p>", relationships: "");
+
+    /// <summary>
+    /// A DOCX whose body is <paramref name="bodyXml"/>, whose document relationships are
+    /// <paramref name="relationships"/>, and which carries <paramref name="parts"/>.
+    /// </summary>
+    public static byte[] CreateDocxBytes(
+        string bodyXml,
+        string relationships,
+        params (string Path, string Content)[] parts)
     {
         using var stream = new MemoryStream();
         using (var zip = new ZipArchive(stream, ZipArchiveMode.Create, leaveOpen: true))
@@ -420,9 +461,10 @@ internal static class NativeTestSupport
             WriteEntry(
                 zip,
                 "word/_rels/document.xml.rels",
-                """
+                $$"""
                 <?xml version="1.0" encoding="UTF-8"?>
                 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+                {{relationships}}
                 </Relationships>
                 """);
             WriteEntry(
@@ -430,14 +472,18 @@ internal static class NativeTestSupport
                 "word/document.xml",
                 $$"""
                 <?xml version="1.0" encoding="UTF-8"?>
-                <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
-                  <w:body>
-                    <w:p>
-                      <w:r><w:t>{{text}}</w:t></w:r>
-                    </w:p>
-                  </w:body>
+                <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+                            xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+                            xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+                            xmlns:asvg="http://schemas.microsoft.com/office/drawing/2016/SVG/main"
+                            xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+                  <w:body>{{bodyXml}}</w:body>
                 </w:document>
                 """);
+            foreach (var (path, content) in parts)
+            {
+                WriteEntry(zip, path, content);
+            }
         }
 
         return stream.ToArray();

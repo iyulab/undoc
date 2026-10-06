@@ -2,6 +2,43 @@
 
 use serde::{Deserialize, Serialize};
 
+/// The file extensions a resource can carry, with its type and MIME type.
+///
+/// One table for every format: the parsers, the MIME lookup and the extension a saved
+/// resource gets all read it, so they cannot disagree about a file.
+const EXTENSIONS: &[(&str, ResourceType, &str)] = &[
+    ("png", ResourceType::Image, "image/png"),
+    ("jpg", ResourceType::Image, "image/jpeg"),
+    ("jpeg", ResourceType::Image, "image/jpeg"),
+    ("gif", ResourceType::Image, "image/gif"),
+    ("bmp", ResourceType::Image, "image/bmp"),
+    ("tiff", ResourceType::Image, "image/tiff"),
+    ("tif", ResourceType::Image, "image/tiff"),
+    ("webp", ResourceType::Image, "image/webp"),
+    ("svg", ResourceType::Image, "image/svg+xml"),
+    ("wmf", ResourceType::Image, "image/x-wmf"),
+    ("emf", ResourceType::Image, "image/x-emf"),
+    // JPEG XR. Office stores HD Photo layers (`.wdp`) in this format.
+    ("wdp", ResourceType::Image, "image/vnd.ms-photo"),
+    ("hdp", ResourceType::Image, "image/vnd.ms-photo"),
+    ("jxr", ResourceType::Image, "image/vnd.ms-photo"),
+    ("mp3", ResourceType::Audio, "audio/mpeg"),
+    ("wav", ResourceType::Audio, "audio/wav"),
+    ("ogg", ResourceType::Audio, "audio/ogg"),
+    ("m4a", ResourceType::Audio, "audio/mp4"),
+    ("wma", ResourceType::Audio, "audio/x-ms-wma"),
+    ("mp4", ResourceType::Video, "video/mp4"),
+    ("avi", ResourceType::Video, "video/x-msvideo"),
+    ("mov", ResourceType::Video, "video/quicktime"),
+    ("wmv", ResourceType::Video, "video/x-ms-wmv"),
+    ("webm", ResourceType::Video, "video/webm"),
+];
+
+fn extension_entry(ext: &str) -> Option<&'static (&'static str, ResourceType, &'static str)> {
+    let ext = ext.to_ascii_lowercase();
+    EXTENSIONS.iter().find(|(e, _, _)| *e == ext)
+}
+
 /// Type of resource.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -41,15 +78,29 @@ impl ResourceType {
 
     /// Determine resource type from file extension.
     pub fn from_extension(ext: &str) -> Self {
-        match ext.to_lowercase().as_str() {
-            "png" | "jpg" | "jpeg" | "gif" | "bmp" | "tiff" | "tif" | "wmf" | "emf" | "svg" => {
-                ResourceType::Image
-            }
-            "mp3" | "wav" | "ogg" | "m4a" | "wma" => ResourceType::Audio,
-            "mp4" | "avi" | "mov" | "wmv" | "webm" => ResourceType::Video,
-            _ => ResourceType::Other,
-        }
+        extension_entry(ext).map_or(ResourceType::Other, |&(_, kind, _)| kind)
     }
+}
+
+/// What a resource is to the document's content.
+///
+/// A picture in an Office document can reference more than one file: the image it shows,
+/// and companions of that image — the vector original of a raster picture, or an effects
+/// layer composited onto it. A companion is not a picture of its own; taking every
+/// resource as an image the document shows counts each picture two or three times, in
+/// formats a reader may not decode.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ResourceRole {
+    /// An image the document shows, or a media file it plays.
+    #[default]
+    Primary,
+    /// Another encoding of a primary image: the SVG original of a picture whose raster
+    /// rendering (PNG, usually) is the primary. `companion_of` names the primary.
+    Alternate,
+    /// A layer composited onto a primary image: an HD Photo (JPEG XR, `.wdp`) layer that
+    /// carries a picture's artistic effects. `companion_of` names the primary.
+    Layer,
 }
 
 /// A binary resource (image, media file, etc.).
@@ -84,6 +135,15 @@ pub struct Resource {
     /// Alt text / description
     #[serde(skip_serializing_if = "Option::is_none")]
     pub alt_text: Option<String>,
+
+    /// What this resource is to the document's content. Only a `Primary` resource is an
+    /// image the document shows (or media it plays).
+    #[serde(default)]
+    pub role: ResourceRole,
+
+    /// For an `Alternate` or a `Layer`, the id of the primary resource it belongs to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub companion_of: Option<String>,
 }
 
 impl Resource {
@@ -99,6 +159,35 @@ impl Resource {
             width: None,
             height: None,
             alt_text: None,
+            role: ResourceRole::Primary,
+            companion_of: None,
+        }
+    }
+
+    /// Create a resource from a package part: type and MIME type from its extension,
+    /// pixel size from the image header when the format is one this reads (PNG, JPEG,
+    /// GIF, BMP).
+    pub fn from_part(part_path: &str, data: Vec<u8>) -> Self {
+        let filename = part_path
+            .rsplit('/')
+            .next()
+            .unwrap_or(part_path)
+            .to_string();
+        let entry = filename
+            .rsplit_once('.')
+            .and_then(|(_, ext)| extension_entry(ext));
+        let (width, height) = image_dimensions(&data).unzip();
+        Self {
+            resource_type: entry.map_or(ResourceType::Other, |&(_, kind, _)| kind),
+            mime_type: entry.map(|&(_, _, mime)| mime.to_string()),
+            filename: Some(filename),
+            size: data.len(),
+            data,
+            width,
+            height,
+            alt_text: None,
+            role: ResourceRole::Primary,
+            companion_of: None,
         }
     }
 
@@ -106,15 +195,18 @@ impl Resource {
     pub fn image(data: Vec<u8>, filename: Option<String>) -> Self {
         let size = data.len();
         let mime_type = filename.as_ref().and_then(|f| Self::mime_from_filename(f));
+        let (width, height) = image_dimensions(&data).unzip();
         Self {
             resource_type: ResourceType::Image,
             filename,
             mime_type,
             data,
             size,
-            width: None,
-            height: None,
+            width,
+            height,
             alt_text: None,
+            role: ResourceRole::Primary,
+            companion_of: None,
         }
     }
 
@@ -129,27 +221,8 @@ impl Resource {
 
     /// Determine MIME type from filename.
     pub fn mime_from_filename(filename: &str) -> Option<String> {
-        let ext = filename.rsplit('.').next()?.to_lowercase();
-        let mime = match ext.as_str() {
-            "png" => "image/png",
-            "jpg" | "jpeg" => "image/jpeg",
-            "gif" => "image/gif",
-            "bmp" => "image/bmp",
-            "tiff" | "tif" => "image/tiff",
-            "svg" => "image/svg+xml",
-            "wmf" => "image/x-wmf",
-            "emf" => "image/x-emf",
-            "mp3" => "audio/mpeg",
-            "wav" => "audio/wav",
-            "ogg" => "audio/ogg",
-            "m4a" => "audio/mp4",
-            "mp4" => "video/mp4",
-            "avi" => "video/x-msvideo",
-            "mov" => "video/quicktime",
-            "webm" => "video/webm",
-            _ => return None,
-        };
-        Some(mime.to_string())
+        let (_, ext) = filename.rsplit_once('.')?;
+        extension_entry(ext).map(|&(_, _, mime)| mime.to_string())
     }
 
     /// Generate a suggested filename for this resource.
@@ -173,22 +246,12 @@ impl Resource {
         }
     }
 
-    /// Get extension from MIME type.
+    /// Get extension from MIME type — the first extension the table lists for it.
     fn extension_from_mime(mime: &str) -> Option<&'static str> {
-        match mime {
-            "image/png" => Some("png"),
-            "image/jpeg" => Some("jpg"),
-            "image/gif" => Some("gif"),
-            "image/bmp" => Some("bmp"),
-            "image/tiff" => Some("tiff"),
-            "image/svg+xml" => Some("svg"),
-            "image/x-wmf" => Some("wmf"),
-            "image/x-emf" => Some("emf"),
-            "audio/mpeg" => Some("mp3"),
-            "audio/wav" => Some("wav"),
-            "video/mp4" => Some("mp4"),
-            _ => None,
-        }
+        EXTENSIONS
+            .iter()
+            .find(|(_, _, m)| *m == mime)
+            .map(|&(ext, _, _)| ext)
     }
 
     /// Save resource to a file.
@@ -212,6 +275,58 @@ impl Resource {
             ResourceType::Audio | ResourceType::Video
         )
     }
+}
+
+/// Pixel size of an image, read from its header. `None` for a format this does not read
+/// (vector and metafile formats have no pixel size; TIFF and JPEG XR are not read) or a
+/// header too short to hold one.
+pub(crate) fn image_dimensions(data: &[u8]) -> Option<(u32, u32)> {
+    let be32 = |at: usize| -> Option<u32> {
+        Some(u32::from_be_bytes(data.get(at..at + 4)?.try_into().ok()?))
+    };
+    let be16 = |at: usize| -> Option<u32> {
+        Some(u16::from_be_bytes(data.get(at..at + 2)?.try_into().ok()?) as u32)
+    };
+    let le16 = |at: usize| -> Option<u32> {
+        Some(u16::from_le_bytes(data.get(at..at + 2)?.try_into().ok()?) as u32)
+    };
+    let le32 = |at: usize| -> Option<i32> {
+        Some(i32::from_le_bytes(data.get(at..at + 4)?.try_into().ok()?))
+    };
+
+    let size = if data.starts_with(b"\x89PNG\r\n\x1a\n") && data.get(12..16) == Some(b"IHDR") {
+        (be32(16)?, be32(20)?)
+    } else if data.starts_with(b"GIF87a") || data.starts_with(b"GIF89a") {
+        (le16(6)?, le16(8)?)
+    } else if data.starts_with(b"BM") {
+        // BITMAPINFOHEADER: a negative height means a top-down bitmap.
+        (le32(18)?.unsigned_abs(), le32(22)?.unsigned_abs())
+    } else if data.starts_with(&[0xFF, 0xD8]) {
+        // Walk the JPEG segments to the first start-of-frame marker.
+        let mut at = 2;
+        loop {
+            while data.get(at) == Some(&0xFF) && data.get(at + 1) == Some(&0xFF) {
+                at += 1;
+            }
+            if data.get(at) != Some(&0xFF) {
+                return None;
+            }
+            let marker = *data.get(at + 1)?;
+            let is_sof = matches!(marker, 0xC0..=0xCF) && !matches!(marker, 0xC4 | 0xC8 | 0xCC);
+            if is_sof {
+                break (be16(at + 7)?, be16(at + 5)?);
+            }
+            // Markers without a length field.
+            if matches!(marker, 0xD0..=0xD9 | 0x01) {
+                at += 2;
+                continue;
+            }
+            at += 2 + be16(at + 2)? as usize;
+        }
+    } else {
+        return None;
+    };
+    (size.0 > 0 && size.1 > 0).then_some(size)
 }
 
 #[cfg(test)]
@@ -249,6 +364,61 @@ mod tests {
         assert_eq!(ResourceType::from_extension("mp3"), ResourceType::Audio);
         assert_eq!(ResourceType::from_extension("mp4"), ResourceType::Video);
         assert_eq!(ResourceType::from_extension("xyz"), ResourceType::Other);
+    }
+
+    #[test]
+    fn test_image_dimensions_from_headers() {
+        let mut png = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR".to_vec();
+        png.extend_from_slice(&640u32.to_be_bytes());
+        png.extend_from_slice(&480u32.to_be_bytes());
+        assert_eq!(image_dimensions(&png), Some((640, 480)));
+
+        let mut gif = b"GIF89a".to_vec();
+        gif.extend_from_slice(&[0x20, 0x01, 0x10, 0x00]);
+        assert_eq!(image_dimensions(&gif), Some((288, 16)));
+
+        let mut bmp = vec![0u8; 26];
+        bmp[..2].copy_from_slice(b"BM");
+        bmp[18..22].copy_from_slice(&100i32.to_le_bytes());
+        bmp[22..26].copy_from_slice(&(-50i32).to_le_bytes()); // top-down
+        assert_eq!(image_dimensions(&bmp), Some((100, 50)));
+
+        // SOI, an APP0 segment, then SOF0 with height 300 and width 400.
+        let jpeg = [
+            0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x04, 0x00, 0x00, 0xFF, 0xC0, 0x00, 0x11, 0x08, 0x01,
+            0x2C, 0x01, 0x90,
+        ];
+        assert_eq!(image_dimensions(&jpeg), Some((400, 300)));
+
+        assert_eq!(image_dimensions(b"<svg/>"), None);
+        assert_eq!(
+            image_dimensions(b"\x89PNG\r\n\x1a\n"),
+            None,
+            "truncated header"
+        );
+        assert_eq!(
+            image_dimensions(&[0xFF, 0xD8, 0xFF]),
+            None,
+            "truncated JPEG"
+        );
+    }
+
+    #[test]
+    fn test_from_part_types_by_extension_and_reads_size() {
+        let mut png = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR".to_vec();
+        png.extend_from_slice(&2u32.to_be_bytes());
+        png.extend_from_slice(&3u32.to_be_bytes());
+        let r = Resource::from_part("word/media/image1.PNG", png);
+        assert_eq!(r.filename.as_deref(), Some("image1.PNG"));
+        assert_eq!(r.resource_type, ResourceType::Image);
+        assert_eq!(r.mime_type.as_deref(), Some("image/png"));
+        assert_eq!((r.width, r.height), (Some(2), Some(3)));
+        assert_eq!(r.role, ResourceRole::Primary);
+
+        let wdp = Resource::from_part("ppt/media/hdphoto1.wdp", vec![1, 2]);
+        assert_eq!(wdp.resource_type, ResourceType::Image);
+        assert_eq!(wdp.mime_type.as_deref(), Some("image/vnd.ms-photo"));
+        assert_eq!((wdp.width, wdp.height), (None, None));
     }
 
     #[test]

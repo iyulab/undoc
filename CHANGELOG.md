@@ -19,8 +19,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Table::column_count()` counts grid columns, including columns a vertical span from an
   earlier row pushes a row's cells into. It used to sum each row's own spans.
 
+- PowerPoint resources are the media the slides reference, the way Word resources are the
+  document's image relationships. Media used only by a slide layout or master, or by nothing,
+  is no longer listed.
+- A PowerPoint image's alt text is the picture's description (`descr`), as in Word. It used to
+  be the shape's name ("Picture 3").
+
 ### Added
 
+- Each resource says what it is to the document: `role` is `primary` for an image the document
+  shows (or media it plays), `alternate` for another encoding of one — a picture's SVG
+  original, written by Office beside its raster rendering — and `layer` for a layer composited
+  onto one — an HD Photo (`.wdp`) layer carrying a picture's artistic effects. `companion_of`
+  names the primary. Both appear in the JSON output and in the resource info of the C ABI,
+  .NET and Python bindings. To take the images a document shows, keep the primaries.
+- Resources carry `alt_text` from the picture that shows them (`descr`), and `width`/`height`
+  in pixels for PNG, JPEG, GIF and BMP images, read from the image header.
+- JPEG XR (`.wdp`, `.hdp`, `.jxr`) is an image type with MIME type `image/vnd.ms-photo`. All
+  three formats now share one extension table, so they agree on every file's type and MIME type.
 - `Table::cell_columns()` — the grid column each cell starts in.
 - PowerPoint tables keep their merges: `gridSpan`/`rowSpan` set `col_span`/`row_span`, and the
   positions marked `hMerge`/`vMerge` are not cells. They used to be read as unmerged empty cells,
@@ -28,6 +44,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- In Word, a picture whose image carries an extension list — an SVG picture, or one with
+  artistic effects — was missing from Markdown, text and JSON output: only pictures written as
+  an empty `<a:blip/>` were read. A drawing description written with children (a hyperlink)
+  was lost the same way.
 - In XLSX, Markdown and text output padded a vertically merged cell twice — once for the
   covered cell the worksheet wrote, once for the merge — so every row under a merge gained a
   column and its values moved out from under their headings (an 8-column sheet rendered as 11).

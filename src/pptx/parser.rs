@@ -4,7 +4,7 @@ use crate::charts;
 use crate::container::OoxmlContainer;
 use crate::error::Result;
 use crate::model::{
-    Block, Cell, Document, HeadingLevel, Metadata, Paragraph, Resource, ResourceType, RevisionType,
+    Block, Cell, Document, HeadingLevel, Metadata, Paragraph, Resource, ResourceRole, RevisionType,
     Row, Section, Table, TextRun, TextStyle,
 };
 use std::collections::HashMap;
@@ -218,13 +218,7 @@ impl PptxParser {
         let mut section = Section::new(idx);
         section.name = Some(format!("Slide {}", idx + 1));
 
-        if let Some(target) = self.relationships.get(&slide.rel_id) {
-            let slide_path = if let Some(stripped) = target.strip_prefix('/') {
-                stripped.to_string()
-            } else {
-                format!("ppt/{}", target)
-            };
-
+        if let Some(slide_path) = self.slide_path(slide) {
             let slide_full_rels = self
                 .container
                 .read_optional_relationships_for_part(&slide_path)?;
@@ -336,7 +330,7 @@ impl PptxParser {
         let mut in_nvpicpr = false;
         let mut in_blipfill = false;
         let mut in_sppr = false;
-        let mut current_name: Option<String> = None;
+        let mut current_descr: Option<String> = None;
         let mut current_rel_id: Option<String> = None;
         let mut current_width: Option<u32> = None;
         let mut current_height: Option<u32> = None;
@@ -349,7 +343,7 @@ impl PptxParser {
                         // p:pic - picture element
                         "pic" => {
                             in_pic = true;
-                            current_name = None;
+                            current_descr = None;
                             current_rel_id = None;
                             current_width = None;
                             current_height = None;
@@ -360,10 +354,8 @@ impl PptxParser {
                         }
                         // p:cNvPr - common non-visual properties (has name attribute)
                         "cNvPr" if in_nvpicpr => {
-                            for attr in e.attributes().flatten() {
-                                if attr.key.local_name().as_ref() == "name" {
-                                    current_name = Some(attr.value.to_string());
-                                }
+                            if let Some(descr) = picture_description(e) {
+                                current_descr = Some(descr);
                             }
                         }
                         // p:blipFill - blip fill (contains the image reference)
@@ -409,10 +401,8 @@ impl PptxParser {
                     match local_name.as_ref() {
                         // Handle self-closing cNvPr
                         "cNvPr" if in_nvpicpr => {
-                            for attr in e.attributes().flatten() {
-                                if attr.key.local_name().as_ref() == "name" {
-                                    current_name = Some(attr.value.to_string());
-                                }
+                            if let Some(descr) = picture_description(e) {
+                                current_descr = Some(descr);
                             }
                         }
                         // Handle self-closing blip
@@ -457,7 +447,7 @@ impl PptxParser {
 
                                     images.push(Block::Image {
                                         resource_id: filename,
-                                        alt_text: current_name.take(),
+                                        alt_text: current_descr.take(),
                                         width: current_width.take(),
                                         height: current_height.take(),
                                     });
@@ -1323,35 +1313,106 @@ impl PptxParser {
     }
 
     /// Extract resources (images, media) from the presentation.
+    ///
+    /// Lists the media the slides reference, keyed by file name, the way a Word document
+    /// lists its image relationships: media used only by a slide layout or master, or by
+    /// nothing at all, is not part of what the slides show. A picture's SVG original or
+    /// HD Photo layer is listed as a companion of the image the picture shows (see
+    /// [`crate::drawing`]); a file that some slide shows as a picture stays a primary.
     pub fn extract_resources(&self) -> Result<Vec<Resource>> {
-        let mut resources = Vec::new();
+        let mut resources: Vec<Resource> = Vec::new();
+        let mut index: HashMap<String, usize> = HashMap::new();
+        // Companion file → (role, primary file), kept only while no slide shows it.
+        let mut companions: HashMap<String, (ResourceRole, String)> = HashMap::new();
+        let mut shown: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-        // Look for media files in ppt/media/
-        for file in self.container.list_files() {
-            if file.starts_with("ppt/media/") {
-                if let Ok(data) = self.container.read_binary(&file) {
-                    let filename = file.rsplit('/').next().unwrap_or(&file).to_string();
-                    let ext = std::path::Path::new(&file)
-                        .extension()
-                        .and_then(|e| e.to_str())
-                        .unwrap_or("");
-                    let size = data.len();
+        for slide in &self.slides {
+            let Some(slide_path) = self.slide_path(slide) else {
+                continue;
+            };
+            let rels = self
+                .container
+                .read_optional_relationships_for_part(&slide_path)?;
+            let pictures = self
+                .container
+                .read_xml_optional(&slide_path)?
+                .map(|xml| crate::drawing::scan_pictures(&xml))
+                .unwrap_or_default();
 
-                    resources.push(Resource {
-                        resource_type: ResourceType::from_extension(ext),
-                        filename: Some(filename),
-                        mime_type: guess_mime_type(&file),
-                        data,
-                        size,
-                        width: None,
-                        height: None,
-                        alt_text: None,
-                    });
+            let file_of = |rel_id: &str| -> Option<(String, String)> {
+                let rel = rels.get(rel_id)?;
+                let path = OoxmlContainer::resolve_path(&slide_path, &rel.target);
+                let name = path.rsplit('/').next().unwrap_or(&path).to_string();
+                Some((path, name))
+            };
+
+            let mut ids: Vec<&String> = rels.by_id.keys().collect();
+            ids.sort();
+            for rel_id in ids {
+                let rel = &rels.by_id[rel_id];
+                let is_media = ["/image", "/hdphoto", "/video", "/audio", "/media"]
+                    .iter()
+                    .any(|kind| rel.rel_type.ends_with(kind));
+                if !is_media || rel.external {
+                    continue;
+                }
+                let Some((path, name)) = file_of(rel_id) else {
+                    continue;
+                };
+
+                match pictures.companions.get(rel_id.as_str()) {
+                    Some((role, primary)) => {
+                        if let Some((_, primary_name)) = file_of(primary) {
+                            companions
+                                .entry(name.clone())
+                                .or_insert((*role, primary_name));
+                        }
+                    }
+                    None => {
+                        shown.insert(name.clone());
+                    }
+                }
+
+                let at = match index.get(&name) {
+                    Some(&at) => at,
+                    None => {
+                        let Ok(data) = self.container.read_binary(&path) else {
+                            continue;
+                        };
+                        index.insert(name.clone(), resources.len());
+                        resources.push(Resource::from_part(&path, data));
+                        resources.len() - 1
+                    }
+                };
+                let resource = &mut resources[at];
+                if resource.alt_text.is_none() {
+                    resource.alt_text = pictures.alt_texts.get(rel_id.as_str()).cloned();
                 }
             }
         }
 
+        for resource in &mut resources {
+            let name = resource.filename.as_deref().unwrap_or_default();
+            if shown.contains(name) {
+                continue;
+            }
+            if let Some((role, primary)) = companions.get(name) {
+                resource.role = *role;
+                resource.companion_of = Some(primary.clone());
+                resource.alt_text = None;
+            }
+        }
+
         Ok(resources)
+    }
+
+    /// The package path of a slide.
+    fn slide_path(&self, slide: &SlideInfo) -> Option<String> {
+        let target = self.relationships.get(&slide.rel_id)?;
+        Some(match target.strip_prefix('/') {
+            Some(stripped) => stripped.to_string(),
+            None => format!("ppt/{target}"),
+        })
     }
 
     /// Get a reference to the container.
@@ -1539,26 +1600,14 @@ fn parse_placeholder_texts_from_xml(xml: &str) -> HashMap<String, Vec<Paragraph>
     result
 }
 
-/// Guess MIME type from file extension.
-fn guess_mime_type(path: &str) -> Option<String> {
-    let ext = path.rsplit('.').next()?.to_lowercase();
-    match ext.as_str() {
-        "png" => Some("image/png".to_string()),
-        "jpg" | "jpeg" => Some("image/jpeg".to_string()),
-        "gif" => Some("image/gif".to_string()),
-        "bmp" => Some("image/bmp".to_string()),
-        "tiff" | "tif" => Some("image/tiff".to_string()),
-        "webp" => Some("image/webp".to_string()),
-        "svg" => Some("image/svg+xml".to_string()),
-        "emf" => Some("image/x-emf".to_string()),
-        "wmf" => Some("image/x-wmf".to_string()),
-        "mp3" => Some("audio/mpeg".to_string()),
-        "wav" => Some("audio/wav".to_string()),
-        "mp4" => Some("video/mp4".to_string()),
-        "avi" => Some("video/x-msvideo".to_string()),
-        "wmv" => Some("video/x-ms-wmv".to_string()),
-        _ => None,
-    }
+/// A picture's description (`p:cNvPr descr`) — its alt text — if it has a non-blank one.
+/// The shape's `name` ("Picture 3") is an editing label, not a description.
+fn picture_description(e: &quick_xml::events::BytesStart<'_>) -> Option<String> {
+    e.attributes()
+        .flatten()
+        .find(|a| a.key.local_name().as_ref() == "descr")
+        .map(|a| crate::decode::attr_value(&a))
+        .filter(|d| !d.trim().is_empty())
 }
 
 /// Read a DrawingML table cell's merge attributes into `cell`, returning whether the
@@ -1958,14 +2007,21 @@ mod tests {
         assert_eq!(run.hyperlink.as_deref(), Some("https://example.com/spec"));
     }
 
-    /// Every part under `ppt/media/` is listed, typed by its extension.
+    /// The media a slide references is listed, typed by its extension; a media part no
+    /// slide references is not.
     #[test]
-    fn test_extract_resources_lists_the_media_parts() {
+    fn test_extract_resources_lists_the_media_slides_reference() {
+        let rels = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rIdImg" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image1.png"/>
+  <Relationship Id="rIdVid" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/video" Target="../media/clip.mp4"/>
+</Relationships>"#;
         let data = deck(
-            &[(&slide(&text_shape("", "x")), EMPTY_RELS)],
+            &[(&slide(&text_shape("", "x")), rels)],
             &[
                 ("ppt/media/image1.png", b"\x89PNG\r\n\x1a\n"),
                 ("ppt/media/clip.mp4", b"not really a video"),
+                ("ppt/media/orphan.png", b"\x89PNG\r\n\x1a\n"),
             ],
         );
         let parser = PptxParser::from_bytes(data).unwrap();
@@ -1977,6 +2033,55 @@ mod tests {
         assert!(!resources[0].is_image());
         assert!(resources[1].is_image());
         assert_eq!(resources[1].data, b"\x89PNG\r\n\x1a\n");
+    }
+
+    /// A picture with an SVG original and an HD Photo layer is one picture: the raster image
+    /// is the primary, carrying the picture's description, and the other two are its
+    /// companions. The slide's image block names the primary, with the description — not
+    /// the shape's name — as its alt text.
+    #[test]
+    fn test_picture_companions_are_marked_and_alt_text_is_the_description() {
+        let pic = r#"<p:pic><p:nvPicPr><p:cNvPr id="4" name="Picture 3" descr="Quarterly revenue"/><p:cNvPicPr/><p:nvPr/></p:nvPicPr><p:blipFill><a:blip r:embed="rIdPng"><a:extLst><a:ext uri="{BEBA8EAE-BF5A-486C-A8C5-ECC9F3942E4B}"><a14:imgProps xmlns:a14="http://schemas.microsoft.com/office/drawing/2010/main"><a14:imgLayer r:embed="rIdWdp"/></a14:imgProps></a:ext><a:ext uri="{96DAC541-7B7A-43D3-8B79-37D633B846F1}"><asvg:svgBlip xmlns:asvg="http://schemas.microsoft.com/office/drawing/2016/SVG/main" r:embed="rIdSvg"/></a:ext></a:extLst></a:blip></p:blipFill><p:spPr/></p:pic>"#;
+        let rels = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rIdPng" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image1.png"/>
+  <Relationship Id="rIdSvg" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image2.svg"/>
+  <Relationship Id="rIdWdp" Type="http://schemas.microsoft.com/office/2007/relationships/hdphoto" Target="../media/hdphoto1.wdp"/>
+</Relationships>"#;
+        let data = deck(
+            &[(&slide(pic), rels)],
+            &[
+                ("ppt/media/image1.png", b"\x89PNG\r\n\x1a\n"),
+                ("ppt/media/image2.svg", b"<svg/>"),
+                ("ppt/media/hdphoto1.wdp", b"II\xbc\x01"),
+            ],
+        );
+        let doc = PptxParser::from_bytes(data).unwrap().parse().unwrap();
+
+        let png = &doc.resources["image1.png"];
+        assert_eq!(png.role, ResourceRole::Primary);
+        assert_eq!(png.alt_text.as_deref(), Some("Quarterly revenue"));
+        let svg = &doc.resources["image2.svg"];
+        assert_eq!(svg.role, ResourceRole::Alternate);
+        assert_eq!(svg.companion_of.as_deref(), Some("image1.png"));
+        let wdp = &doc.resources["hdphoto1.wdp"];
+        assert_eq!(wdp.role, ResourceRole::Layer);
+        assert_eq!(wdp.companion_of.as_deref(), Some("image1.png"));
+        assert_eq!(wdp.mime_type.as_deref(), Some("image/vnd.ms-photo"));
+
+        let images: Vec<_> = doc.sections[0]
+            .content
+            .iter()
+            .filter_map(|b| match b {
+                Block::Image {
+                    resource_id,
+                    alt_text,
+                    ..
+                } => Some((resource_id.as_str(), alt_text.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(images, [("image1.png", Some("Quarterly revenue"))]);
     }
 
     /// A one-slide deck whose slide points at `slideLayout1.xml`, with the layout's own

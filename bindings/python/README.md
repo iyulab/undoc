@@ -65,6 +65,10 @@ resource_ids = doc.get_resource_ids()
 for rid in resource_ids:
     # Get resource metadata
     info = doc.get_resource_info(rid)
+    # "primary": an image the document shows. "alternate" (a picture's SVG original) and
+    # "layer" (an HD Photo effects layer) belong to the primary named by companion_of.
+    if info["role"] != "primary":
+        continue
     print(f"Resource: {info['filename']} ({info['mime_type']})")
 
     # Get resource binary data

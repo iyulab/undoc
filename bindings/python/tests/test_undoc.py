@@ -461,17 +461,18 @@ class TestResources:
 
     def test_get_resource_info(self, docx_with_images):
         ids = docx_with_images.get_resource_ids()
-        if ids:
-            info = docx_with_images.get_resource_info(ids[0])
-            assert info is not None
-            assert "filename" in info
+        info = docx_with_images.get_resource_info(ids[0])
+        assert info is not None
+        assert info["filename"]
+        # The document shows this image; nothing makes it a companion of another.
+        assert info["role"] == "primary"
+        assert info["companion_of"] is None
 
     def test_get_resource_data(self, docx_with_images):
         ids = docx_with_images.get_resource_ids()
-        if ids:
-            data = docx_with_images.get_resource_data(ids[0])
-            assert data is not None
-            assert len(data) > 0
+        data = docx_with_images.get_resource_data(ids[0])
+        assert data is not None
+        assert len(data) > 0
 
     def test_get_nonexistent_resource(self, docx_with_images):
         info = docx_with_images.get_resource_info("nonexistent_id")

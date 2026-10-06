@@ -6,8 +6,8 @@ use crate::charts;
 use crate::container::OoxmlContainer;
 use crate::error::{Error, Result};
 use crate::model::{
-    Block, Cell, CellAlignment, Document, ListInfo, ListType, Metadata, Paragraph, Resource,
-    ResourceType, RevisionType, Row, Section, Table, TextAlignment, TextRun, TextStyle,
+    Block, Cell, CellAlignment, Document, InlineImage, ListInfo, ListType, Metadata, Paragraph,
+    Resource, RevisionType, Row, Section, Table, TextAlignment, TextRun, TextStyle,
     VerticalAlignment,
 };
 
@@ -660,8 +660,6 @@ impl DocxParser {
 
     /// Parse a single paragraph element.
     fn parse_paragraph(&mut self, xml: &str) -> Result<Paragraph> {
-        use crate::model::InlineImage;
-
         let mut para = Paragraph::new();
         let mut reader = crate::decode::reader_for(xml);
         // Don't trim text - preserve whitespace from xml:space="preserve" elements
@@ -709,6 +707,17 @@ impl DocxParser {
                         current_image_alt = None;
                     }
                     "w:pict" | "w:object" => in_pict = true,
+                    // A drawing or blip with children arrives as a start tag: a `wp:docPr`
+                    // holding a hyperlink, an `a:blip` holding the extension list that names
+                    // an SVG original or an effects layer. Read them like the empty forms.
+                    "wp:docPr" if in_drawing => {
+                        if let Some(alt) = drawing_description(e) {
+                            current_image_alt = Some(alt);
+                        }
+                    }
+                    "a:blip" if in_drawing => {
+                        para.images.extend(blip_image(e, &current_image_alt));
+                    }
                     // Tracked changes - insertions
                     "w:ins" => in_ins = true,
                     // Tracked changes - deletions
@@ -822,27 +831,13 @@ impl DocxParser {
                     }
                     // Image handling: wp:docPr contains alt text
                     "wp:docPr" if in_drawing => {
-                        for attr in e.attributes().flatten() {
-                            if attr.key.as_ref() == "descr" {
-                                current_image_alt = Some(attr.value.to_string());
-                            }
+                        if let Some(alt) = drawing_description(e) {
+                            current_image_alt = Some(alt);
                         }
                     }
                     // Image handling: a:blip contains the image reference
                     "a:blip" if in_drawing => {
-                        for attr in e.attributes().flatten() {
-                            if attr.key.as_ref() == "r:embed" {
-                                let rel_id = attr.value.to_string();
-                                // Create inline image with the relationship ID
-                                let image = InlineImage {
-                                    resource_id: rel_id,
-                                    alt_text: current_image_alt.clone(),
-                                    width: None,
-                                    height: None,
-                                };
-                                para.images.push(image);
-                            }
-                        }
+                        para.images.extend(blip_image(e, &current_image_alt));
                     }
                     // VML image handling: v:imagedata references the image part
                     "v:imagedata" if in_pict => {
@@ -1297,8 +1292,6 @@ impl DocxParser {
     /// Parse a table element.
     #[allow(clippy::only_used_in_recursion)] // &self needed for recursive nested table parsing
     fn parse_table(&self, xml: &str) -> Result<Table> {
-        use crate::model::InlineImage;
-
         let mut table = Table::new();
         let mut reader = crate::decode::reader_for(xml);
         // Don't trim text - preserve whitespace from xml:space="preserve" elements
@@ -1403,6 +1396,17 @@ impl DocxParser {
                             current_image_alt = None;
                         }
                         "w:pict" | "w:object" => in_pict = true,
+                        // Start-tag forms; see the paragraph parser.
+                        "wp:docPr" if in_drawing => {
+                            if let Some(alt) = drawing_description(e) {
+                                current_image_alt = Some(alt);
+                            }
+                        }
+                        "a:blip" if in_drawing => {
+                            if let Some(ref mut para) = current_paragraph {
+                                para.images.extend(blip_image(e, &current_image_alt));
+                            }
+                        }
                         "mc:Fallback" => mc_fallback_depth += 1,
                         _ => {}
                     }
@@ -1483,28 +1487,14 @@ impl DocxParser {
                         }
                         // Image handling: wp:docPr contains alt text
                         "wp:docPr" if in_drawing => {
-                            for attr in e.attributes().flatten() {
-                                if attr.key.as_ref() == "descr" {
-                                    current_image_alt = Some(attr.value.to_string());
-                                }
+                            if let Some(alt) = drawing_description(e) {
+                                current_image_alt = Some(alt);
                             }
                         }
                         // Image handling: a:blip contains the image reference
                         "a:blip" if in_drawing => {
-                            for attr in e.attributes().flatten() {
-                                if attr.key.as_ref() == "r:embed" {
-                                    let rel_id = attr.value.to_string();
-                                    // Create inline image with the relationship ID
-                                    let image = InlineImage {
-                                        resource_id: rel_id,
-                                        alt_text: current_image_alt.clone(),
-                                        width: None,
-                                        height: None,
-                                    };
-                                    if let Some(ref mut para) = current_paragraph {
-                                        para.images.push(image);
-                                    }
-                                }
+                            if let Some(ref mut para) = current_paragraph {
+                                para.images.extend(blip_image(e, &current_image_alt));
                             }
                         }
                         // VML image handling: skip mc:Fallback copies, which
@@ -1698,35 +1688,36 @@ impl DocxParser {
     }
 
     /// Extract embedded resources (images, etc.).
+    ///
+    /// Every image relationship of the main document part is listed, keyed by its
+    /// relationship id, and annotated with what the document's pictures say about it: a
+    /// picture's SVG original or HD Photo layer is a companion of the image it shows, not a
+    /// picture of its own (see [`crate::drawing`]).
     fn extract_resources(&self, doc: &mut Document) -> Result<()> {
+        const PART: &str = "word/document.xml";
+        let pictures = self
+            .container
+            .read_xml_optional(PART)?
+            .map(|xml| crate::drawing::scan_pictures(&xml))
+            .unwrap_or_default();
+
         for (id, rel) in &self.relationships.by_id {
-            if rel.rel_type.contains("/image") && !rel.external {
-                let path = OoxmlContainer::resolve_path("word/document.xml", &rel.target);
-                if let Ok(data) = self.container.read_binary(&path) {
-                    let size = data.len();
-                    let ext = std::path::Path::new(&path)
-                        .extension()
-                        .and_then(|e| e.to_str())
-                        .unwrap_or("");
-                    let resource = Resource {
-                        resource_type: ResourceType::from_extension(ext),
-                        filename: Some(
-                            std::path::Path::new(&path)
-                                .file_name()
-                                .unwrap_or_default()
-                                .to_string_lossy()
-                                .to_string(),
-                        ),
-                        mime_type: guess_mime_type(&path),
-                        data,
-                        size,
-                        width: None,
-                        height: None,
-                        alt_text: None,
-                    };
-                    doc.resources.insert(id.clone(), resource);
-                }
+            let is_image = rel.rel_type.contains("/image") || rel.rel_type.ends_with("/hdphoto");
+            if !is_image || rel.external {
+                continue;
             }
+            let path = OoxmlContainer::resolve_path(PART, &rel.target);
+            let Ok(data) = self.container.read_binary(&path) else {
+                continue;
+            };
+            let mut resource = Resource::from_part(&path, data);
+            if let Some((role, primary)) = pictures.companions.get(id) {
+                resource.role = *role;
+                resource.companion_of = Some(primary.clone());
+            } else {
+                resource.alt_text = pictures.alt_texts.get(id).cloned();
+            }
+            doc.resources.insert(id.clone(), resource);
         }
 
         Ok(())
@@ -1900,27 +1891,29 @@ fn escape_xml(s: &str) -> String {
         .replace('\'', "&apos;")
 }
 
-/// Guess MIME type from file extension.
-fn guess_mime_type(path: &str) -> Option<String> {
-    let ext = std::path::Path::new(path)
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.to_lowercase())?;
+/// The description of a drawing (`wp:docPr descr`), if it has a non-blank one.
+fn drawing_description(e: &quick_xml::events::BytesStart<'_>) -> Option<String> {
+    e.attributes()
+        .flatten()
+        .find(|a| a.key.as_ref() == "descr")
+        .map(|a| crate::decode::attr_value(&a))
+        .filter(|d| !d.trim().is_empty())
+}
 
-    Some(
-        match ext.as_str() {
-            "png" => "image/png",
-            "jpg" | "jpeg" => "image/jpeg",
-            "gif" => "image/gif",
-            "bmp" => "image/bmp",
-            "tiff" | "tif" => "image/tiff",
-            "svg" => "image/svg+xml",
-            "emf" => "image/x-emf",
-            "wmf" => "image/x-wmf",
-            _ => return None,
-        }
-        .to_string(),
-    )
+/// The image an `a:blip` shows: its `r:embed` relationship.
+fn blip_image(e: &quick_xml::events::BytesStart<'_>, alt: &Option<String>) -> Option<InlineImage> {
+    let rel_id = e
+        .attributes()
+        .flatten()
+        .find(|a| a.key.as_ref() == "r:embed")?
+        .value
+        .to_string();
+    Some(InlineImage {
+        resource_id: rel_id,
+        alt_text: alt.clone(),
+        width: None,
+        height: None,
+    })
 }
 
 /// Deduplicate repeated paragraph blocks within a table cell.
@@ -2712,6 +2705,89 @@ mod tests {
         assert!(resource.is_image());
         assert_eq!(resource.filename.as_deref(), Some("image1.png"));
         assert_eq!(resource.data, b"stand-in image bytes");
+    }
+
+    /// A picture whose `a:blip` carries an extension list (an SVG original, an HD Photo
+    /// layer) arrives as a start tag, not an empty one. It must still be an image — in a
+    /// body paragraph and in a table cell, which are read by separate paths — and its
+    /// companions must be marked as belonging to it.
+    #[test]
+    fn test_blip_with_extension_list_is_an_image_and_its_companions_are_marked() {
+        let picture = r#"<w:r><w:drawing><wp:inline><wp:docPr id="1" name="Picture 1" descr="Site plan"/><a:graphic><a:graphicData><pic:pic><pic:blipFill><a:blip r:embed="rIdPng"><a:extLst><a:ext uri="{BEBA8EAE-BF5A-486C-A8C5-ECC9F3942E4B}"><a14:imgProps><a14:imgLayer r:embed="rIdWdp"/></a14:imgProps></a:ext><a:ext uri="{96DAC541-7B7A-43D3-8B79-37D633B846F1}"><asvg:svgBlip r:embed="rIdSvg"/></a:ext></a:extLst></a:blip></pic:blipFill></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>"#;
+        let document_xml = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+            xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+            xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+            xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"
+            xmlns:a14="http://schemas.microsoft.com/office/drawing/2010/main"
+            xmlns:asvg="http://schemas.microsoft.com/office/drawing/2016/SVG/main"
+            xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <w:body>
+    <w:p>{picture}</w:p>
+    <w:tbl><w:tr><w:tc><w:p>{picture}</w:p></w:tc></w:tr></w:tbl>
+  </w:body>
+</w:document>"#
+        );
+        let rels = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rIdPng" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image1.png"/>
+  <Relationship Id="rIdSvg" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image2.svg"/>
+  <Relationship Id="rIdWdp" Type="http://schemas.microsoft.com/office/2007/relationships/hdphoto" Target="media/hdphoto1.wdp"/>
+</Relationships>"#;
+        let data = create_docx_with_parts(
+            &document_xml,
+            rels,
+            &[
+                ("word/media/image1.png", "png"),
+                ("word/media/image2.svg", "<svg/>"),
+                ("word/media/hdphoto1.wdp", "wdp"),
+            ],
+        );
+        let doc = DocxParser::from_bytes(data).unwrap().parse().unwrap();
+
+        let body_images: Vec<_> = doc.sections[0]
+            .content
+            .iter()
+            .filter_map(|b| match b {
+                Block::Paragraph(p) => Some(p.images.iter()),
+                _ => None,
+            })
+            .flatten()
+            .map(|i| (i.resource_id.as_str(), i.alt_text.as_deref()))
+            .collect();
+        assert_eq!(body_images, [("rIdPng", Some("Site plan"))]);
+
+        let cell_images: Vec<_> = doc.sections[0]
+            .content
+            .iter()
+            .filter_map(|b| match b {
+                Block::Table(t) => Some(t),
+                _ => None,
+            })
+            .flat_map(|t| t.rows.iter().flat_map(|r| r.cells.iter()))
+            .flat_map(|c| c.content.iter().flat_map(|p| p.images.iter()))
+            .map(|i| i.resource_id.as_str())
+            .collect();
+        assert_eq!(cell_images, ["rIdPng"]);
+
+        assert_eq!(doc.resources.len(), 3);
+        let png = &doc.resources["rIdPng"];
+        assert_eq!(png.role, crate::model::ResourceRole::Primary);
+        assert_eq!(png.alt_text.as_deref(), Some("Site plan"));
+        let svg = &doc.resources["rIdSvg"];
+        assert_eq!(svg.role, crate::model::ResourceRole::Alternate);
+        assert_eq!(svg.companion_of.as_deref(), Some("rIdPng"));
+        let wdp = &doc.resources["rIdWdp"];
+        assert_eq!(wdp.role, crate::model::ResourceRole::Layer);
+        assert_eq!(wdp.companion_of.as_deref(), Some("rIdPng"));
+
+        let md =
+            crate::render::to_markdown(&doc, &crate::render::RenderOptions::default()).unwrap();
+        assert!(
+            md.contains("Site plan"),
+            "the picture must reach Markdown:\n{md}"
+        );
     }
 
     /// Helper to create a minimal DOCX in memory with given document.xml content.

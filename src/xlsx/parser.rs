@@ -6,7 +6,7 @@ use crate::container::OoxmlContainer;
 use crate::decode::{normalize_line_endings, resolve_general_ref};
 use crate::error::{Error, Result};
 use crate::model::{
-    Block, Cell, CellAlignment, Document, InlineImage, Metadata, Paragraph, Resource, ResourceType,
+    Block, Cell, CellAlignment, Document, InlineImage, Metadata, Paragraph, Resource, ResourceRole,
     Row, Section, Table, TextRun,
 };
 use std::collections::HashMap;
@@ -1680,29 +1680,70 @@ impl XlsxParser {
     }
 
     /// Extract resources (images, media) from the workbook.
+    ///
+    /// Every part under `xl/media/` is listed, keyed by file name, and annotated with what
+    /// the drawings' pictures say about it: a picture's SVG original or HD Photo layer is a
+    /// companion of the image the picture shows (see [`crate::drawing`]).
     fn extract_resources(&self, doc: &mut Document) -> Result<()> {
         for file in self.container.list_files() {
-            if file.starts_with("xl/media/") {
-                if let Ok(data) = self.container.read_binary(&file) {
-                    let filename = file.rsplit('/').next().unwrap_or(&file).to_string();
-                    let ext = std::path::Path::new(&file)
-                        .extension()
-                        .and_then(|e| e.to_str())
-                        .unwrap_or("");
-                    let size = data.len();
-
-                    let resource = Resource {
-                        resource_type: ResourceType::from_extension(ext),
-                        filename: Some(filename.clone()),
-                        mime_type: guess_mime_type(&file),
-                        data,
-                        size,
-                        width: None,
-                        height: None,
-                        alt_text: None,
-                    };
-                    doc.resources.insert(filename, resource);
+            if !file.starts_with("xl/media/") {
+                continue;
+            }
+            if let Ok(data) = self.container.read_binary(&file) {
+                let resource = Resource::from_part(&file, data);
+                if let Some(name) = resource.filename.clone() {
+                    doc.resources.insert(name, resource);
                 }
+            }
+        }
+
+        // Companion file → (role, primary file), kept only while no picture shows it.
+        let mut companions: HashMap<String, (ResourceRole, String)> = HashMap::new();
+        let mut shown: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for drawing in self.container.list_files_with_prefix("xl/drawings/") {
+            if !drawing.ends_with(".xml") || drawing.contains("/_rels/") {
+                continue;
+            }
+            let Some(xml) = self.container.read_xml_optional(&drawing)? else {
+                continue;
+            };
+            let pictures = crate::drawing::scan_pictures(&xml);
+            let rels = self
+                .container
+                .read_optional_relationships_for_part(&drawing)?;
+            let file_of = |rel_id: &str| -> Option<String> {
+                let rel = rels.get(rel_id)?;
+                let path = OoxmlContainer::resolve_path(&drawing, &rel.target);
+                Some(path.rsplit('/').next().unwrap_or(&path).to_string())
+            };
+            for rel_id in &pictures.referenced {
+                let Some(name) = file_of(rel_id) else {
+                    continue;
+                };
+                match pictures.companions.get(rel_id) {
+                    Some((role, primary)) => {
+                        if let Some(primary) = file_of(primary) {
+                            companions.entry(name).or_insert((*role, primary));
+                        }
+                    }
+                    None => {
+                        if let Some(resource) = doc.resources.get_mut(&name) {
+                            if resource.alt_text.is_none() {
+                                resource.alt_text = pictures.alt_texts.get(rel_id).cloned();
+                            }
+                        }
+                        shown.insert(name);
+                    }
+                }
+            }
+        }
+        for (name, (role, primary)) in companions {
+            if shown.contains(&name) {
+                continue;
+            }
+            if let Some(resource) = doc.resources.get_mut(&name) {
+                resource.role = role;
+                resource.companion_of = Some(primary);
             }
         }
 
@@ -1722,22 +1763,6 @@ impl XlsxParser {
     /// Get sheet names.
     pub fn sheet_names(&self) -> Vec<&str> {
         self.sheets.iter().map(|s| s.name.as_str()).collect()
-    }
-}
-
-/// Guess MIME type from file path.
-fn guess_mime_type(path: &str) -> Option<String> {
-    let ext = path.rsplit('.').next()?.to_lowercase();
-    match ext.as_str() {
-        "png" => Some("image/png".to_string()),
-        "jpg" | "jpeg" => Some("image/jpeg".to_string()),
-        "gif" => Some("image/gif".to_string()),
-        "bmp" => Some("image/bmp".to_string()),
-        "tiff" | "tif" => Some("image/tiff".to_string()),
-        "svg" => Some("image/svg+xml".to_string()),
-        "wmf" => Some("image/x-wmf".to_string()),
-        "emf" => Some("image/x-emf".to_string()),
-        _ => None,
     }
 }
 
@@ -2528,6 +2553,39 @@ mod tests {
         );
         assert_eq!(row_texts(&table), vec![vec!["G", "b", ""], vec!["y", "z"]]);
         assert_eq!(table.column_count(), 3);
+    }
+
+    /// A drawing's picture with an SVG original: the PNG is the primary and carries the
+    /// picture's description, the SVG is its alternate.
+    #[test]
+    fn test_drawing_picture_companions_are_marked() {
+        let drawing = r#"<?xml version="1.0" encoding="UTF-8"?>
+<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+<xdr:oneCellAnchor><xdr:pic><xdr:nvPicPr><xdr:cNvPr id="2" name="Picture 1" descr="Logo"/><xdr:cNvPicPr/></xdr:nvPicPr>
+<xdr:blipFill><a:blip r:embed="rId1"><a:extLst><a:ext uri="{96DAC541-7B7A-43D3-8B79-37D633B846F1}"><asvg:svgBlip xmlns:asvg="http://schemas.microsoft.com/office/drawing/2016/SVG/main" r:embed="rId2"/></a:ext></a:extLst></a:blip></xdr:blipFill></xdr:pic></xdr:oneCellAnchor>
+</xdr:wsDr>"#;
+        let rels = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image1.png"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image2.svg"/>
+</Relationships>"#;
+        let mut parser = test_parser();
+        parser.container = OoxmlContainer::from_bytes(create_test_zip(&[
+            ("xl/drawings/drawing1.xml", drawing),
+            ("xl/drawings/_rels/drawing1.xml.rels", rels),
+            ("xl/media/image1.png", "png"),
+            ("xl/media/image2.svg", "<svg/>"),
+        ]))
+        .unwrap();
+        let mut doc = Document::new();
+        parser.extract_resources(&mut doc).unwrap();
+
+        let png = &doc.resources["image1.png"];
+        assert_eq!(png.role, ResourceRole::Primary);
+        assert_eq!(png.alt_text.as_deref(), Some("Logo"));
+        let svg = &doc.resources["image2.svg"];
+        assert_eq!(svg.role, ResourceRole::Alternate);
+        assert_eq!(svg.companion_of.as_deref(), Some("image1.png"));
     }
 
     /// Build an XLSX containing one "Place in Cell" rich-value image in B1.

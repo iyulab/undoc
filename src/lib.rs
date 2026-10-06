@@ -55,6 +55,7 @@ mod charts;
 pub mod container;
 mod decode;
 pub mod detect;
+mod drawing;
 pub mod error;
 pub mod model;
 pub mod streaming;
@@ -82,7 +83,7 @@ pub use detect::FormatType;
 pub use error::{Error, ErrorKind, Result};
 pub use model::{
     Block, Cell, CellAlignment, Document, HeadingLevel, ListInfo, ListType, Metadata, Paragraph,
-    Resource, ResourceType, Row, Section, Table, TextAlignment, TextRun, TextStyle,
+    Resource, ResourceRole, ResourceType, Row, Section, Table, TextAlignment, TextRun, TextStyle,
 };
 pub use render::SectionMarkerStyle;
 #[cfg(not(target_arch = "wasm32"))]

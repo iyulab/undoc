@@ -500,6 +500,19 @@ for (id, resource) in &doc.resources {
 }
 ```
 
+A picture can reference more than one file. Office writes a raster rendering beside a
+picture's SVG original, and stores artistic effects as an HD Photo layer (`.wdp`). Each
+resource says which it is: `role` is `Primary` for an image the document shows (or media
+it plays), `Alternate` for another encoding of one, and `Layer` for a layer composited onto
+one; `companion_of` names the primary. To take the images the document shows, keep the
+primaries:
+
+```rust
+use undoc::ResourceRole;
+
+let shown = doc.resources.iter().filter(|(_, r)| r.role == ResourceRole::Primary);
+```
+
 ### Streaming Pipeline
 
 Supported for PPTX (per slide) and XLSX (per sheet). DOCX is not yet supported.
@@ -572,7 +585,7 @@ string json = doc.ToJson(compact: false);
 
 // Resources
 string[] resourceIds = doc.GetResourceIds();
-JsonDocument? info = doc.GetResourceInfo("rId1");
+JsonDocument? info = doc.GetResourceInfo("rId1");   // role: primary | alternate | layer
 byte[]? imageData = doc.GetResourceData("rId1");
 ```
 

@@ -403,7 +403,12 @@ unparser_shared::export_string_getter!(
     /// # Returns
     ///
     /// JSON object with resource metadata:
-    /// `{"id":"rId1","type":"image","filename":"image1.png","mime_type":"image/png","size":1024,"width":800,"height":600,"alt_text":"Description"}`
+    /// `{"id":"rId1","type":"image","filename":"image1.png","mime_type":"image/png","size":1024,"width":800,"height":600,"alt_text":"Description","role":"primary","companion_of":null}`
+    ///
+    /// `role` is `"primary"` for an image the document shows (or media it plays),
+    /// `"alternate"` for another encoding of one (a picture's SVG original) and `"layer"` for
+    /// a layer composited onto one (an HD Photo effects layer); `companion_of` is the id of
+    /// the primary an alternate or layer belongs to.
     LAST_ERROR,
     undoc_get_resource_info(doc: UndocDocument, resource_id: *const c_char),
     {
@@ -421,7 +426,9 @@ unparser_shared::export_string_getter!(
                     "size": resource.size,
                     "width": resource.width,
                     "height": resource.height,
-                    "alt_text": resource.alt_text
+                    "alt_text": resource.alt_text,
+                    "role": resource.role,
+                    "companion_of": resource.companion_of
                 });
                 serde_json::to_string(&info).map_err(json_err)
             }
