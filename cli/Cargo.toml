@@ -1,6 +1,6 @@
 [package]
 name = "undoc-cli"
-version = "0.13.4"
+version = "0.14.0"
 edition = "2021"
 authors = ["iyulab"]
 description = "CLI for undoc - Microsoft Office document extraction"
@@ -13,7 +13,7 @@ name = "undoc"
 path = "src/main.rs"
 
 [dependencies]
-undoc = { version = "0.13.4", path = ".." }
+undoc = { version = "0.14.0", path = ".." }
 clap = { version = "4.5", features = ["derive"] }
 colored = "3.1"
 indicatif = "0.18"
