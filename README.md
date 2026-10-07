@@ -7,13 +7,14 @@
 [![CI](https://github.com/iyulab/undoc/actions/workflows/ci.yml/badge.svg)](https://github.com/iyulab/undoc/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A high-performance Rust library for extracting content from Microsoft Office documents (DOCX, XLSX, PPTX, and Word 97-2003 DOC) to Markdown, plain text, and JSON.
+A high-performance Rust library for extracting content from Microsoft Office documents (DOCX, XLSX, PPTX, and the 97-2003 DOC and XLS) to Markdown, plain text, and JSON.
 
 ## Features
 
-- **Multi-format support**: DOCX (Word), XLSX (Excel), PPTX (PowerPoint), and Word 97-2003
-  DOC — paragraphs, headings, tables and hyperlinks (encrypted files report `Encrypted`;
-  Word 6.0/95 files are not supported)
+- **Multi-format support**: DOCX (Word), XLSX (Excel), PPTX (PowerPoint), and the 97-2003
+  binary formats DOC and XLS — paragraphs, headings, tables, lists, notes and hyperlinks from
+  DOC; every worksheet's cells, dates, links and comments from XLS (encrypted files report
+  `Encrypted`; Word 6.0/95 and Excel 5.0/95 files are not supported)
 - **Multiple output formats**: Markdown, Plain Text, JSON (with full metadata)
 - **Structure preservation**: Headings, lists, tables, inline formatting
 - **Smart heading detection**: Style-based heading recognition (English/Korean)

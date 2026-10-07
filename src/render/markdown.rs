@@ -129,7 +129,7 @@ fn section_marker(
             Some(name) => format!("<!-- slide {}: {} -->", n, name),
             None => format!("<!-- slide {} -->", n),
         },
-        FormatType::Xlsx => match name.filter(|s| !s.is_empty()) {
+        FormatType::Xlsx | FormatType::Xls => match name.filter(|s| !s.is_empty()) {
             Some(name) => format!("<!-- sheet {}: {} -->", n, name),
             None => format!("<!-- sheet {} -->", n),
         },

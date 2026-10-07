@@ -10,8 +10,8 @@
 //!
 //! - **PPTX**: each slide is a separate event.
 //! - **XLSX**: each sheet is a separate event.
-//! - **DOCX** and **DOC**: the entire document is parsed and its sections are yielded as
-//!   events.
+//! - **DOCX**, **DOC** and **XLS**: the entire document is parsed and its sections are
+//!   yielded as events.
 //!
 //! ## Event order
 //!
@@ -181,6 +181,11 @@ where
         #[cfg(feature = "doc")]
         FormatType::Doc => {
             let mut parser = crate::doc::DocParser::open(path)?;
+            emit_parsed_document(parser.parse(), None, opts, f)
+        }
+        #[cfg(feature = "xls")]
+        FormatType::Xls => {
+            let mut parser = crate::xls::XlsParser::open(path)?;
             emit_parsed_document(parser.parse(), None, opts, f)
         }
         #[allow(unreachable_patterns)]

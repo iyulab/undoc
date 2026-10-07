@@ -103,7 +103,8 @@ mod tests {
             r#"[{"extension":"docx","name":"Word Document"},"#,
             r#"{"extension":"xlsx","name":"Excel Workbook"},"#,
             r#"{"extension":"pptx","name":"PowerPoint Presentation"},"#,
-            r#"{"extension":"doc","name":"Word 97-2003 Document"}]"#
+            r#"{"extension":"doc","name":"Word 97-2003 Document"},"#,
+            r#"{"extension":"xls","name":"Excel 97-2003 Workbook"}]"#
         );
         assert_eq!(
             supported_formats().expect("serialising a fixed list cannot fail"),

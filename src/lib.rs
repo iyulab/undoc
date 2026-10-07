@@ -49,6 +49,7 @@
 //! - `xlsx` (default): Excel spreadsheet support
 //! - `pptx` (default): PowerPoint presentation support
 //! - `doc` (default): Word 97-2003 binary document support
+//! - `xls` (default): Excel 97-2003 binary workbook support
 //! - `async`: Async I/O support with Tokio
 //! - `ffi`: C-ABI bindings for foreign language integration
 
@@ -59,7 +60,7 @@ pub mod detect;
 mod drawing;
 pub mod error;
 pub mod model;
-#[cfg(feature = "xlsx")]
+#[cfg(any(feature = "xlsx", feature = "xls"))]
 mod sheet;
 pub mod streaming;
 
@@ -74,6 +75,9 @@ pub mod pptx;
 
 #[cfg(feature = "doc")]
 pub mod doc;
+
+#[cfg(feature = "xls")]
+pub mod xls;
 
 pub mod render;
 
@@ -137,7 +141,18 @@ pub fn parse_file(path: impl AsRef<Path>) -> Result<Document> {
             let mut parser = doc::DocParser::open(path)?;
             parser.parse()
         }
-        #[cfg(not(all(feature = "docx", feature = "xlsx", feature = "pptx", feature = "doc")))]
+        #[cfg(feature = "xls")]
+        FormatType::Xls => {
+            let mut parser = xls::XlsParser::open(path)?;
+            parser.parse()
+        }
+        #[cfg(not(all(
+            feature = "docx",
+            feature = "xlsx",
+            feature = "pptx",
+            feature = "doc",
+            feature = "xls"
+        )))]
         _ => Err(Error::UnsupportedFormat(format!("{:?}", format))),
     }
 }
@@ -177,7 +192,18 @@ pub fn parse_bytes(data: &[u8]) -> Result<Document> {
             let mut parser = doc::DocParser::from_bytes(data.to_vec())?;
             parser.parse()
         }
-        #[cfg(not(all(feature = "docx", feature = "xlsx", feature = "pptx", feature = "doc")))]
+        #[cfg(feature = "xls")]
+        FormatType::Xls => {
+            let mut parser = xls::XlsParser::from_bytes(data.to_vec())?;
+            parser.parse()
+        }
+        #[cfg(not(all(
+            feature = "docx",
+            feature = "xlsx",
+            feature = "pptx",
+            feature = "doc",
+            feature = "xls"
+        )))]
         _ => Err(Error::UnsupportedFormat(format!("{:?}", format))),
     }
 }

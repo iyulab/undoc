@@ -54,6 +54,8 @@ pub enum FormatType {
     Pptx,
     /// Microsoft Word 97-2003 binary document (.doc)
     Doc,
+    /// Microsoft Excel 97-2003 binary workbook (.xls)
+    Xls,
 }
 
 impl FormatType {
@@ -64,11 +66,12 @@ impl FormatType {
     /// extension list on its side, and that copy goes quietly stale the moment the library
     /// learns a new format -- with nothing to notice the drift. Adding a variant without
     /// adding it here is caught by `all_variants_are_listed` below.
-    pub const ALL: [FormatType; 4] = [
+    pub const ALL: [FormatType; 5] = [
         FormatType::Docx,
         FormatType::Xlsx,
         FormatType::Pptx,
         FormatType::Doc,
+        FormatType::Xls,
     ];
 
     /// Returns the file extension for this format.
@@ -78,6 +81,7 @@ impl FormatType {
             FormatType::Xlsx => "xlsx",
             FormatType::Pptx => "pptx",
             FormatType::Doc => "doc",
+            FormatType::Xls => "xls",
         }
     }
 
@@ -88,6 +92,7 @@ impl FormatType {
             FormatType::Xlsx => "Excel Workbook",
             FormatType::Pptx => "PowerPoint Presentation",
             FormatType::Doc => "Word 97-2003 Document",
+            FormatType::Xls => "Excel 97-2003 Workbook",
         }
     }
 }
@@ -196,11 +201,14 @@ fn classify_cfb_container<R: Read + Seek>(reader: &mut R) -> Result<FormatType> 
     if container.exists("/WordDocument") {
         return Ok(FormatType::Doc);
     }
+    if container.exists("/Workbook") {
+        return Ok(FormatType::Xls);
+    }
 
-    // Well-known root streams of the pre-2007 binary formats not read yet. Checked only to
-    // make the message specific; absence of both does not make the file openable.
-    let legacy = if container.exists("/Workbook") || container.exists("/Book") {
-        Some("Excel 97-2003 (.xls)")
+    // Well-known root streams of the pre-2007 binary formats not read. Checked only to make
+    // the message specific; absence of both does not make the file openable.
+    let legacy = if container.exists("/Book") {
+        Some("Excel 5.0/95 (.xls, BIFF5)")
     } else if container.exists("/PowerPoint Document") {
         Some("PowerPoint 97-2003 (.ppt)")
     } else {
@@ -292,7 +300,11 @@ mod tests {
         // copy of the extension list from going quietly stale behind a new format.
         for format in FormatType::ALL {
             match format {
-                FormatType::Docx | FormatType::Xlsx | FormatType::Pptx | FormatType::Doc => {}
+                FormatType::Docx
+                | FormatType::Xlsx
+                | FormatType::Pptx
+                | FormatType::Doc
+                | FormatType::Xls => {}
             }
         }
 
@@ -301,7 +313,7 @@ mod tests {
         extensions.sort_unstable();
         extensions.dedup();
         assert_eq!(extensions.len(), FormatType::ALL.len());
-        assert_eq!(extensions, ["doc", "docx", "pptx", "xlsx"]);
+        assert_eq!(extensions, ["doc", "docx", "pptx", "xls", "xlsx"]);
 
         // Both fields are pinned here rather than only at the binding that serialises them:
         // this test runs on every host, whereas the wasm crate's does not always build
@@ -317,6 +329,7 @@ mod tests {
                 ("xlsx", "Excel Workbook"),
                 ("pptx", "PowerPoint Presentation"),
                 ("doc", "Word 97-2003 Document"),
+                ("xls", "Excel 97-2003 Workbook"),
             ]
         );
     }
@@ -432,9 +445,15 @@ mod tests {
     }
 
     #[test]
+    fn test_excel_binary_workbook_is_detected_as_xls() {
+        let format = detect_format_from_bytes(&cfb_with_streams(&["/Workbook"])).unwrap();
+        assert_eq!(format, FormatType::Xls);
+    }
+
+    #[test]
     fn test_legacy_binary_office_names_the_format_it_found() {
         for (stream, expected) in [
-            ("/Workbook", "Excel 97-2003"),
+            ("/Book", "Excel 5.0/95"),
             ("/PowerPoint Document", "PowerPoint 97-2003"),
         ] {
             let err = detect_format_from_bytes(&cfb_with_streams(&[stream])).unwrap_err();
