@@ -99,6 +99,7 @@ impl DocParser {
 
         let mut doc = Document::new();
         doc.format = FormatType::Doc;
+        doc.metadata = crate::summary::read(&mut container);
         let mut section = Section::new(0);
         let notes: Vec<&Note> = footnotes.iter().chain(&endnotes).collect();
         for block in Assembler::new(&papx, &chpx, &styles, &fonts, &list_table, &notes).run(&chars)

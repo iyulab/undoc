@@ -98,6 +98,7 @@ impl XlsParser {
         let globals = read_globals(&stream)?;
         let mut doc = Document::new();
         doc.format = FormatType::Xls;
+        doc.metadata = crate::summary::read(&mut container);
         for (index, entry) in globals.sheets.iter().enumerate() {
             let mut section = Section::new(index);
             section.name = Some(entry.name.clone());

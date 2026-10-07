@@ -249,6 +249,7 @@ impl PptParser {
 
         let mut doc = Document::new();
         doc.format = FormatType::Ppt;
+        doc.metadata = crate::summary::read(&mut container);
         for (index, (persist_ref, outline)) in slides.iter().enumerate() {
             let mut section = Section::new(index);
             section.name = Some(format!("Slide {}", index + 1));

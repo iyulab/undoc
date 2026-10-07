@@ -2236,6 +2236,7 @@ version = "0.15.0"
 dependencies = [
  "cfb",
  "criterion",
+ "encoding_rs",
  "quick-xml",
  "serde",
  "serde_json",

@@ -51,6 +51,7 @@
 //! - `doc` (default): Word 97-2003 binary document support
 //! - `xls` (default): Excel 97-2003 binary workbook support
 //! - `ppt` (default): PowerPoint 97-2003 binary presentation support
+//! - `codepages` (default): decode 97-2003 document properties in any Windows code page
 //! - `async`: Async I/O support with Tokio
 //! - `ffi`: C-ABI bindings for foreign language integration
 
@@ -64,6 +65,8 @@ pub mod model;
 #[cfg(any(feature = "xlsx", feature = "xls"))]
 mod sheet;
 pub mod streaming;
+#[cfg(any(feature = "doc", feature = "xls", feature = "ppt"))]
+mod summary;
 
 #[cfg(feature = "docx")]
 pub mod docx;

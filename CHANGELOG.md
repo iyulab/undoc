@@ -27,6 +27,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hyperlinks, and the slide's notes as the section's notes, as for `.pptx`. An encrypted
   presentation reports `Encrypted`. `FormatType::Ppt` is new. With `.doc` and `.xls`, every
   Office 97-2003 format is now read.
+- **Document properties of the 97-2003 formats.** Title, subject, author, keywords,
+  comments, last author, created and modified times, page and word counts and the
+  application are read from the summary property set into `Metadata`, as for the Office Open
+  XML formats. Strings in a multi-byte or non-Western code page (Shift-JIS, EUC-KR, Windows-1251,
+  ...) are decoded with the new default feature `codepages`; without it they are left empty
+  rather than shown as the wrong characters.
 - **A musl-linked Linux CLI on every release** (`undoc-linux-x86_64-musl-v<version>.tar.gz`),
   for systems without glibc.
 - **Prebuilt C-ABI libraries on every release.** Each GitHub Release now carries

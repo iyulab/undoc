@@ -20,7 +20,7 @@ rust-version = "1.88"
 crate-type = ["lib", "cdylib"]
 
 [features]
-default = ["docx", "xlsx", "pptx", "doc", "xls", "ppt", "refine"]
+default = ["docx", "xlsx", "pptx", "doc", "xls", "ppt", "codepages", "refine"]
 docx = []
 xlsx = []
 pptx = []
@@ -30,6 +30,10 @@ doc = []
 xls = []
 # PowerPoint 97-2003 binary presentations (.ppt).
 ppt = []
+# Decode 97-2003 document properties written in multi-byte and other single-byte Windows
+# code pages (932, 949, 1251, ...). Without it those properties are left empty; UTF-16,
+# UTF-8, Windows-1252 and plain ASCII are decoded either way.
+codepages = ["dep:encoding_rs"]
 async = ["tokio"]
 ffi = []
 # Shape-refinement pass (RenderOptions.refine). Enables unparser-shared's
@@ -69,6 +73,9 @@ unparser-shared = { version = "0.3", default-features = false }
 # Text processing
 unicode-normalization = "0.1"
 unicode-width = "0.2"
+
+# Optional: Windows code pages for 97-2003 document properties (feature `codepages`)
+encoding_rs = { version = "0.8", optional = true }
 
 # Optional: Async
 tokio = { version = "1.42", features = ["rt", "fs"], optional = true }
