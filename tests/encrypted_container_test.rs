@@ -45,17 +45,17 @@ fn parsing_an_ecma376_encrypted_package_reports_encrypted() {
 /// A legacy binary format the library does not read is named as unsupported.
 #[test]
 fn parsing_a_legacy_binary_format_not_read_reports_an_unsupported_format() {
-    let ppt = cfb_with_streams(&["/PowerPoint Document"]);
+    let biff5 = cfb_with_streams(&["/Book"]);
     let encrypted = cfb_with_streams(&["/EncryptedPackage"]);
 
-    assert_eq!(ppt[..CFB_MAGIC.len()], CFB_MAGIC);
+    assert_eq!(biff5[..CFB_MAGIC.len()], CFB_MAGIC);
     assert_eq!(encrypted[..CFB_MAGIC.len()], CFB_MAGIC);
 
-    let err = parse_bytes(&ppt).expect_err("a legacy presentation is not read");
+    let err = parse_bytes(&biff5).expect_err("an Excel 5.0/95 workbook is not read");
 
     assert_eq!(err.kind(), ErrorKind::UnsupportedFormat, "got: {err}");
     assert!(
-        err.to_string().contains("PowerPoint 97-2003"),
+        err.to_string().contains("Excel 5.0/95"),
         "the format should be named: {err}"
     );
 }
@@ -75,7 +75,7 @@ fn an_empty_word_stream_is_a_damaged_document() {
 #[test]
 fn the_two_cfb_answers_are_distinguishable() {
     let encrypted = parse_bytes(&cfb_with_streams(&["/EncryptedPackage"])).unwrap_err();
-    let legacy = parse_bytes(&cfb_with_streams(&["/PowerPoint Document"])).unwrap_err();
+    let legacy = parse_bytes(&cfb_with_streams(&["/Book"])).unwrap_err();
 
     assert_ne!(encrypted.kind(), legacy.kind());
 }

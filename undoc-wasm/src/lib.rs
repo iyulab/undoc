@@ -104,7 +104,8 @@ mod tests {
             r#"{"extension":"xlsx","name":"Excel Workbook"},"#,
             r#"{"extension":"pptx","name":"PowerPoint Presentation"},"#,
             r#"{"extension":"doc","name":"Word 97-2003 Document"},"#,
-            r#"{"extension":"xls","name":"Excel 97-2003 Workbook"}]"#
+            r#"{"extension":"xls","name":"Excel 97-2003 Workbook"},"#,
+            r#"{"extension":"ppt","name":"PowerPoint 97-2003 Presentation"}]"#
         );
         assert_eq!(
             supported_formats().expect("serialising a fixed list cannot fail"),

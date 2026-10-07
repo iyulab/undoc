@@ -56,6 +56,8 @@ pub enum FormatType {
     Doc,
     /// Microsoft Excel 97-2003 binary workbook (.xls)
     Xls,
+    /// Microsoft PowerPoint 97-2003 binary presentation (.ppt)
+    Ppt,
 }
 
 impl FormatType {
@@ -66,12 +68,13 @@ impl FormatType {
     /// extension list on its side, and that copy goes quietly stale the moment the library
     /// learns a new format -- with nothing to notice the drift. Adding a variant without
     /// adding it here is caught by `all_variants_are_listed` below.
-    pub const ALL: [FormatType; 5] = [
+    pub const ALL: [FormatType; 6] = [
         FormatType::Docx,
         FormatType::Xlsx,
         FormatType::Pptx,
         FormatType::Doc,
         FormatType::Xls,
+        FormatType::Ppt,
     ];
 
     /// Returns the file extension for this format.
@@ -82,6 +85,7 @@ impl FormatType {
             FormatType::Pptx => "pptx",
             FormatType::Doc => "doc",
             FormatType::Xls => "xls",
+            FormatType::Ppt => "ppt",
         }
     }
 
@@ -93,6 +97,7 @@ impl FormatType {
             FormatType::Pptx => "PowerPoint Presentation",
             FormatType::Doc => "Word 97-2003 Document",
             FormatType::Xls => "Excel 97-2003 Workbook",
+            FormatType::Ppt => "PowerPoint 97-2003 Presentation",
         }
     }
 }
@@ -204,16 +209,15 @@ fn classify_cfb_container<R: Read + Seek>(reader: &mut R) -> Result<FormatType> 
     if container.exists("/Workbook") {
         return Ok(FormatType::Xls);
     }
+    if container.exists("/PowerPoint Document") {
+        return Ok(FormatType::Ppt);
+    }
 
     // Well-known root streams of the pre-2007 binary formats not read. Checked only to make
     // the message specific; absence of both does not make the file openable.
-    let legacy = if container.exists("/Book") {
-        Some("Excel 5.0/95 (.xls, BIFF5)")
-    } else if container.exists("/PowerPoint Document") {
-        Some("PowerPoint 97-2003 (.ppt)")
-    } else {
-        None
-    };
+    let legacy = container
+        .exists("/Book")
+        .then_some("Excel 5.0/95 (.xls, BIFF5)");
 
     Err(Error::UnsupportedFormat(match legacy {
         Some(format) => format!("legacy binary Office format: {format}"),
@@ -304,7 +308,8 @@ mod tests {
                 | FormatType::Xlsx
                 | FormatType::Pptx
                 | FormatType::Doc
-                | FormatType::Xls => {}
+                | FormatType::Xls
+                | FormatType::Ppt => {}
             }
         }
 
@@ -313,7 +318,7 @@ mod tests {
         extensions.sort_unstable();
         extensions.dedup();
         assert_eq!(extensions.len(), FormatType::ALL.len());
-        assert_eq!(extensions, ["doc", "docx", "pptx", "xls", "xlsx"]);
+        assert_eq!(extensions, ["doc", "docx", "ppt", "pptx", "xls", "xlsx"]);
 
         // Both fields are pinned here rather than only at the binding that serialises them:
         // this test runs on every host, whereas the wasm crate's does not always build
@@ -330,6 +335,7 @@ mod tests {
                 ("pptx", "PowerPoint Presentation"),
                 ("doc", "Word 97-2003 Document"),
                 ("xls", "Excel 97-2003 Workbook"),
+                ("ppt", "PowerPoint 97-2003 Presentation"),
             ]
         );
     }
@@ -451,24 +457,27 @@ mod tests {
     }
 
     #[test]
-    fn test_legacy_binary_office_names_the_format_it_found() {
-        for (stream, expected) in [
-            ("/Book", "Excel 5.0/95"),
-            ("/PowerPoint Document", "PowerPoint 97-2003"),
-        ] {
-            let err = detect_format_from_bytes(&cfb_with_streams(&[stream])).unwrap_err();
+    fn test_powerpoint_binary_presentation_is_detected_as_ppt() {
+        let format =
+            detect_format_from_bytes(&cfb_with_streams(&["/PowerPoint Document"])).unwrap();
+        assert_eq!(format, FormatType::Ppt);
+    }
 
-            assert_eq!(
-                err.kind(),
-                crate::ErrorKind::UnsupportedFormat,
-                "{stream} got: {err}"
-            );
-            let message = err.to_string();
-            assert!(
-                message.contains(expected),
-                "{stream} should be named in: {message}"
-            );
-        }
+    /// The one binary Office layout not read — Excel 5.0/95 — is named, not just refused.
+    #[test]
+    fn test_legacy_binary_office_names_the_format_it_found() {
+        let err = detect_format_from_bytes(&cfb_with_streams(&["/Book"])).unwrap_err();
+
+        assert_eq!(
+            err.kind(),
+            crate::ErrorKind::UnsupportedFormat,
+            "got: {err}"
+        );
+        let message = err.to_string();
+        assert!(
+            message.contains("Excel 5.0/95"),
+            "should be named in: {message}"
+        );
     }
 
     /// The branch that exists for a container whose header proves it is an Office file

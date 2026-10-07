@@ -22,6 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   formats), booleans, errors and formula results, external hyperlinks, and cell comments.
   Chart sheets are skipped. An encrypted workbook reports `Encrypted`; an Excel 5.0/95
   (BIFF5) workbook reports `UnsupportedFormat` naming it. `FormatType::Xls` is new.
+- **PowerPoint 97-2003 presentations (.ppt).** Each slide becomes a section, in presentation
+  order, with its text in drawing order — placeholders and text boxes — titles as headings,
+  hyperlinks, and the slide's notes as the section's notes, as for `.pptx`. An encrypted
+  presentation reports `Encrypted`. `FormatType::Ppt` is new. With `.doc` and `.xls`, every
+  Office 97-2003 format is now read.
 - **A musl-linked Linux CLI on every release** (`undoc-linux-x86_64-musl-v<version>.tar.gz`),
   for systems without glibc.
 - **Prebuilt C-ABI libraries on every release.** Each GitHub Release now carries

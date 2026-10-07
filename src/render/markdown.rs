@@ -125,7 +125,7 @@ fn section_marker(
     }
     let n = idx + 1;
     match format {
-        FormatType::Pptx => match name.filter(|s| !s.is_empty()) {
+        FormatType::Pptx | FormatType::Ppt => match name.filter(|s| !s.is_empty()) {
             Some(name) => format!("<!-- slide {}: {} -->", n, name),
             None => format!("<!-- slide {} -->", n),
         },

@@ -50,6 +50,7 @@
 //! - `pptx` (default): PowerPoint presentation support
 //! - `doc` (default): Word 97-2003 binary document support
 //! - `xls` (default): Excel 97-2003 binary workbook support
+//! - `ppt` (default): PowerPoint 97-2003 binary presentation support
 //! - `async`: Async I/O support with Tokio
 //! - `ffi`: C-ABI bindings for foreign language integration
 
@@ -78,6 +79,9 @@ pub mod doc;
 
 #[cfg(feature = "xls")]
 pub mod xls;
+
+#[cfg(feature = "ppt")]
+pub mod ppt;
 
 pub mod render;
 
@@ -146,12 +150,18 @@ pub fn parse_file(path: impl AsRef<Path>) -> Result<Document> {
             let mut parser = xls::XlsParser::open(path)?;
             parser.parse()
         }
+        #[cfg(feature = "ppt")]
+        FormatType::Ppt => {
+            let mut parser = ppt::PptParser::open(path)?;
+            parser.parse()
+        }
         #[cfg(not(all(
             feature = "docx",
             feature = "xlsx",
             feature = "pptx",
             feature = "doc",
-            feature = "xls"
+            feature = "xls",
+            feature = "ppt"
         )))]
         _ => Err(Error::UnsupportedFormat(format!("{:?}", format))),
     }
@@ -197,12 +207,18 @@ pub fn parse_bytes(data: &[u8]) -> Result<Document> {
             let mut parser = xls::XlsParser::from_bytes(data.to_vec())?;
             parser.parse()
         }
+        #[cfg(feature = "ppt")]
+        FormatType::Ppt => {
+            let mut parser = ppt::PptParser::from_bytes(data.to_vec())?;
+            parser.parse()
+        }
         #[cfg(not(all(
             feature = "docx",
             feature = "xlsx",
             feature = "pptx",
             feature = "doc",
-            feature = "xls"
+            feature = "xls",
+            feature = "ppt"
         )))]
         _ => Err(Error::UnsupportedFormat(format!("{:?}", format))),
     }

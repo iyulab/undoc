@@ -20,7 +20,7 @@ rust-version = "1.88"
 crate-type = ["lib", "cdylib"]
 
 [features]
-default = ["docx", "xlsx", "pptx", "doc", "xls", "refine"]
+default = ["docx", "xlsx", "pptx", "doc", "xls", "ppt", "refine"]
 docx = []
 xlsx = []
 pptx = []
@@ -28,6 +28,8 @@ pptx = []
 doc = []
 # Excel 97-2003 binary workbooks (.xls, BIFF8).
 xls = []
+# PowerPoint 97-2003 binary presentations (.ppt).
+ppt = []
 async = ["tokio"]
 ffi = []
 # Shape-refinement pass (RenderOptions.refine). Enables unparser-shared's

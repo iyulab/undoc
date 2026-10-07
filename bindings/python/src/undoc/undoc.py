@@ -130,7 +130,7 @@ def parse_file(path: Union[str, Path]) -> "Undoc":
     """Parse a document from a file path.
 
     Args:
-        path: Path to the document file (.docx, .xlsx, .pptx, .doc, or .xls)
+        path: Path to the document file (.docx, .xlsx, .pptx, .doc, .xls, or .ppt)
 
     Returns:
         Undoc: Parsed document object
