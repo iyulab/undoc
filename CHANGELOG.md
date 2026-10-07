@@ -25,6 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A paragraph indented with a tab is not a code block.** Markdown reads a first line that
+  opens with a tab or four spaces as indented code, so a `.docx` paragraph starting at a tab
+  stop came out as a code block. The indentation is dropped; a paragraph of nothing but
+  spaces is kept as the document's own spacing.
 - **A musl-linked CLI updates itself to the musl build.** `update` chose its archive by OS
   and architecture alone, so a CLI built for musl (the one that runs on Alpine and other
   systems without glibc) replaced itself with the glibc build, which does not start there.

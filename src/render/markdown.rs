@@ -570,6 +570,7 @@ fn render_paragraph(
         in_table_cell: false,
         suppress_emphasis: suppress_heading_emphasis,
     };
+    let body_start = output.len();
     for (i, run) in merged_para.runs.iter().enumerate() {
         let after = merged_para
             .runs
@@ -577,6 +578,16 @@ fn render_paragraph(
             .and_then(|next| next.text.chars().next());
         let run_text = render_run(run, options, run_ctx, output.chars().next_back(), after);
         output.push_str(&run_text);
+    }
+    // Markdown has no paragraph indentation: a first line opening with a tab or four
+    // spaces is an indented code block, so a paragraph indented with a tab stop would
+    // come out as code. The indentation carries no text, so it is dropped — from a line
+    // with text after it only: a paragraph of nothing but spaces is the document's own
+    // spacing, kept as it is, and cannot open a code block.
+    let rest = output[body_start..].trim_start_matches([' ', '\t']);
+    if !rest.is_empty() {
+        let indent = output.len() - body_start - rest.len();
+        output.replace_range(body_start..body_start + indent, "");
     }
 
     // Render inline images
@@ -1411,6 +1422,28 @@ mod tests {
             "refine should normalize backslashes to forward slashes: {md:?}"
         );
         assert!(!md.contains('\\'), "no backslash should remain: {md:?}");
+    }
+
+    /// A paragraph indented with a tab stop (or spaces) is not a code block: CommonMark reads
+    /// a first line opening with a tab or four spaces as indented code, and the indentation
+    /// is layout the Markdown cannot carry anyway.
+    #[test]
+    fn test_paragraph_indentation_is_not_an_indented_code_block() {
+        let mut doc = Document::new();
+        let mut section = Section::new(0);
+        section.add_paragraph(Paragraph::with_text("\tGBP - £"));
+        section.add_paragraph(Paragraph::with_text("      six spaces"));
+        section.add_paragraph(Paragraph::heading(HeadingLevel::H1, "\tMolière"));
+        doc.add_section(section);
+
+        let md = to_markdown(&doc, &RenderOptions::default()).unwrap();
+        assert!(
+            md.contains("\nGBP - £") || md.starts_with("GBP - £"),
+            "{md:?}"
+        );
+        assert!(md.contains("\nsix spaces"), "{md:?}");
+        assert!(md.contains("# Molière"), "{md:?}");
+        assert!(!md.contains('\t'), "{md:?}");
     }
 
     #[test]
