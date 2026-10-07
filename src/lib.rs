@@ -48,6 +48,7 @@
 //! - `docx` (default): Word document support
 //! - `xlsx` (default): Excel spreadsheet support
 //! - `pptx` (default): PowerPoint presentation support
+//! - `doc` (default): Word 97-2003 binary document support
 //! - `async`: Async I/O support with Tokio
 //! - `ffi`: C-ABI bindings for foreign language integration
 
@@ -56,10 +57,10 @@ pub mod container;
 mod decode;
 pub mod detect;
 mod drawing;
-#[cfg(feature = "xlsx")]
-mod sheet;
 pub mod error;
 pub mod model;
+#[cfg(feature = "xlsx")]
+mod sheet;
 pub mod streaming;
 
 #[cfg(feature = "docx")]
@@ -70,6 +71,9 @@ pub mod xlsx;
 
 #[cfg(feature = "pptx")]
 pub mod pptx;
+
+#[cfg(feature = "doc")]
+pub mod doc;
 
 pub mod render;
 
@@ -128,7 +132,12 @@ pub fn parse_file(path: impl AsRef<Path>) -> Result<Document> {
             let mut parser = pptx::PptxParser::open(path)?;
             parser.parse()
         }
-        #[cfg(not(all(feature = "docx", feature = "xlsx", feature = "pptx")))]
+        #[cfg(feature = "doc")]
+        FormatType::Doc => {
+            let mut parser = doc::DocParser::open(path)?;
+            parser.parse()
+        }
+        #[cfg(not(all(feature = "docx", feature = "xlsx", feature = "pptx", feature = "doc")))]
         _ => Err(Error::UnsupportedFormat(format!("{:?}", format))),
     }
 }
@@ -163,7 +172,12 @@ pub fn parse_bytes(data: &[u8]) -> Result<Document> {
             let mut parser = pptx::PptxParser::from_bytes(data.to_vec())?;
             parser.parse()
         }
-        #[cfg(not(all(feature = "docx", feature = "xlsx", feature = "pptx")))]
+        #[cfg(feature = "doc")]
+        FormatType::Doc => {
+            let mut parser = doc::DocParser::from_bytes(data.to_vec())?;
+            parser.parse()
+        }
+        #[cfg(not(all(feature = "docx", feature = "xlsx", feature = "pptx", feature = "doc")))]
         _ => Err(Error::UnsupportedFormat(format!("{:?}", format))),
     }
 }

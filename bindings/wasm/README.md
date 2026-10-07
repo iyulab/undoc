@@ -22,7 +22,7 @@ import { parse } from '@iyulab/undoc';
 const bytes = new Uint8Array(await file.arrayBuffer());
 const doc = parse(bytes);
 
-console.log(doc.format());       // "docx" | "xlsx" | "pptx"
+console.log(doc.format());       // "docx" | "xlsx" | "pptx" | "doc"
 console.log(doc.toMarkdown());   // Markdown string
 console.log(doc.toText());       // Plain text string
 console.log(doc.toJson());       // JSON string
@@ -40,7 +40,8 @@ import { supportedFormats } from '@iyulab/undoc';
 JSON.parse(supportedFormats());
 // [{ extension: "docx", name: "Word Document" },
 //  { extension: "xlsx", name: "Excel Workbook" },
-//  { extension: "pptx", name: "PowerPoint Presentation" }]
+//  { extension: "pptx", name: "PowerPoint Presentation" },
+//  { extension: "doc", name: "Word 97-2003 Document" }]
 ```
 
 Ask rather than hardcoding the extensions on your side — a local copy of the list goes stale
@@ -55,7 +56,7 @@ Parse a DOCX, XLSX, or PPTX byte array. Throws if the format is unrecognized.
 | Method | Returns | Description |
 |--------|---------|-------------|
 | `fromBytes(data)` | `OfficeDocument` | Alias for module-level `parse()` |
-| `format()` | `string` | `"docx"` \| `"xlsx"` \| `"pptx"` |
+| `format()` | `string` | `"docx"` \| `"xlsx"` \| `"pptx"` \| `"doc"` |
 | `toMarkdown()` | `string` | Full document as Markdown |
 | `toText()` | `string` | Plain text extraction |
 | `toJson()` | `string` | Structured JSON |

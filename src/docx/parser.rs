@@ -149,81 +149,13 @@ impl DocxParser {
     pub fn for_each_section<F>(
         &mut self,
         opts: crate::streaming::SectionStreamOptions,
-        mut f: F,
+        f: F,
     ) -> crate::error::Result<()>
     where
         F: FnMut(crate::streaming::ParseEvent<'_>) -> std::ops::ControlFlow<()>,
     {
         let metadata = self.parse_metadata()?;
-
-        // Parse the complete document first so we can report section_count and
-        // build the image_map before emitting DocumentStart.
-        let doc = match self.parse() {
-            Ok(d) => d,
-            Err(e) if opts.lenient => {
-                // Emit a degenerate stream with a single failure. `Break` ends it at any
-                // point, as it does on every event of the PPTX and XLSX streams.
-                if f(crate::streaming::ParseEvent::DocumentStart {
-                    metadata: &metadata,
-                    section_count: 0,
-                    image_map: HashMap::new(),
-                })
-                .is_break()
-                {
-                    return Ok(());
-                }
-                if f(crate::streaming::ParseEvent::SectionFailed { index: 0, error: e }).is_break()
-                {
-                    return Ok(());
-                }
-                // The last event: nothing follows that a `Break` could stop.
-                let _ = f(crate::streaming::ParseEvent::DocumentEnd);
-                return Ok(());
-            }
-            Err(e) => return Err(e),
-        };
-
-        let image_map: HashMap<String, String> = doc
-            .resources
-            .iter()
-            .filter_map(|(id, r)| r.filename.as_ref().map(|name| (id.clone(), name.clone())))
-            .collect();
-
-        if f(crate::streaming::ParseEvent::DocumentStart {
-            metadata: &metadata,
-            section_count: doc.sections.len(),
-            image_map,
-        })
-        .is_break()
-        {
-            return Ok(());
-        }
-
-        for section in &doc.sections {
-            if f(crate::streaming::ParseEvent::SectionParsed(section)).is_break() {
-                return Ok(());
-            }
-        }
-
-        if f(crate::streaming::ParseEvent::DocumentEnd).is_break() {
-            return Ok(());
-        }
-
-        if opts.extract_resources {
-            for (id, resource) in doc.resources {
-                let name = resource.filename.clone().unwrap_or(id);
-                if f(crate::streaming::ParseEvent::ResourceExtracted {
-                    name,
-                    data: resource.data,
-                })
-                .is_break()
-                {
-                    return Ok(());
-                }
-            }
-        }
-
-        Ok(())
+        crate::streaming::emit_parsed_document(self.parse(), Some(metadata), opts, f)
     }
 
     /// Parse document metadata from docProps/core.xml.

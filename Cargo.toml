@@ -20,10 +20,12 @@ rust-version = "1.88"
 crate-type = ["lib", "cdylib"]
 
 [features]
-default = ["docx", "xlsx", "pptx", "refine"]
+default = ["docx", "xlsx", "pptx", "doc", "refine"]
 docx = []
 xlsx = []
 pptx = []
+# Word 97-2003 binary documents (.doc), read through the CFB container `cfb` already opens.
+doc = []
 async = ["tokio"]
 ffi = []
 # Shape-refinement pass (RenderOptions.refine). Enables unparser-shared's

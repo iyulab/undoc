@@ -133,7 +133,7 @@ fn section_marker(
             Some(name) => format!("<!-- sheet {}: {} -->", n, name),
             None => format!("<!-- sheet {} -->", n),
         },
-        FormatType::Docx => String::new(),
+        FormatType::Docx | FormatType::Doc => String::new(),
     }
 }
 

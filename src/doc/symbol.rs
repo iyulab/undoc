@@ -1,0 +1,101 @@
+//! Symbol-font characters: Word stores a character set in a symbol font as a private-use code
+//! (`U+F000` + the font's own code) named by `sprmCSymbol`. For the Symbol font the code is
+//! in Adobe's Symbol encoding, which has a published Unicode mapping; other symbol fonts
+//! (Wingdings and the like) have none, so their characters stay as Word stores them.
+
+use super::fib::FcLcb;
+
+/// The font names of the font table ([MS-DOC] 2.9.284 `SttbfFfn`), by font index. An
+/// unreadable table yields none — fonts only refine symbol characters.
+pub(super) fn read_font_names(table: &[u8], sttbf_ffn: FcLcb) -> Vec<String> {
+    let start = sttbf_ffn.fc as usize;
+    let Some(data) = table.get(start..start + sttbf_ffn.lcb as usize) else {
+        return Vec::new();
+    };
+    let Some(count) = data.get(0..2).map(|b| u16::from_le_bytes([b[0], b[1]])) else {
+        return Vec::new();
+    };
+    let mut names = Vec::with_capacity(count as usize);
+    let mut at = 4;
+    for _ in 0..count {
+        let Some(&size) = data.get(at) else { break };
+        let ffn = data.get(at + 1..at + 1 + size as usize).unwrap_or(&[]);
+        at += 1 + size as usize;
+        // `xszFfn` follows the 39 fixed bytes of the FFN: a NUL-terminated UTF-16 name.
+        let units: Vec<u16> = ffn
+            .get(39..)
+            .unwrap_or(&[])
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|&c| u16::from_le_bytes(c))
+            .take_while(|&u| u != 0)
+            .collect();
+        names.push(String::from_utf16_lossy(&units));
+    }
+    names
+}
+
+/// The character a symbol-font code stands for.
+pub(super) fn resolve(font: Option<&str>, xchar: u16) -> Option<char> {
+    let symbol_font = font.is_some_and(|f| f.eq_ignore_ascii_case("Symbol"));
+    let code = match xchar {
+        0xF000..=0xF0FF => (xchar & 0xFF) as usize,
+        // Not a private-use code: the character itself.
+        _ => return char::from_u32(xchar as u32),
+    };
+    if symbol_font {
+        if let Some(c) = char::from_u32(SYMBOL_UNICODE[code]).filter(|&c| c != '\0') {
+            return Some(c);
+        }
+    }
+    char::from_u32(xchar as u32)
+}
+
+/// Adobe's Symbol encoding, code -> Unicode scalar value (0 = unmapped). From the Unicode
+/// Consortium's Adobe vendor mapping (`VENDORS/ADOBE/symbol.txt`), Copyright (c) 1991-2011
+/// Unicode, Inc., which grants the right to use it in products supporting the Unicode
+/// Standard.
+static SYMBOL_UNICODE: [u32; 256] = [
+    0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000,
+    0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000,
+    0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0020, 0x0021, 0x2200, 0x0023,
+    0x2203, 0x0025, 0x0026, 0x220B, 0x0028, 0x0029, 0x2217, 0x002B, 0x002C, 0x2212, 0x002E, 0x002F,
+    0x0030, 0x0031, 0x0032, 0x0033, 0x0034, 0x0035, 0x0036, 0x0037, 0x0038, 0x0039, 0x003A, 0x003B,
+    0x003C, 0x003D, 0x003E, 0x003F, 0x2245, 0x0391, 0x0392, 0x03A7, 0x0394, 0x0395, 0x03A6, 0x0393,
+    0x0397, 0x0399, 0x03D1, 0x039A, 0x039B, 0x039C, 0x039D, 0x039F, 0x03A0, 0x0398, 0x03A1, 0x03A3,
+    0x03A4, 0x03A5, 0x03C2, 0x03A9, 0x039E, 0x03A8, 0x0396, 0x005B, 0x2234, 0x005D, 0x22A5, 0x005F,
+    0x0000, 0x03B1, 0x03B2, 0x03C7, 0x03B4, 0x03B5, 0x03C6, 0x03B3, 0x03B7, 0x03B9, 0x03D5, 0x03BA,
+    0x03BB, 0x00B5, 0x03BD, 0x03BF, 0x03C0, 0x03B8, 0x03C1, 0x03C3, 0x03C4, 0x03C5, 0x03D6, 0x03C9,
+    0x03BE, 0x03C8, 0x03B6, 0x007B, 0x007C, 0x007D, 0x223C, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000,
+    0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000,
+    0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000,
+    0x0000, 0x0000, 0x0000, 0x0000, 0x20AC, 0x03D2, 0x2032, 0x2264, 0x2044, 0x221E, 0x0192, 0x2663,
+    0x2666, 0x2665, 0x2660, 0x2194, 0x2190, 0x2191, 0x2192, 0x2193, 0x00B0, 0x00B1, 0x2033, 0x2265,
+    0x00D7, 0x221D, 0x2202, 0x2022, 0x00F7, 0x2260, 0x2261, 0x2248, 0x2026, 0x0000, 0x0000, 0x21B5,
+    0x2135, 0x2111, 0x211C, 0x2118, 0x2297, 0x2295, 0x2205, 0x2229, 0x222A, 0x2283, 0x2287, 0x2284,
+    0x2282, 0x2286, 0x2208, 0x2209, 0x2220, 0x2207, 0x0000, 0x0000, 0x0000, 0x220F, 0x221A, 0x22C5,
+    0x00AC, 0x2227, 0x2228, 0x21D4, 0x21D0, 0x21D1, 0x21D2, 0x21D3, 0x25CA, 0x2329, 0x0000, 0x0000,
+    0x0000, 0x2211, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000,
+    0x0000, 0x232A, 0x222B, 0x2320, 0x0000, 0x2321, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000,
+    0x0000, 0x0000, 0x0000, 0x0000,
+];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn symbol_font_codes_map_through_the_symbol_encoding() {
+        assert_eq!(resolve(Some("Symbol"), 0xF061), Some('α'));
+        assert_eq!(resolve(Some("symbol"), 0xF028), Some('('));
+        assert_eq!(resolve(Some("Symbol"), 0xF0B1), Some('±'));
+    }
+
+    #[test]
+    fn other_symbol_fonts_keep_the_code_word_stores() {
+        assert_eq!(resolve(Some("Wingdings"), 0xF0A7), Some('\u{F0A7}'));
+        assert_eq!(resolve(None, 0xF061), Some('\u{F061}'));
+        assert_eq!(resolve(Some("Symbol"), 0x00B1), Some('±'));
+    }
+}

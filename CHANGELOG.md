@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Word 97-2003 documents (.doc).** A `.doc` file is read like a `.docx`: paragraphs in
+  order, headings from the heading styles and outline levels, tables with their rows and
+  cells, hyperlinks, line and page breaks — through every surface (Rust, the CLI, the C ABI,
+  .NET, Python and WebAssembly). Field codes leave only their displayed result. An encrypted
+  `.doc` reports `Encrypted`; a Word 6.0 or Word 95 file reports `UnsupportedFormat` naming
+  it. `FormatType::Doc` is new, and `supportedFormats()` lists it. Before this, every `.doc`
+  was `UnsupportedFormat`.
+- **A musl-linked Linux CLI on every release** (`undoc-linux-x86_64-musl-v<version>.tar.gz`),
+  for systems without glibc.
 - **Prebuilt C-ABI libraries on every release.** Each GitHub Release now carries
   `libundoc-<platform>-v<version>` archives for Windows x64, Linux x64 (glibc and musl) and
   macOS (x64 and arm64), each holding the library and `undoc.h`. Until now the library came
@@ -16,6 +25,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A musl-linked CLI updates itself to the musl build.** `update` chose its archive by OS
+  and architecture alone, so a CLI built for musl (the one that runs on Alpine and other
+  systems without glibc) replaced itself with the glibc build, which does not start there.
+  It now asks for the `-musl` archive, and finds nothing rather than the glibc one when a
+  release lacks it.
 - **The C header declares the whole C ABI.** `undoc_get_resource_ids`,
   `undoc_get_resource_info`, `undoc_get_resource_data`, `undoc_free_bytes` and
   `UNDOC_FLAG_REFINE` were exported but missing from `include/undoc.h`.

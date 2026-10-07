@@ -52,6 +52,8 @@ pub enum FormatType {
     Xlsx,
     /// Microsoft PowerPoint presentation (.pptx)
     Pptx,
+    /// Microsoft Word 97-2003 binary document (.doc)
+    Doc,
 }
 
 impl FormatType {
@@ -62,7 +64,12 @@ impl FormatType {
     /// extension list on its side, and that copy goes quietly stale the moment the library
     /// learns a new format -- with nothing to notice the drift. Adding a variant without
     /// adding it here is caught by `all_variants_are_listed` below.
-    pub const ALL: [FormatType; 3] = [FormatType::Docx, FormatType::Xlsx, FormatType::Pptx];
+    pub const ALL: [FormatType; 4] = [
+        FormatType::Docx,
+        FormatType::Xlsx,
+        FormatType::Pptx,
+        FormatType::Doc,
+    ];
 
     /// Returns the file extension for this format.
     pub fn extension(&self) -> &'static str {
@@ -70,6 +77,7 @@ impl FormatType {
             FormatType::Docx => "docx",
             FormatType::Xlsx => "xlsx",
             FormatType::Pptx => "pptx",
+            FormatType::Doc => "doc",
         }
     }
 
@@ -79,6 +87,7 @@ impl FormatType {
             FormatType::Docx => "Word Document",
             FormatType::Xlsx => "Excel Workbook",
             FormatType::Pptx => "PowerPoint Presentation",
+            FormatType::Doc => "Word 97-2003 Document",
         }
     }
 }
@@ -130,7 +139,7 @@ pub fn detect_format_from_bytes(data: &[u8]) -> Result<FormatType> {
 /// Runs before the ZIP layer gets involved, so that a file we can *recognise* but not
 /// open is reported as such instead of surfacing as a damaged archive — which would send
 /// the caller off to repair a file that is not broken.
-fn classify_container_magic<R: Read + Seek>(reader: &mut R) -> Result<()> {
+fn classify_container_magic<R: Read + Seek>(reader: &mut R) -> Result<Option<FormatType>> {
     let mut head = [0u8; CFB_MAGIC.len()];
     let mut filled = 0;
     while filled < head.len() {
@@ -142,14 +151,16 @@ fn classify_container_magic<R: Read + Seek>(reader: &mut R) -> Result<()> {
     reader.seek(std::io::SeekFrom::Start(0))?;
 
     if filled == CFB_MAGIC.len() && head == CFB_MAGIC {
-        return Err(classify_cfb_container(reader));
+        let format = classify_cfb_container(reader)?;
+        reader.seek(std::io::SeekFrom::Start(0))?;
+        return Ok(Some(format));
     }
 
     if filled < ZIP_MAGIC.len() || head[..ZIP_MAGIC.len()] != ZIP_MAGIC {
         return Err(Error::UnknownFormat);
     }
 
-    Ok(())
+    Ok(None)
 }
 
 /// Say which kind of CFB container this is, having established that it is one.
@@ -161,32 +172,34 @@ fn classify_container_magic<R: Read + Seek>(reader: &mut R) -> Result<()> {
 /// `UnsupportedFormat` tells them to convert the file. Reporting the disjunction leaves
 /// them to guess.
 ///
-/// Never returns `Ok`: neither kind can be opened by this library. The naming of the
-/// legacy format is best-effort — an unrecognised CFB is still reported as unsupported,
-/// which is what the header proved.
-fn classify_cfb_container<R: Read + Seek>(reader: &mut R) -> Error {
+/// A Word binary document is answered with its format; the binary formats not yet read, and
+/// an unrecognised CFB, are reported as unsupported — naming the format where the directory
+/// shows which it is, which is what the header proved.
+fn classify_cfb_container<R: Read + Seek>(reader: &mut R) -> Result<FormatType> {
     let container = match cfb::CompoundFile::open(reader) {
         Ok(container) => container,
         // A CFB header whose directory will not parse. Still an Office container, still
         // unopenable; guessing which kind would claim more than was established.
         Err(_) => {
-            return Error::UnsupportedFormat(
+            return Err(Error::UnsupportedFormat(
                 "OLE/CFB container whose directory could not be read — a legacy binary \
                  Office format (.doc/.xls/.ppt) or an ECMA-376 encrypted document"
                     .to_string(),
-            )
+            ))
         }
     };
 
     if container.exists(ENCRYPTED_PACKAGE_STREAM) {
-        return Error::Encrypted;
+        return Err(Error::Encrypted);
     }
 
-    // Well-known root streams of the pre-2007 binary formats. Checked only to make the
-    // message specific; absence of all three does not make the file openable.
-    let legacy = if container.exists("/WordDocument") {
-        Some("Word 97-2003 (.doc)")
-    } else if container.exists("/Workbook") || container.exists("/Book") {
+    if container.exists("/WordDocument") {
+        return Ok(FormatType::Doc);
+    }
+
+    // Well-known root streams of the pre-2007 binary formats not read yet. Checked only to
+    // make the message specific; absence of both does not make the file openable.
+    let legacy = if container.exists("/Workbook") || container.exists("/Book") {
         Some("Excel 97-2003 (.xls)")
     } else if container.exists("/PowerPoint Document") {
         Some("PowerPoint 97-2003 (.ppt)")
@@ -194,12 +207,12 @@ fn classify_cfb_container<R: Read + Seek>(reader: &mut R) -> Error {
         None
     };
 
-    Error::UnsupportedFormat(match legacy {
+    Err(Error::UnsupportedFormat(match legacy {
         Some(format) => format!("legacy binary Office format: {format}"),
         None => "OLE/CFB container that is not a recognised Office document or encrypted \
              OOXML package"
             .to_string(),
-    })
+    }))
 }
 
 /// Detect the format type from a reader.
@@ -211,7 +224,9 @@ fn classify_cfb_container<R: Read + Seek>(reader: &mut R) -> Error {
 /// [`Error::UnknownFormat`] instead of being recovered from its central directory.
 pub fn detect_format_from_reader<R: Read + Seek>(reader: R) -> Result<FormatType> {
     let mut reader = reader;
-    classify_container_magic(&mut reader)?;
+    if let Some(format) = classify_container_magic(&mut reader)? {
+        return Ok(format);
+    }
 
     let mut archive = zip::ZipArchive::new(reader)?;
 
@@ -277,7 +292,7 @@ mod tests {
         // copy of the extension list from going quietly stale behind a new format.
         for format in FormatType::ALL {
             match format {
-                FormatType::Docx | FormatType::Xlsx | FormatType::Pptx => {}
+                FormatType::Docx | FormatType::Xlsx | FormatType::Pptx | FormatType::Doc => {}
             }
         }
 
@@ -286,7 +301,7 @@ mod tests {
         extensions.sort_unstable();
         extensions.dedup();
         assert_eq!(extensions.len(), FormatType::ALL.len());
-        assert_eq!(extensions, ["docx", "pptx", "xlsx"]);
+        assert_eq!(extensions, ["doc", "docx", "pptx", "xlsx"]);
 
         // Both fields are pinned here rather than only at the binding that serialises them:
         // this test runs on every host, whereas the wasm crate's does not always build
@@ -301,6 +316,7 @@ mod tests {
                 ("docx", "Word Document"),
                 ("xlsx", "Excel Workbook"),
                 ("pptx", "PowerPoint Presentation"),
+                ("doc", "Word 97-2003 Document"),
             ]
         );
     }
@@ -410,9 +426,14 @@ mod tests {
     }
 
     #[test]
+    fn test_word_binary_document_is_detected_as_doc() {
+        let format = detect_format_from_bytes(&cfb_with_streams(&["/WordDocument"])).unwrap();
+        assert_eq!(format, FormatType::Doc);
+    }
+
+    #[test]
     fn test_legacy_binary_office_names_the_format_it_found() {
         for (stream, expected) in [
-            ("/WordDocument", "Word 97-2003"),
             ("/Workbook", "Excel 97-2003"),
             ("/PowerPoint Document", "PowerPoint 97-2003"),
         ] {

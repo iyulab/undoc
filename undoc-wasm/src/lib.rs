@@ -102,7 +102,8 @@ mod tests {
         let expected = concat!(
             r#"[{"extension":"docx","name":"Word Document"},"#,
             r#"{"extension":"xlsx","name":"Excel Workbook"},"#,
-            r#"{"extension":"pptx","name":"PowerPoint Presentation"}]"#
+            r#"{"extension":"pptx","name":"PowerPoint Presentation"},"#,
+            r#"{"extension":"doc","name":"Word 97-2003 Document"}]"#
         );
         assert_eq!(
             supported_formats().expect("serialising a fixed list cannot fail"),

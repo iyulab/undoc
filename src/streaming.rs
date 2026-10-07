@@ -10,7 +10,8 @@
 //!
 //! - **PPTX**: each slide is a separate event.
 //! - **XLSX**: each sheet is a separate event.
-//! - **DOCX**: the entire document is parsed and its sections are yielded as events.
+//! - **DOCX** and **DOC**: the entire document is parsed and its sections are yielded as
+//!   events.
 //!
 //! ## Event order
 //!
@@ -177,7 +178,92 @@ where
             let mut parser = crate::docx::DocxParser::open(path)?;
             parser.for_each_section(opts, f)
         }
+        #[cfg(feature = "doc")]
+        FormatType::Doc => {
+            let mut parser = crate::doc::DocParser::open(path)?;
+            emit_parsed_document(parser.parse(), None, opts, f)
+        }
         #[allow(unreachable_patterns)]
         _ => Err(Error::UnsupportedFormat(format!("{:?}", format))),
     }
+}
+
+/// Stream a document that a format reads whole: `DocumentStart`, one `SectionParsed` per
+/// section, `DocumentEnd`, then its resources.
+///
+/// `metadata` is announced in `DocumentStart`; `None` announces the document's own. A failed
+/// parse is the error itself, or under `lenient` a degenerate stream carrying it as
+/// `SectionFailed` at index 0. `Break` ends the stream at any event, as it does for the
+/// formats that stream section by section.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn emit_parsed_document<F>(
+    parsed: Result<crate::model::Document>,
+    metadata: Option<Metadata>,
+    opts: SectionStreamOptions,
+    mut f: F,
+) -> Result<()>
+where
+    F: FnMut(ParseEvent<'_>) -> ControlFlow<()>,
+{
+    let doc = match parsed {
+        Ok(doc) => doc,
+        Err(e) if opts.lenient => {
+            let metadata = metadata.unwrap_or_default();
+            if f(ParseEvent::DocumentStart {
+                metadata: &metadata,
+                section_count: 0,
+                image_map: HashMap::new(),
+            })
+            .is_break()
+            {
+                return Ok(());
+            }
+            if f(ParseEvent::SectionFailed { index: 0, error: e }).is_break() {
+                return Ok(());
+            }
+            // The last event: nothing follows that a `Break` could stop.
+            let _ = f(ParseEvent::DocumentEnd);
+            return Ok(());
+        }
+        Err(e) => return Err(e),
+    };
+
+    let image_map: HashMap<String, String> = doc
+        .resources
+        .iter()
+        .filter_map(|(id, r)| r.filename.as_ref().map(|name| (id.clone(), name.clone())))
+        .collect();
+    let metadata = metadata.unwrap_or_else(|| doc.metadata.clone());
+
+    if f(ParseEvent::DocumentStart {
+        metadata: &metadata,
+        section_count: doc.sections.len(),
+        image_map,
+    })
+    .is_break()
+    {
+        return Ok(());
+    }
+    for section in &doc.sections {
+        if f(ParseEvent::SectionParsed(section)).is_break() {
+            return Ok(());
+        }
+    }
+    if f(ParseEvent::DocumentEnd).is_break() {
+        return Ok(());
+    }
+    if opts.extract_resources {
+        for (id, resource) in doc.resources {
+            let name = resource.filename.clone().unwrap_or(id);
+            if f(ParseEvent::ResourceExtracted {
+                name,
+                data: resource.data,
+            })
+            .is_break()
+            {
+                return Ok(());
+            }
+        }
+    }
+    Ok(())
 }

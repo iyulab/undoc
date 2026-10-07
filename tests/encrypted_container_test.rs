@@ -42,21 +42,31 @@ fn parsing_an_ecma376_encrypted_package_reports_encrypted() {
 }
 
 /// The same header, the opposite answer — this is the pair the classification exists for.
+/// A legacy binary format the library does not read is named as unsupported.
 #[test]
-fn parsing_a_legacy_binary_document_reports_an_unsupported_format() {
-    let doc = cfb_with_streams(&["/WordDocument"]);
+fn parsing_a_legacy_binary_format_not_read_reports_an_unsupported_format() {
+    let ppt = cfb_with_streams(&["/PowerPoint Document"]);
     let encrypted = cfb_with_streams(&["/EncryptedPackage"]);
 
-    assert_eq!(doc[..CFB_MAGIC.len()], CFB_MAGIC);
+    assert_eq!(ppt[..CFB_MAGIC.len()], CFB_MAGIC);
     assert_eq!(encrypted[..CFB_MAGIC.len()], CFB_MAGIC);
 
-    let err = parse_bytes(&doc).expect_err("a legacy binary document cannot be parsed");
+    let err = parse_bytes(&ppt).expect_err("a legacy presentation is not read");
 
     assert_eq!(err.kind(), ErrorKind::UnsupportedFormat, "got: {err}");
     assert!(
-        err.to_string().contains("Word 97-2003"),
+        err.to_string().contains("PowerPoint 97-2003"),
         "the format should be named: {err}"
     );
+}
+
+/// A Word 97-2003 document is read, so a Word stream with nothing in it is a damaged
+/// document — not an encrypted one, and not an unsupported format.
+#[test]
+fn an_empty_word_stream_is_a_damaged_document() {
+    let err = parse_bytes(&cfb_with_streams(&["/WordDocument"])).unwrap_err();
+
+    assert_eq!(err.kind(), ErrorKind::InvalidData, "got: {err}");
 }
 
 /// An unrecognised value must not be collapsed into a familiar one, and neither of these
@@ -65,7 +75,7 @@ fn parsing_a_legacy_binary_document_reports_an_unsupported_format() {
 #[test]
 fn the_two_cfb_answers_are_distinguishable() {
     let encrypted = parse_bytes(&cfb_with_streams(&["/EncryptedPackage"])).unwrap_err();
-    let legacy = parse_bytes(&cfb_with_streams(&["/WordDocument"])).unwrap_err();
+    let legacy = parse_bytes(&cfb_with_streams(&["/PowerPoint Document"])).unwrap_err();
 
     assert_ne!(encrypted.kind(), legacy.kind());
 }
