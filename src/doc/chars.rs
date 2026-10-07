@@ -17,6 +17,7 @@ const SPRM_C_KUL: u16 = 0x2A3E;
 const SPRM_C_ISS: u16 = 0x2A48;
 const SPRM_C_F_D_STRIKE: u16 = 0x2A53;
 const SPRM_C_SYMBOL: u16 = 0x6A09;
+const SPRM_C_PIC_LOCATION: u16 = 0x6A03;
 
 /// The character properties of a run of text.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -34,6 +35,8 @@ pub(super) struct CharProps {
     pub inserted: bool,
     /// A symbol-font character: the font index and the code Word stores for it.
     pub symbol: Option<(u16, u16)>,
+    /// Where a picture character's picture is, in the `Data` stream.
+    pub picture: Option<u32>,
 }
 
 /// A toggle operand ([MS-DOC] 2.9.311 `ToggleOperand`): 0 off, 1 on, and 0x80 / 0x81 "as the
@@ -55,6 +58,9 @@ fn apply_chpx(props: &mut CharProps, grpprl: &[u8]) {
         SPRM_C_ISS => {
             props.superscript = op[0] == 1;
             props.subscript = op[0] == 2;
+        }
+        SPRM_C_PIC_LOCATION => {
+            props.picture = Some(u32::from_le_bytes([op[0], op[1], op[2], op[3]]))
         }
         SPRM_C_SYMBOL => {
             let font = u16::from_le_bytes([op[0], op[1]]);

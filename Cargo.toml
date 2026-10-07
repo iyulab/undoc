@@ -74,6 +74,10 @@ unparser-shared = { version = "0.3", default-features = false }
 unicode-normalization = "0.1"
 unicode-width = "0.2"
 
+# Metafile pictures in 97-2003 documents are DEFLATE-compressed. Already in the tree through
+# `zip`'s deflate support, with the same backend.
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+
 # Optional: Windows code pages for 97-2003 document properties (feature `codepages`)
 encoding_rs = { version = "0.8", optional = true }
 

@@ -16,6 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `.doc` reports `Encrypted`; a Word 6.0 or Word 95 file reports `UnsupportedFormat` naming
   it. `FormatType::Doc` is new, and `supportedFormats()` lists it. Before this, every `.doc`
   was `UnsupportedFormat`.
+- **Inline pictures in .doc files** become image resources the paragraph references, with
+  their alternative text: JPEG, PNG, BMP and TIFF as stored, EMF and WMF inflated from their
+  compressed form. Floating pictures are not read yet.
 - **Excel 97-2003 workbooks (.xls).** Each worksheet becomes a section with its cells as a
   table, laid out by the same rules as `.xlsx` — merged ranges, empty positions, trimmed
   edges — with text, numbers, dates (1900 and 1904 date systems, built-in and custom date

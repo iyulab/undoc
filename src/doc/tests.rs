@@ -69,6 +69,8 @@ struct Options {
     footnotes: Vec<&'static str>,
     /// The number format of the document's one list's levels (0 decimal, 0x17 bullet).
     list_nfc: u8,
+    /// A `Data` stream, for inline pictures.
+    data: Option<Vec<u8>>,
 }
 
 const TEXT_AT: usize = 1024;
@@ -332,7 +334,11 @@ fn build(paras: &[Para], opts: Options) -> Vec<u8> {
     wd[chpx_at..chpx_at + 512].copy_from_slice(&chpx_page);
 
     let mut container = cfb::CompoundFile::create(std::io::Cursor::new(Vec::new())).unwrap();
-    for (name, data) in [("/WordDocument", &wd), ("/1Table", &table)] {
+    let mut streams = vec![("/WordDocument", wd), ("/1Table", table)];
+    if let Some(data) = opts.data {
+        streams.push(("/Data", data));
+    }
+    for (name, data) in &streams {
         let mut stream = container.create_stream(name).unwrap();
         std::io::Write::write_all(&mut stream, data).unwrap();
     }
@@ -653,4 +659,35 @@ fn a_bulleted_list_has_no_numbers() {
     let info = first.list_info.as_ref().expect("a list item");
     assert_eq!(info.list_type, crate::model::ListType::Bullet);
     assert_eq!(info.number, None);
+}
+
+#[test]
+fn an_inline_picture_becomes_a_resource_the_paragraph_references() {
+    let png = b"\x89PNG\r\n\x1a\npixels".to_vec();
+    let mut data = vec![0u8; 8];
+    data.extend(super::pictures::tests::picf_with_png(
+        &png,
+        Some("Sales by region"),
+    ));
+    let doc = parse(
+        &[p("Figure: \u{01}"), p("After.")],
+        Options {
+            // sprmCPicLocation 8, then sprmCFSpec.
+            formats: vec![("\u{01}", vec![0x03, 0x6A, 8, 0, 0, 0, 0x55, 0x08, 0x01])],
+            data: Some(data),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let Block::Paragraph(para) = &doc.sections[0].content[0] else {
+        panic!()
+    };
+    assert_eq!(para.plain_text(), "Figure: ");
+    assert_eq!(para.images.len(), 1);
+    let image = &para.images[0];
+    assert_eq!(image.alt_text.as_deref(), Some("Sales by region"));
+    let resource = &doc.resources[&image.resource_id];
+    assert_eq!(resource.data, png);
+    assert_eq!(resource.filename.as_deref(), Some("image1.png"));
+    assert_eq!(resource.mime_type.as_deref(), Some("image/png"));
 }

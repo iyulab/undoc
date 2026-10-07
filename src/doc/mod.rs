@@ -20,6 +20,7 @@ mod chars;
 mod fib;
 mod lists;
 mod parser;
+mod pictures;
 mod props;
 mod symbol;
 mod text;

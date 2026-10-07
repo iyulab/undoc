@@ -12,8 +12,8 @@ use super::text::{self, DocChar};
 use crate::detect::FormatType;
 use crate::error::{Error, Result};
 use crate::model::{
-    Block, Cell, Document, HeadingLevel, ListInfo, ListType, Paragraph, RevisionType, Row, Section,
-    Table, TextRun, TextStyle,
+    Block, Cell, Document, HeadingLevel, InlineImage, ListInfo, ListType, Paragraph, Resource,
+    RevisionType, Row, Section, Table, TextRun, TextStyle,
 };
 
 /// Paragraph mark.
@@ -28,6 +28,8 @@ const PAGE_BREAK: char = '\u{0C}';
 const FIELD_BEGIN: char = '\u{13}';
 const FIELD_SEPARATOR: char = '\u{14}';
 const FIELD_END: char = '\u{15}';
+/// Picture anchor: an inline picture whose bytes are in the `Data` stream.
+const PICTURE: char = '\u{01}';
 /// Auto-numbered note reference.
 const NOTE_REFERENCE: char = '\u{02}';
 /// Non-breaking and optional hyphens.
@@ -60,6 +62,8 @@ impl DocParser {
         let word_document = read_stream(&mut container, "/WordDocument")?;
         let fib = fib::parse(&word_document)?;
         let table = read_stream(&mut container, &format!("/{}", fib.table_stream))?;
+        // Only documents with inline pictures have one.
+        let data = read_stream(&mut container, "/Data").unwrap_or_default();
 
         let pieces = text::parse_clx(&table, fib.clx)?;
         let chars = text::read_chars(&word_document, &pieces, 0, fib.ccp_text)?;
@@ -102,9 +106,13 @@ impl DocParser {
         doc.metadata = crate::summary::read(&mut container);
         let mut section = Section::new(0);
         let notes: Vec<&Note> = footnotes.iter().chain(&endnotes).collect();
-        for block in Assembler::new(&papx, &chpx, &styles, &fonts, &list_table, &notes).run(&chars)
-        {
+        let mut assembler =
+            Assembler::new(&papx, &chpx, &styles, &fonts, &list_table, &notes, &data);
+        for block in assembler.run(&chars) {
             section.add_block(block);
+        }
+        for (id, resource) in assembler.resources {
+            doc.add_resource(id, resource);
         }
         // Note bodies close the section, as the .docx reader writes them.
         for note in notes.iter().filter(|n| !n.text.is_empty()) {
@@ -243,6 +251,10 @@ struct Assembler<'a> {
     lists: &'a ListTable,
     counter: ListCounter,
     notes: &'a [&'a Note],
+    /// The `Data` stream, and the pictures read from it so far.
+    data: &'a [u8],
+    resources: Vec<(String, Resource)>,
+    images: Vec<InlineImage>,
     /// The character properties of the run being read.
     props: CharProps,
     blocks: Vec<Block>,
@@ -265,6 +277,7 @@ impl<'a> Assembler<'a> {
         fonts: &'a [String],
         lists: &'a ListTable,
         notes: &'a [&'a Note],
+        data: &'a [u8],
     ) -> Self {
         Self {
             papx,
@@ -274,6 +287,9 @@ impl<'a> Assembler<'a> {
             lists,
             counter: ListCounter::default(),
             notes,
+            data,
+            resources: Vec::new(),
+            images: Vec::new(),
             props: CharProps::default(),
             blocks: Vec::new(),
             runs: Vec::new(),
@@ -286,7 +302,7 @@ impl<'a> Assembler<'a> {
         }
     }
 
-    fn run(mut self, chars: &[DocChar]) -> Vec<Block> {
+    fn run(&mut self, chars: &[DocChar]) -> Vec<Block> {
         for c in chars {
             match c.ch {
                 FIELD_BEGIN => {
@@ -321,6 +337,7 @@ impl<'a> Assembler<'a> {
                         run.line_break = true;
                     }
                 }
+                PICTURE => self.picture(c.fc),
                 NOTE_REFERENCE => {
                     if let Some(note) = self.notes.iter().find(|n| n.cp == c.cp) {
                         self.flush_run();
@@ -339,7 +356,32 @@ impl<'a> Assembler<'a> {
             self.end_paragraph(PARAGRAPH_END, u32::MAX);
         }
         self.close_table();
-        self.blocks
+        std::mem::take(&mut self.blocks)
+    }
+
+    /// An inline picture: its bytes become a resource, and the paragraph references it.
+    fn picture(&mut self, fc: u32) {
+        let props = self.chpx.at(fc);
+        if props.hidden {
+            return;
+        }
+        let Some(picture) = props
+            .picture
+            .and_then(|offset| super::pictures::read(self.data, offset))
+        else {
+            return;
+        };
+        let id = format!("image{}", self.resources.len() + 1);
+        let mut resource =
+            Resource::image(picture.data, Some(format!("{id}.{}", picture.extension)));
+        resource.alt_text = picture.alt_text.clone();
+        self.images.push(InlineImage {
+            resource_id: id.clone(),
+            alt_text: picture.alt_text,
+            width: None,
+            height: None,
+        });
+        self.resources.push((id, resource));
     }
 
     /// Append a character of document text, starting a new run where its formatting changes.
@@ -422,6 +464,7 @@ impl<'a> Assembler<'a> {
         self.flush_run();
         let mut paragraph = Paragraph::new();
         paragraph.runs = std::mem::take(&mut self.runs);
+        paragraph.images = std::mem::take(&mut self.images);
         if let Some(props) = props {
             if let Some(level) = (props.ilfo > 0)
                 .then(|| self.lists.level(props.ilfo, props.ilvl))
