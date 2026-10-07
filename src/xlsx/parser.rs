@@ -7,8 +7,9 @@ use crate::decode::{normalize_line_endings, resolve_general_ref};
 use crate::error::{Error, Result};
 use crate::model::{
     Block, Cell, CellAlignment, Document, InlineImage, Metadata, Paragraph, Resource, ResourceRole,
-    Row, Section, Table, TextRun,
+    Section, Table, TextRun,
 };
+use crate::sheet::{MergeRange, SheetTableBuilder};
 use std::collections::HashMap;
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
@@ -23,97 +24,6 @@ struct SheetInfo {
     #[allow(dead_code)]
     sheet_id: String,
     rel_id: String,
-}
-
-/// One `<mergeCell>` range, in 0-based columns and 1-based sheet rows (as cell refs give them).
-#[derive(Debug, Clone, Copy)]
-struct MergeRange {
-    left: u32,
-    top: u32,
-    right: u32,
-    bottom: u32,
-}
-
-/// What a sheet position is with respect to the merged ranges.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Coverage {
-    /// Not inside any merge.
-    Free,
-    /// The top-left position of a merge: the cell that owns it, with `(col_span, row_span)`.
-    Origin(u32, u32),
-    /// Inside a merge but not its top-left — the model has no cell here.
-    Covered,
-}
-
-/// A sheet's merged ranges, queried row by row.
-///
-/// Worksheets list their rows in ascending order, so only the ranges spanning the current
-/// row are kept at hand; a sheet with thousands of merges does not cost a scan of all of
-/// them per cell, and a range spanning whole columns costs nothing per position.
-struct SheetMerges {
-    /// Sorted by `top`.
-    ranges: Vec<MergeRange>,
-    next: usize,
-    active: Vec<MergeRange>,
-    row: u32,
-}
-
-impl SheetMerges {
-    fn new(mut ranges: Vec<MergeRange>) -> Self {
-        ranges.sort_by_key(|r| r.top);
-        Self {
-            ranges,
-            next: 0,
-            active: Vec::new(),
-            row: 0,
-        }
-    }
-
-    fn seek(&mut self, row: u32) {
-        if row == self.row {
-            return;
-        }
-        if row < self.row {
-            // Out-of-order rows (not written by Excel, but not rejected either): start over.
-            self.next = 0;
-            self.active.clear();
-        }
-        self.row = row;
-        self.active.retain(|r| r.bottom >= row);
-        while let Some(r) = self.ranges.get(self.next).copied() {
-            if r.top > row {
-                break;
-            }
-            if r.bottom >= row {
-                self.active.push(r);
-            }
-            self.next += 1;
-        }
-    }
-
-    /// Coverage of `(col, row)`.
-    fn at(&mut self, col: u32, row: u32) -> Coverage {
-        self.seek(row);
-        match self
-            .active
-            .iter()
-            .find(|r| (r.left..=r.right).contains(&col))
-        {
-            None => Coverage::Free,
-            Some(r) if r.left == col && r.top == row => {
-                Coverage::Origin(r.right - r.left + 1, r.bottom - r.top + 1)
-            }
-            Some(_) => Coverage::Covered,
-        }
-    }
-}
-
-/// Where the next cell of the row being read goes.
-struct RowCursor {
-    /// Sheet row number (1-based), from `<row r>` or the row's first cell ref.
-    sheet_row: Option<u32>,
-    /// The next grid column not yet accounted for in this row.
-    next_col: u32,
 }
 
 struct BuildSheetCellContext<'a> {
@@ -385,7 +295,7 @@ impl XlsxParser {
     }
 
     /// Parse the merged ranges (`<mergeCell ref="A1:C3">`) of a worksheet.
-    fn parse_merge_cells(xml: &str) -> SheetMerges {
+    fn parse_merge_cells(xml: &str) -> Vec<MergeRange> {
         let mut ranges = Vec::new();
         let mut reader = crate::decode::reader_for(xml);
         reader.config_mut().trim_text(true);
@@ -424,7 +334,7 @@ impl XlsxParser {
             buf.clear();
         }
 
-        SheetMerges::new(ranges)
+        ranges
     }
 
     /// Parse cell reference like "A1" into (column, row) where column is 0-indexed.
@@ -472,16 +382,7 @@ impl XlsxParser {
         rich_value_images: &HashMap<u32, String>,
     ) -> Result<Table> {
         // First pass: parse merge cells
-        let mut merges = Self::parse_merge_cells(xml);
-        // Sheet row number of each table row, parallel to `table.rows` — a merge's
-        // `row_span` counts sheet rows, and rows the worksheet omits are not table rows.
-        let mut sheet_rows: Vec<Option<u32>> = Vec::new();
-        let mut cursor = RowCursor {
-            sheet_row: None,
-            next_col: 0,
-        };
-
-        let mut table = Table::new();
+        let mut sheet = SheetTableBuilder::new(Self::parse_merge_cells(xml));
         let mut reader = crate::decode::reader_for(xml);
         // IMPORTANT: Don't trim text - preserve whitespace from xml:space="preserve" elements
         // Excel cell values may contain significant leading/trailing spaces
@@ -491,32 +392,23 @@ impl XlsxParser {
         let mut in_row = false;
         let mut in_cell = false;
         let mut in_value = false;
-        let mut current_row: Option<Row> = None;
         let mut current_cell_type: Option<String> = None;
         let mut current_cell_ref: Option<String> = None;
         let mut current_cell_style: Option<usize> = None;
         let mut current_cell_vm: Option<u32> = None;
         let mut current_cell_value = String::new();
-        let mut is_first_row = true;
 
         loop {
             match reader.read_event_into(&mut buf) {
                 Ok(quick_xml::events::Event::Start(ref e)) => match e.name().as_ref() {
                     "row" => {
                         in_row = true;
-                        cursor = RowCursor {
-                            sheet_row: e
-                                .attributes()
+                        sheet.start_row(
+                            e.attributes()
                                 .flatten()
                                 .find(|a| a.key.as_ref() == "r")
                                 .and_then(|a| a.value.parse().ok()),
-                            next_col: 0,
-                        };
-                        current_row = Some(Row {
-                            cells: Vec::new(),
-                            is_header: is_first_row,
-                            height: None,
-                        });
+                        );
                     }
                     "c" if in_row => {
                         in_cell = true;
@@ -565,7 +457,7 @@ impl XlsxParser {
                             BuildSheetCellContext {
                                 hyperlink_map,
                                 comment_map,
-                                is_header: is_first_row,
+                                is_header: sheet.in_first_row(),
                             },
                         )?;
                         Self::attach_rich_value_image(
@@ -575,16 +467,10 @@ impl XlsxParser {
                             rich_value_images,
                         );
 
-                        if let Some(ref mut row) = current_row {
-                            Self::place_cell(
-                                row,
-                                &mut cursor,
-                                &mut merges,
-                                cell,
-                                current_cell_ref.as_deref(),
-                                is_first_row,
-                            );
-                        }
+                        sheet.place(
+                            cell,
+                            current_cell_ref.as_deref().and_then(Self::parse_cell_ref),
+                        );
 
                         current_cell_ref = None;
                     }
@@ -602,12 +488,8 @@ impl XlsxParser {
                 }
                 Ok(quick_xml::events::Event::End(ref e)) => match e.name().as_ref() {
                     "row" => {
-                        if let Some(row) = current_row.take() {
-                            table.add_row(row);
-                            sheet_rows.push(cursor.sheet_row);
-                        }
+                        sheet.end_row();
                         in_row = false;
-                        is_first_row = false;
                     }
                     "c" => {
                         // Collapse CR that re-entered via &#13;/&#xD; refs (Excel
@@ -623,7 +505,7 @@ impl XlsxParser {
                             BuildSheetCellContext {
                                 hyperlink_map,
                                 comment_map,
-                                is_header: is_first_row,
+                                is_header: sheet.in_first_row(),
                             },
                         )?;
                         Self::attach_rich_value_image(
@@ -633,16 +515,10 @@ impl XlsxParser {
                             rich_value_images,
                         );
 
-                        if let Some(ref mut row) = current_row {
-                            Self::place_cell(
-                                row,
-                                &mut cursor,
-                                &mut merges,
-                                cell,
-                                current_cell_ref.as_deref(),
-                                is_first_row,
-                            );
-                        }
+                        sheet.place(
+                            cell,
+                            current_cell_ref.as_deref().and_then(Self::parse_cell_ref),
+                        );
 
                         in_cell = false;
                         current_cell_ref = None;
@@ -660,38 +536,7 @@ impl XlsxParser {
             buf.clear();
         }
 
-        // Trim trailing rows where every cell is content-empty (no text, no value).
-        // These arise from formatting-only rows, deleted-but-kept rows, and conditional
-        // formatting applied to entire columns — all common causes of massive row inflation.
-        while table.rows.last().is_some_and(|r| r.is_empty()) {
-            table.rows.pop();
-            sheet_rows.pop();
-        }
-
-        // Trim trailing columns where every row has empty cells: keep up to the rightmost
-        // grid column any content reaches. Measured on the grid, not by index in the row —
-        // a row under a vertical merge has fewer cells than columns.
-        let columns = table.cell_columns();
-        let keep = columns
-            .iter()
-            .zip(&table.rows)
-            .flat_map(|(cols, row)| {
-                cols.iter()
-                    .zip(&row.cells)
-                    .filter(|(_, c)| !c.is_empty())
-                    .map(|(&col, c)| col + c.col_span.max(1) as usize)
-            })
-            .max();
-        if let Some(keep) = keep {
-            for (cols, row) in columns.iter().zip(&mut table.rows) {
-                let kept = cols.iter().take_while(|&&col| col < keep).count();
-                row.cells.truncate(kept);
-            }
-        }
-
-        Self::clamp_row_spans(&mut table, &sheet_rows);
-
-        Ok(table)
+        Ok(sheet.finish())
     }
 
     fn parse_cell_attributes(
@@ -761,87 +606,6 @@ impl XlsxParser {
             is_header: context.is_header,
             background: None,
         })
-    }
-
-    /// Append a cell read from the worksheet to `row`, honouring the merged ranges.
-    ///
-    /// The model records a merge once, on the cell that owns it ([`Table::cell_columns`]):
-    /// the owner gets `col_span`/`row_span` and the positions it covers get no cell. A
-    /// worksheet, by contrast, may write a `<c>` for a covered position (Excel does when it
-    /// is styled), and omits positions that are neither styled nor filled. So gaps are
-    /// filled up to the cell's column — skipping covered positions, giving an unwritten
-    /// merge owner its spans — and a covered cell is dropped; its value is one Excel no
-    /// longer shows.
-    ///
-    /// Gap reconstruction stays inside the current row, up to the highest column it
-    /// references. This is not whole-sheet densification.
-    fn place_cell(
-        row: &mut Row,
-        cursor: &mut RowCursor,
-        merges: &mut SheetMerges,
-        mut cell: Cell,
-        cell_ref: Option<&str>,
-        is_header: bool,
-    ) {
-        let Some((col, ref_row)) = cell_ref.and_then(Self::parse_cell_ref) else {
-            cursor.next_col += cell.col_span.max(1);
-            row.cells.push(cell);
-            return;
-        };
-        let sheet_row = *cursor.sheet_row.get_or_insert(ref_row);
-
-        for gap in cursor.next_col..col {
-            match merges.at(gap, sheet_row) {
-                Coverage::Covered => {}
-                Coverage::Free => row.cells.push(Cell {
-                    is_header,
-                    ..Cell::new()
-                }),
-                Coverage::Origin(col_span, row_span) => row.cells.push(Cell {
-                    col_span,
-                    row_span,
-                    is_header,
-                    ..Cell::new()
-                }),
-            }
-        }
-        cursor.next_col = cursor.next_col.max(col + 1);
-
-        match merges.at(col, sheet_row) {
-            Coverage::Covered => {}
-            Coverage::Free => row.cells.push(cell),
-            Coverage::Origin(col_span, row_span) => {
-                cell.col_span = col_span;
-                cell.row_span = row_span;
-                row.cells.push(cell);
-            }
-        }
-    }
-
-    /// Bring each merge owner's `row_span` down to the table rows it actually covers.
-    ///
-    /// A merge's extent is in sheet rows, but the table holds only the rows the worksheet
-    /// writes — an empty row inside a merge may be omitted, and trailing empty rows are
-    /// trimmed. A span left counting rows that are not there would push cells of later
-    /// rows out from under their headings.
-    fn clamp_row_spans(table: &mut Table, sheet_rows: &[Option<u32>]) {
-        for i in 0..table.rows.len() {
-            let Some(top) = sheet_rows.get(i).copied().flatten() else {
-                continue;
-            };
-            let below = &sheet_rows[i..];
-            for cell in &mut table.rows[i].cells {
-                if cell.row_span <= 1 {
-                    continue;
-                }
-                let bottom = top + cell.row_span - 1;
-                let present = below
-                    .iter()
-                    .take_while(|r| r.is_none_or(|r| r <= bottom))
-                    .count();
-                cell.row_span = present.max(1) as u32;
-            }
-        }
     }
 
     /// Resolve a cell value based on its type and style.

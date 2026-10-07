@@ -103,156 +103,28 @@ impl Styles {
         // Built-in date formats (Excel standard)
         // 14-22: Date formats
         // 45-47: Time formats
-        if (14..=22).contains(&num_fmt_id) || (45..=47).contains(&num_fmt_id) {
+        if crate::sheet::is_builtin_date_format(num_fmt_id) {
             return true;
         }
 
         // Check custom formats for date patterns
         if let Some(format_code) = self.num_fmts.get(&num_fmt_id) {
-            return Self::is_date_format_code(format_code);
+            return crate::sheet::is_date_format_code(format_code);
         }
 
         false
     }
 
     /// Check if a format code string represents a date format.
+    #[cfg(test)]
     fn is_date_format_code(format_code: &str) -> bool {
-        // Date patterns: d, m, y (case insensitive, not in quotes or brackets)
-        // Time patterns: h, s (case insensitive)
-        // We need to exclude patterns in square brackets [Red] or quotes "text"
-
-        let mut in_bracket = false;
-        let mut in_quote = false;
-        let mut prev_char = '\0';
-
-        for c in format_code.chars() {
-            match c {
-                '[' if !in_quote => in_bracket = true,
-                ']' if !in_quote => in_bracket = false,
-                '"' => in_quote = !in_quote,
-                _ if !in_bracket && !in_quote => {
-                    // Check for date/time patterns
-                    let lower = c.to_ascii_lowercase();
-                    match lower {
-                        // 'd' for day, 'm' for month (but not 'mm:ss' which is minutes)
-                        'd' => return true,
-                        'y' => return true,
-                        // 'h' for hour indicates time, which is often stored as fractional day
-                        // But we mainly want date, so check for 'm' after 'd' or before 'd'
-                        'm' => {
-                            // 'm' could be month or minute
-                            // If preceded by 'd' or 'y', it's likely month
-                            // If preceded by 'h' or followed by 's', it's likely minute
-                            // For simplicity, check surrounding context
-                            let lower_prev = prev_char.to_ascii_lowercase();
-                            if lower_prev == 'd' || lower_prev == 'y' {
-                                return true; // Month after day/year
-                            }
-                            // Could also be month at start or standalone
-                            // Check if format contains 'd' or 'y' anywhere
-                            let lower_format = format_code.to_lowercase();
-                            if lower_format.contains('d') || lower_format.contains('y') {
-                                return true;
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                _ => {}
-            }
-            prev_char = c;
-        }
-
-        false
+        crate::sheet::is_date_format_code(format_code)
     }
 
     /// Convert Excel serial date number to ISO 8601 date string.
     pub fn serial_to_date(serial: f64) -> Option<String> {
-        // Excel date system: days since December 30, 1899
-        // (Excel incorrectly treats 1900 as a leap year for Lotus 1-2-3 compatibility)
-
-        if serial < 0.0 {
-            return None;
-        }
-
-        // Handle the "Lotus 1-2-3" bug: Excel thinks Feb 29, 1900 exists
-        // Serial 60 = Feb 29, 1900 (doesn't exist)
-        // Serial 61 = Mar 1, 1900
-        let adjusted_serial = if serial > 60.0 { serial - 1.0 } else { serial };
-
-        // Days since January 1, 1900 (day 1 = Jan 1, 1900)
-        let days = adjusted_serial.floor() as i64;
-
-        // Convert to date
-        // January 1, 1900 is day 1
-        // Using a simple calculation:
-        // Base date: 1899-12-31 (so day 1 = 1900-01-01)
-
-        // Calculate year, month, day
-        let (year, month, day) = days_to_ymd(days)?;
-
-        // Check if there's a time component
-        let time_fraction = serial.fract();
-        if time_fraction > 0.0001 {
-            // Has time component
-            let total_seconds = (time_fraction * 86400.0).round() as u32;
-            let hours = total_seconds / 3600;
-            let minutes = (total_seconds % 3600) / 60;
-            let seconds = total_seconds % 60;
-            Some(format!(
-                "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}",
-                year, month, day, hours, minutes, seconds
-            ))
-        } else {
-            Some(format!("{:04}-{:02}-{:02}", year, month, day))
-        }
+        crate::sheet::serial_to_date(serial)
     }
-}
-
-/// Convert days since December 31, 1899 to (year, month, day).
-fn days_to_ymd(days: i64) -> Option<(i32, u32, u32)> {
-    if days < 1 {
-        return None;
-    }
-
-    // Start from 1900-01-01, which is serial day 1
-    let mut year = 1900;
-    let mut remaining_days = days;
-
-    // Year loop
-    loop {
-        let days_in_year = if is_leap_year(year) { 366 } else { 365 };
-        if remaining_days <= days_in_year {
-            break;
-        }
-        remaining_days -= days_in_year;
-        year += 1;
-    }
-
-    // Month loop
-    let months_days = if is_leap_year(year) {
-        [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    } else {
-        [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    };
-
-    let mut month = 1u32;
-    for &days_in_month in &months_days {
-        if remaining_days <= days_in_month as i64 {
-            break;
-        }
-        remaining_days -= days_in_month as i64;
-        month += 1;
-    }
-
-    let day = remaining_days.max(1) as u32;
-
-    Some((year, month, day))
-}
-
-/// Check if a year is a leap year.
-fn is_leap_year(year: i32) -> bool {
-    (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
 }
 
 #[cfg(test)]

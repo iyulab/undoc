@@ -56,6 +56,8 @@ pub mod container;
 mod decode;
 pub mod detect;
 mod drawing;
+#[cfg(feature = "xlsx")]
+mod sheet;
 pub mod error;
 pub mod model;
 pub mod streaming;
