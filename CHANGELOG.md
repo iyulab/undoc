@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Markdown and text output no longer add spaces between runs.** A space was inserted
+  wherever two runs with different formatting met, so a word whose letters change style came
+  apart: `H₂O` written with a subscript run became `H <sub>2</sub> O`, and `Hel` + bold `lo`
+  became `Hel **lo**`. The plain-text renderer did the same between any two runs. Runs carry
+  their own whitespace (`xml:space="preserve"`), so they are now written side by side, in
+  paragraphs and table cells alike.
+- **Emphasis next to punctuation is emphasis.** A styled run that began or ended in
+  punctuation touching a letter or digit was written with its delimiters against the
+  punctuation (`32*, s*`), which CommonMark does not read as emphasis. Such punctuation is now
+  written outside the delimiters (`32, *s*`).
+- **Emphasis inside a superscript, subscript or underline is emphasis.** Bold or italic was
+  wrapped around the HTML tag (`x**<sup>2</sup>**`), where the delimiter touches a letter on
+  one side and `<` on the other and is not read as emphasis. It now goes inside the tag
+  (`x<sup>**2**</sup>`).
+
+### Changed
+
+- Requires `unparser-shared` 0.3.
+
 ## [0.14.0] - 2026-10-06
 
 ### Changed

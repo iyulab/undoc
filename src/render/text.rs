@@ -97,22 +97,9 @@ fn render_paragraph_text(para: &Paragraph) -> String {
         }
     }
 
-    // Concatenate text runs with smart spacing
-    for (i, run) in para.runs.iter().enumerate() {
-        // Add space between runs if needed
-        if i > 0 && !run.text.is_empty() && !output.is_empty() {
-            let last_char = output.chars().last();
-            let first_char = run.text.chars().next();
-
-            if let (Some(last), Some(first)) = (last_char, first_char) {
-                let needs_space =
-                    !last.is_whitespace() && !first.is_whitespace() && !is_no_space_before(first);
-                if needs_space {
-                    output.push(' ');
-                }
-            }
-        }
-
+    // The runs carry their own whitespace (`xml:space="preserve"`), so they are written
+    // side by side: a word split across two runs is still one word.
+    for run in &para.runs {
         output.push_str(&run.text);
         if run.line_break {
             output.push('\n');
@@ -123,14 +110,6 @@ fn render_paragraph_text(para: &Paragraph) -> String {
     }
 
     output
-}
-
-/// Check if a character should NOT have a space before it.
-fn is_no_space_before(c: char) -> bool {
-    matches!(
-        c,
-        '.' | ',' | ':' | ';' | '!' | '?' | ')' | ']' | '}' | '"' | '\'' | '…'
-    )
 }
 
 /// Flatten cell text onto one line: any line break (LF, CRLF, or a bare CR
@@ -235,6 +214,15 @@ mod tests {
         let para = Paragraph::with_text("Hello, World!");
         let text = render_paragraph_text(&para);
         assert_eq!(text, "Hello, World!");
+    }
+
+    #[test]
+    fn test_runs_are_written_side_by_side() {
+        let mut para = Paragraph::new();
+        para.runs.push(TextRun::plain("DRB"));
+        para.runs.push(TextRun::plain("D and H"));
+        para.runs.push(TextRun::plain("2O"));
+        assert_eq!(render_paragraph_text(&para), "DRBD and H2O");
     }
 
     #[test]

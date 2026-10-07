@@ -10,6 +10,7 @@ use crate::model::{
 
 use super::heading_analyzer::{HeadingAnalyzer, HeadingDecision};
 use super::options::{RenderOptions, RevisionHandling, SectionMarkerStyle};
+use unparser_shared::markdown::emphasis_span;
 
 /// Map of resource IDs to their filenames
 type ResourceMap = HashMap<String, String>;
@@ -563,31 +564,18 @@ fn render_paragraph(
         && options.strip_redundant_emphasis_in_headings
         && all_runs_uniformly_bold(&merged_para);
 
-    // Render text runs with smart spacing
+    // The runs carry their own whitespace (`xml:space="preserve"`), so they are written
+    // side by side: a word split across two styles is still one word.
     let run_ctx = RunContext {
         in_table_cell: false,
         suppress_emphasis: suppress_heading_emphasis,
     };
     for (i, run) in merged_para.runs.iter().enumerate() {
-        let run_text = render_run(run, options, run_ctx);
-
-        // Add space between runs if needed
-        if i > 0 && !run_text.is_empty() && !output.is_empty() {
-            let last_char = output.chars().last();
-            let first_char = run_text.chars().next();
-
-            // Add space if:
-            // - Previous run doesn't end with space/newline
-            // - Current run doesn't start with space/punctuation
-            if let (Some(last), Some(first)) = (last_char, first_char) {
-                let needs_space =
-                    !last.is_whitespace() && !first.is_whitespace() && !is_no_space_before(first);
-                if needs_space {
-                    output.push(' ');
-                }
-            }
-        }
-
+        let after = merged_para
+            .runs
+            .get(i + 1)
+            .and_then(|next| next.text.chars().next());
+        let run_text = render_run(run, options, run_ctx, output.chars().next_back(), after);
         output.push_str(&run_text);
     }
 
@@ -629,14 +617,6 @@ fn all_runs_uniformly_bold(para: &Paragraph) -> bool {
         }
     }
     saw_text
-}
-
-/// Check if a character should NOT have a space before it.
-fn is_no_space_before(c: char) -> bool {
-    matches!(
-        c,
-        '.' | ',' | ':' | ';' | '!' | '?' | ')' | ']' | '}' | '"' | '\'' | '…'
-    )
 }
 
 /// Context flags passed to [`render_run`].
@@ -681,7 +661,15 @@ fn break_marker(run: &TextRun, options: &RenderOptions) -> &'static str {
     }
 }
 
-fn render_run(run: &TextRun, options: &RenderOptions, ctx: RunContext) -> String {
+/// Render one run. `before` is the last character already written and `after` the first
+/// one the next run will write — what the run's emphasis delimiters land between.
+fn render_run(
+    run: &TextRun,
+    options: &RenderOptions,
+    ctx: RunContext,
+    before: Option<char>,
+    after: Option<char>,
+) -> String {
     // Handle tracked changes based on revision_handling option
     match (&run.revision, &options.revision_handling) {
         // AcceptAll: show inserted text, hide deleted text
@@ -697,33 +685,71 @@ fn render_run(run: &TextRun, options: &RenderOptions, ctx: RunContext) -> String
         _ => {}
     }
 
-    // A run with nothing to say — empty, or whitespace only — gets no markup: emphasis or a
-    // link wrapped around nothing produces delimiters with no content between them. Its
-    // whitespace is still emitted, because that whitespace is what separates its neighbours.
-    let core = run.text.trim();
-    if core.is_empty() {
-        return format!("{}{}", run.text, break_marker(run, options));
-    }
+    let effective_bold = run.style.bold && !ctx.suppress_emphasis;
+    let effective_italic = run.style.italic && !ctx.suppress_emphasis;
+    let delimited = effective_bold || effective_italic || run.style.strikethrough;
+    let html_wrapped = run.style.superscript || run.style.subscript || run.style.underline;
+    // Whether the outermost markup is a `*`/`~~` delimiter that lands against this run's
+    // neighbours. Inside a tag or a link's brackets it lands against `>`/`[` instead, which
+    // CommonMark always accepts.
+    let outer_delimiter = match (&run.revision, &options.revision_handling) {
+        (RevisionType::Deleted, RevisionHandling::ShowMarkup) => true,
+        (RevisionType::Inserted, RevisionHandling::ShowMarkup) => false,
+        _ => delimited && !html_wrapped && run.hyperlink.is_none(),
+    };
+    let after = if break_marker(run, options).is_empty() {
+        after
+    } else {
+        Some('\n')
+    };
 
     // OOXML stores the whitespace around a word in the runs themselves — often in a run of
     // its own, or flagged with `xml:space="preserve"`. That whitespace sits *between* runs,
     // not inside the markup wrapping this one: `[label ](url)` puts the space inside the
     // link, and `**bold **` is not emphasis at all, because CommonMark refuses a closing
-    // delimiter preceded by whitespace. So the markup goes around the trimmed text and the
-    // whitespace is re-emitted outside it.
-    let leading_len = run.text.len() - run.text.trim_start().len();
-    let leading = &run.text[..leading_len];
-    let trailing = &run.text[leading_len + core.len()..];
-
-    let mut text = if options.escape_special_chars {
-        escape_markdown(core, ctx.in_table_cell)
+    // delimiter preceded by whitespace. Punctuation that touches a neighbouring word stays
+    // outside a delimiter for the same reason (`32*, s*` is not emphasis either).
+    let span = if outer_delimiter {
+        emphasis_span(&run.text, before, after)
     } else {
-        core.to_string()
+        emphasis_span(&run.text, None, None)
     };
+    // A run with nothing to say — empty, whitespace only, or punctuation between words —
+    // gets no markup: emphasis or a link wrapped around nothing produces delimiters with no
+    // content between them. Its text is still emitted, because it separates its neighbours.
+    let Some(span) = span else {
+        let text = if options.escape_special_chars {
+            escape_markdown(&run.text, ctx.in_table_cell)
+        } else {
+            run.text.clone()
+        };
+        return format!("{text}{}", break_marker(run, options));
+    };
+    let escape = |s: &str| {
+        if options.escape_special_chars {
+            escape_markdown(s, ctx.in_table_cell)
+        } else {
+            s.to_string()
+        }
+    };
+    let leading = escape(&run.text[..span.start]);
+    let trailing = escape(&run.text[span.end..]);
+    let mut text = escape(&run.text[span]);
 
-    // Apply formatting (innermost first)
+    // Apply formatting, innermost first. Emphasis goes inside any HTML tag, where its
+    // delimiters touch `>` and `<` rather than the neighbouring text.
     if run.style.code {
         text = format!("`{}`", text.replace('`', "\\`"));
+    }
+    if run.style.strikethrough {
+        text = format!("~~{}~~", text);
+    }
+    if effective_bold && effective_italic {
+        text = format!("***{}***", text);
+    } else if effective_bold {
+        text = format!("**{}**", text);
+    } else if effective_italic {
+        text = format!("*{}*", text);
     }
     if run.style.superscript {
         text = format!("<sup>{}</sup>", text);
@@ -733,18 +759,6 @@ fn render_run(run: &TextRun, options: &RenderOptions, ctx: RunContext) -> String
     }
     if run.style.underline {
         text = format!("<u>{}</u>", text);
-    }
-    if run.style.strikethrough {
-        text = format!("~~{}~~", text);
-    }
-    let effective_bold = run.style.bold && !ctx.suppress_emphasis;
-    let effective_italic = run.style.italic && !ctx.suppress_emphasis;
-    if effective_bold && effective_italic {
-        text = format!("***{}***", text);
-    } else if effective_bold {
-        text = format!("**{}**", text);
-    } else if effective_italic {
-        text = format!("*{}*", text);
     }
 
     // Handle hyperlinks
@@ -870,23 +884,11 @@ fn render_cell_content(
         };
 
         for (i, run) in merged_para.runs.iter().enumerate() {
-            let run_text = render_run(run, options, ctx);
-
-            // Add smart spacing between runs (like render_paragraph does)
-            if i > 0 && !run_text.is_empty() && !para_text.is_empty() {
-                let last_char = para_text.chars().last();
-                let first_char = run_text.chars().next();
-
-                if let (Some(last), Some(first)) = (last_char, first_char) {
-                    let needs_space = !last.is_whitespace()
-                        && !first.is_whitespace()
-                        && !is_no_space_before(first);
-                    if needs_space {
-                        para_text.push(' ');
-                    }
-                }
-            }
-
+            let after = merged_para
+                .runs
+                .get(i + 1)
+                .and_then(|next| next.text.chars().next());
+            let run_text = render_run(run, options, ctx, para_text.chars().next_back(), after);
             para_text.push_str(&run_text);
         }
 
@@ -1259,6 +1261,54 @@ mod tests {
         assert_eq!(md, "## Title");
     }
 
+    fn render_runs(runs: Vec<TextRun>) -> String {
+        let mut para = Paragraph::new();
+        para.runs = runs;
+        render_paragraph(
+            &para,
+            &RenderOptions::default(),
+            None,
+            &empty_resource_map(),
+        )
+    }
+
+    #[test]
+    fn test_runs_are_written_side_by_side() {
+        // The runs carry their own whitespace; a word split across two styles is one word.
+        let sub = TextStyle {
+            subscript: true,
+            ..TextStyle::default()
+        };
+        let md = render_runs(vec![
+            TextRun::plain("H"),
+            TextRun::styled("2", sub),
+            TextRun::plain("O and Hel"),
+            TextRun::styled("lo", TextStyle::bold()),
+            TextRun::plain(" world"),
+        ]);
+        assert_eq!(md, "H<sub>2</sub>O and Hel**lo** world");
+    }
+
+    #[test]
+    fn test_punctuation_against_a_word_stays_outside_the_markers() {
+        let md = render_runs(vec![
+            TextRun::plain("n = 32"),
+            TextRun::styled(", s", TextStyle::italic()),
+            TextRun::plain(" = 48"),
+            TextRun::styled(",", TextStyle::italic()),
+            TextRun::plain(" and"),
+        ]);
+        assert_eq!(md, "n = 32, *s* = 48, and");
+    }
+
+    #[test]
+    fn test_emphasis_goes_inside_a_superscript_tag() {
+        let mut bold_sup = TextStyle::bold();
+        bold_sup.superscript = true;
+        let md = render_runs(vec![TextRun::plain("x"), TextRun::styled("2", bold_sup)]);
+        assert_eq!(md, "x<sup>**2**</sup>");
+    }
+
     #[test]
     fn test_formatted_text() {
         let mut para = Paragraph::new();
@@ -1380,6 +1430,28 @@ mod tests {
         assert!(md.contains("| A | B |"));
         assert!(md.contains("| --- | --- |"));
         assert!(md.contains("| 1 | 2 |"));
+    }
+
+    #[test]
+    fn test_cell_runs_are_written_side_by_side_with_emphasis_off_punctuation() {
+        let mut para = Paragraph::new();
+        para.runs = vec![
+            TextRun::plain("Hel"),
+            TextRun::styled("lo", TextStyle::bold()),
+            TextRun::plain(" 32"),
+            TextRun::styled(", s", TextStyle::italic()),
+        ];
+        let mut cell = Cell::with_text("");
+        cell.content = vec![para];
+        let mut table = Table::new();
+        table.add_row(Row::header(vec![Cell::header("A")]));
+        table.add_row(Row {
+            cells: vec![cell],
+            is_header: false,
+            height: None,
+        });
+        let md = render_table(&table, &RenderOptions::default(), &empty_resource_map());
+        assert!(md.contains("| Hel**lo** 32, *s* |"), "{md}");
     }
 
     #[test]
