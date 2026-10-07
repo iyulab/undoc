@@ -658,3 +658,21 @@ class TestErrorKind:
         assert (kinds.STYLE_NOT_FOUND, kinds.RESOURCE_NOT_FOUND) == (10, 11)
         assert (kinds.ENCRYPTED, kinds.RENDER) == (12, 13)
         assert (kinds.INVALID_ARGUMENT, kinds.PANIC, kinds.INVALID_OUTPUT) == (100, 101, 102)
+
+
+def test_a_library_path_naming_no_file_is_an_error(tmp_path):
+    """UNDOC_LIB_PATH pointing at nothing fails the import instead of loading the packaged library."""
+    import subprocess
+
+    missing = tmp_path / "missing-library"
+    env = dict(os.environ, UNDOC_LIB_PATH=str(missing))
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1] / "src")
+    result = subprocess.run(
+        [sys.executable, "-c", "import undoc; undoc.version()"],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "UNDOC_LIB_PATH" in result.stderr and missing.name in result.stderr

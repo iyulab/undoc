@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Python: `UNDOC_LIB_PATH` naming no file is an error.** The binding fell back to its packaged
+  library without a word when the variable pointed at a path that does not exist, so a
+  mistyped path ran other code than the one asked for. Importing now raises `OSError` naming
+  the path.
+
 ## [0.15.0] - 2026-10-07
 
 ### Fixed
