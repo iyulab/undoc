@@ -634,11 +634,15 @@ success).
 
 Download from [GitHub Releases](https://github.com/iyulab/undoc/releases):
 
-| Platform | Library File |
-|----------|-------------|
-| Windows x64 | `undoc.dll` |
-| Linux x64 | `libundoc.so` |
-| macOS | `libundoc.dylib` |
+| Platform | Archive | Library |
+|----------|---------|---------|
+| Windows x64 | `libundoc-windows-x86_64-v<version>.zip` | `undoc.dll` |
+| Linux x64 (glibc) | `libundoc-linux-x86_64-v<version>.tar.gz` | `libundoc.so` |
+| Linux x64 (musl) | `libundoc-linux-x86_64-musl-v<version>.tar.gz` | `libundoc.so` |
+| macOS x64 | `libundoc-macos-x86_64-v<version>.tar.gz` | `libundoc.dylib` |
+| macOS arm64 | `libundoc-macos-aarch64-v<version>.tar.gz` | `libundoc.dylib` |
+
+Each archive holds the library and its C header, `undoc.h`.
 
 Or build from source:
 

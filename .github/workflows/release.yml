@@ -22,6 +22,7 @@ jobs:
     with:
       package-name: undoc
       version: ${{ inputs.version }}
+      ffi-archives: true
       npm-readme: bindings/wasm/README.md
       csharp-project-name: Undoc
       nuget-staging-mode: runtime-rid

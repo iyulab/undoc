@@ -25,6 +25,7 @@ typedef struct UndocDocument UndocDocument;
 #define UNDOC_FLAG_FRONTMATTER      1  /* Include YAML frontmatter */
 #define UNDOC_FLAG_ESCAPE_SPECIAL   2  /* Escape special Markdown characters */
 #define UNDOC_FLAG_PARAGRAPH_SPACING 4 /* Add blank lines between paragraphs */
+#define UNDOC_FLAG_REFINE            8 /* Apply the shape-refinement pass to the Markdown */
 
 /* JSON format options */
 #define UNDOC_JSON_PRETTY   0  /* Pretty-printed JSON with indentation */
@@ -186,11 +187,57 @@ char* undoc_get_title(const UndocDocument* doc);
 char* undoc_get_author(const UndocDocument* doc);
 
 /**
+ * Get the ids of all embedded resources as a JSON array.
+ *
+ * A document with no resources returns "[]", never NULL.
+ *
+ * @param doc Document handle
+ * @return JSON array such as ["rId1", "rId2"], or NULL on error.
+ *         Must be freed with undoc_free_string().
+ */
+char* undoc_get_resource_ids(const UndocDocument* doc);
+
+/**
+ * Get one resource's metadata as a JSON object, without its bytes.
+ *
+ * The object carries id, type, filename, mime_type, size, width, height, alt_text, role
+ * and companion_of. role is "primary" for an image the document shows (or media it plays),
+ * "alternate" for another encoding of one (a picture's SVG original) and "layer" for a
+ * layer composited onto one; companion_of is the id of the primary it belongs to.
+ *
+ * @param doc Document handle
+ * @param resource_id Resource id (UTF-8, NUL-terminated)
+ * @return JSON object, or NULL if the resource does not exist or on error.
+ *         Must be freed with undoc_free_string().
+ */
+char* undoc_get_resource_info(const UndocDocument* doc, const char* resource_id);
+
+/**
+ * Get one resource's bytes.
+ *
+ * @param doc Document handle
+ * @param resource_id Resource id (UTF-8, NUL-terminated)
+ * @param out_len Receives the length of the returned buffer. Left untouched when an
+ *                argument is rejected.
+ * @return Buffer, or NULL if the resource does not exist or on error.
+ *         Must be freed with undoc_free_bytes() together with *out_len.
+ */
+uint8_t* undoc_get_resource_data(const UndocDocument* doc, const char* resource_id, size_t* out_len);
+
+/**
  * Free a string allocated by this library.
  *
  * @param str String pointer (may be NULL)
  */
 void undoc_free_string(char* str);
+
+/**
+ * Free a buffer returned by undoc_get_resource_data().
+ *
+ * @param data Buffer pointer (may be NULL)
+ * @param len The length undoc_get_resource_data() wrote to out_len
+ */
+void undoc_free_bytes(uint8_t* data, size_t len);
 
 #ifdef __cplusplus
 }

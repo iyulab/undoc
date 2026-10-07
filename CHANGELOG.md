@@ -7,7 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Prebuilt C-ABI libraries on every release.** Each GitHub Release now carries
+  `libundoc-<platform>-v<version>` archives for Windows x64, Linux x64 (glibc and musl) and
+  macOS (x64 and arm64), each holding the library and `undoc.h`. Until now the library came
+  only inside the .NET and Python packages, or from a source build.
+
 ### Fixed
+
+- **The C header declares the whole C ABI.** `undoc_get_resource_ids`,
+  `undoc_get_resource_info`, `undoc_get_resource_data`, `undoc_free_bytes` and
+  `UNDOC_FLAG_REFINE` were exported but missing from `include/undoc.h`.
 
 - **Python: `UNDOC_LIB_PATH` naming no file is an error.** The binding fell back to its packaged
   library without a word when the variable pointed at a path that does not exist, so a
