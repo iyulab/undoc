@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Link and image destinations read back as written.** A target with a parenthesis that does
+  not balance (`notes).txt`), a trailing backslash, a character reference (`&amp;`) or a line
+  break was written in a form CommonMark reads differently — the link ended early or pointed
+  elsewhere. Such targets are now written in the `<...>` form or escaped, and a `|` in a target
+  inside a table cell no longer ends the cell. Image alt text additionally escapes `<` and a
+  character reference. The writers now come from `unparser-shared` 0.4, shared with the other
+  parsers of the family.
+
 ## [0.17.0] - 2026-10-09
 
 ### Added
