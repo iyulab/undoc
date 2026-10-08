@@ -90,19 +90,6 @@ pub(super) fn parse_clx(table: &[u8], clx: FcLcb) -> Result<Vec<Piece>> {
     Ok(pieces)
 }
 
-/// Decode a byte of compressed text: Windows-1252, as [MS-DOC] 2.4.1 specifies.
-pub(super) fn cp1252(byte: u8) -> char {
-    const HIGH: [u16; 32] = [
-        0x20AC, 0x0081, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021, 0x02C6, 0x2030, 0x0160,
-        0x2039, 0x0152, 0x008D, 0x017D, 0x008F, 0x0090, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022,
-        0x2013, 0x2014, 0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0x009D, 0x017E, 0x0178,
-    ];
-    match byte {
-        0x80..=0x9F => char::from_u32(HIGH[(byte - 0x80) as usize] as u32).unwrap_or('\u{FFFD}'),
-        _ => byte as char,
-    }
-}
-
 /// The characters at positions `[from, to)`, in order, each with its stream offset.
 ///
 /// Positions no piece covers are absent from the result rather than invented; a piece that
@@ -129,7 +116,8 @@ pub(super) fn read_chars(
         if piece.compressed {
             for (i, &b) in bytes.iter().enumerate() {
                 out.push(DocChar {
-                    ch: cp1252(b),
+                    // Compressed text is Windows-1252 ([MS-DOC] 2.4.1).
+                    ch: crate::codepage::windows_1252(b),
                     fc: (first + i) as u32,
                     cp: start + i as u32,
                 });
@@ -162,14 +150,6 @@ pub(super) fn read_chars(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn cp1252_maps_the_windows_block_and_passes_latin1_through() {
-        assert_eq!(cp1252(b'A'), 'A');
-        assert_eq!(cp1252(0x93), '\u{201C}');
-        assert_eq!(cp1252(0x80), '\u{20AC}');
-        assert_eq!(cp1252(0xE9), 'é');
-    }
 
     fn clx(pieces: &[(u32, u32, u32, bool)]) -> Vec<u8> {
         let mut plc = Vec::new();

@@ -5,7 +5,7 @@ use super::XlsParser;
 use crate::error::Error;
 use crate::model::Block;
 
-fn rec(out: &mut Vec<u8>, kind: u16, data: &[u8]) {
+pub(super) fn rec(out: &mut Vec<u8>, kind: u16, data: &[u8]) {
     out.extend_from_slice(&kind.to_le_bytes());
     out.extend_from_slice(&(data.len() as u16).to_le_bytes());
     out.extend_from_slice(data);
@@ -51,6 +51,10 @@ enum C {
     Merge(u16, u16, u16, u16),
     Link(u16, u16, &'static str),
     Comment(u16, u16, u16, &'static str),
+    /// A cell with rich text runs (`RSTRING`).
+    Rich(u16, u16, &'static str),
+    /// A chart embedded in the sheet: a substream of its own, BOF to EOF.
+    EmbeddedChart,
 }
 
 struct Sheet {
@@ -168,6 +172,18 @@ fn build(book: Book) -> Vec<u8> {
                     d.extend([*code, 1]);
                     rec(&mut stream, 0x0205, &d);
                 }
+                C::Rich(r, col, text) => {
+                    let mut d = cell_head(*r, *col, 0);
+                    d.extend(xl_string(text));
+                    d.extend(1u16.to_le_bytes()); // one formatting run
+                    d.extend([0u8; 4]);
+                    rec(&mut stream, 0x00D6, &d);
+                }
+                C::EmbeddedChart => {
+                    rec(&mut stream, 0x0809, &bof(0x0020));
+                    rec(&mut stream, 0x1002, &[0u8; 16]); // CHART
+                    rec(&mut stream, 0x000A, &[]);
+                }
                 C::Merge(top, bottom, left, right) => merges.push([*top, *bottom, *left, *right]),
                 C::Link(r, col, url) => {
                     let mut d: Vec<u8> = [*r, *r, *col, *col]
@@ -234,7 +250,7 @@ fn parse(book: Book) -> crate::Result<crate::Document> {
     XlsParser::from_bytes(build(book))?.parse()
 }
 
-fn grid(doc: &crate::Document, sheet: usize) -> Vec<Vec<String>> {
+pub(super) fn grid(doc: &crate::Document, sheet: usize) -> Vec<Vec<String>> {
     let Some(Block::Table(table)) = doc.sections[sheet].content.first() else {
         panic!(
             "sheet {sheet} has no table: {:?}",
@@ -392,16 +408,57 @@ fn an_encrypted_workbook_is_reported_as_encrypted() {
 }
 
 #[test]
-fn an_earlier_biff_version_is_named_as_unsupported() {
+fn an_unknown_biff_version_is_named_as_unsupported() {
     let err = parse(Book {
-        biff_version: Some(0x0500),
+        biff_version: Some(0x0400),
         ..Default::default()
     })
     .unwrap_err();
     assert!(
-        matches!(err, Error::UnsupportedFormat(ref m) if m.contains("BIFF8")),
+        matches!(err, Error::UnsupportedFormat(ref m) if m.contains("0x0400")),
         "{err}"
     );
+}
+
+/// An embedded chart is a substream inside the worksheet's, with an EOF of its own; the
+/// sheet goes on after it — merges and comments are written at the sheet's end.
+#[test]
+fn an_embedded_chart_does_not_end_its_sheet() {
+    let doc = parse(Book {
+        strings: vec!["Wide", "after"],
+        sheets: vec![Sheet {
+            name: "S",
+            kind: 0,
+            cells: vec![
+                C::Sst(0, 0, 0),
+                C::EmbeddedChart,
+                C::Sst(1, 0, 1),
+                C::Comment(1, 0, 3, "kept"),
+                C::Merge(0, 0, 0, 1),
+            ],
+        }],
+        ..Default::default()
+    })
+    .unwrap();
+    let Some(Block::Table(table)) = doc.sections[0].content.first() else {
+        panic!()
+    };
+    assert_eq!(table.rows[0].cells[0].col_span, 2);
+    assert_eq!(table.rows[1].cells[0].plain_text(), "after [Comment: kept]");
+}
+
+#[test]
+fn a_rich_text_cell_reads_as_its_text() {
+    let doc = parse(Book {
+        sheets: vec![Sheet {
+            name: "S",
+            kind: 0,
+            cells: vec![C::Rich(0, 0, "bold start, plain rest")],
+        }],
+        ..Default::default()
+    })
+    .unwrap();
+    assert_eq!(grid(&doc, 0), [["bold start, plain rest"]]);
 }
 
 #[test]

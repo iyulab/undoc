@@ -118,7 +118,7 @@ fn value_at(data: &[u8], at: usize, codepage: u16) -> Option<Value> {
         VT_LPSTR => {
             let len = u32_at(data, body)? as usize;
             let bytes = data.get(body + 4..body + 4 + len)?;
-            let text = decode(bytes, codepage)?;
+            let text = crate::codepage::decode_strict(bytes, codepage)?;
             let text = text.trim_end_matches('\0').trim().to_string();
             (!text.is_empty()).then_some(Value::Text(text))
         }
@@ -168,69 +168,6 @@ fn filetime(ticks: u64) -> Option<String> {
         rem % 3600 / 60,
         rem % 60
     ))
-}
-
-/// Decode a property string in a Windows code page. Without the `codepages` feature only the
-/// code pages that need no tables are decoded — and any string that is plain ASCII; anything
-/// else is left out rather than shown as the wrong characters.
-fn decode(bytes: &[u8], codepage: u16) -> Option<String> {
-    match codepage {
-        // CP_WINUNICODE, CP_UTF8 (65001 read as a signed 16-bit value is -535).
-        1200 => {
-            let units: Vec<u16> = bytes
-                .as_chunks::<2>()
-                .0
-                .iter()
-                .map(|&c| u16::from_le_bytes(c))
-                .collect();
-            Some(String::from_utf16_lossy(&units))
-        }
-        65001 => String::from_utf8(bytes.to_vec()).ok(),
-        1252 => Some(bytes.iter().map(|&b| windows_1252(b)).collect()),
-        _ if bytes.is_ascii() => Some(String::from_utf8_lossy(bytes).into_owned()),
-        _ => decode_with_tables(bytes, codepage),
-    }
-}
-
-fn windows_1252(byte: u8) -> char {
-    const HIGH: [u16; 32] = [
-        0x20AC, 0x0081, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021, 0x02C6, 0x2030, 0x0160,
-        0x2039, 0x0152, 0x008D, 0x017D, 0x008F, 0x0090, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022,
-        0x2013, 0x2014, 0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0x009D, 0x017E, 0x0178,
-    ];
-    match byte {
-        0x80..=0x9F => char::from_u32(HIGH[(byte - 0x80) as usize] as u32).unwrap_or('\u{FFFD}'),
-        _ => byte as char,
-    }
-}
-
-#[cfg(feature = "codepages")]
-fn decode_with_tables(bytes: &[u8], codepage: u16) -> Option<String> {
-    use encoding_rs::*;
-    let encoding: &'static Encoding = match codepage {
-        874 => WINDOWS_874,
-        932 => SHIFT_JIS,
-        936 => GBK,
-        949 => EUC_KR,
-        950 => BIG5,
-        1250 => WINDOWS_1250,
-        1251 => WINDOWS_1251,
-        1253 => WINDOWS_1253,
-        1254 => WINDOWS_1254,
-        1255 => WINDOWS_1255,
-        1256 => WINDOWS_1256,
-        1257 => WINDOWS_1257,
-        1258 => WINDOWS_1258,
-        10000 => MACINTOSH,
-        _ => return None,
-    };
-    let (text, _, had_errors) = encoding.decode(bytes);
-    (!had_errors).then(|| text.into_owned())
-}
-
-#[cfg(not(feature = "codepages"))]
-fn decode_with_tables(_bytes: &[u8], _codepage: u16) -> Option<String> {
-    None
 }
 
 #[cfg(test)]

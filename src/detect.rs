@@ -21,7 +21,7 @@ const ZIP_MAGIC: [u8; 4] = [0x50, 0x4B, 0x03, 0x04];
 /// package is wrapped inside a CFB container. The header alone cannot tell them apart —
 /// [`classify_cfb_container`] walks the directory, because the two answers send a caller
 /// in opposite directions: one looks for a converter, the other for a password.
-const CFB_MAGIC: [u8; 8] = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
+pub(crate) const CFB_MAGIC: [u8; 8] = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
 
 /// Stream that marks a CFB container as an ECMA-376 encrypted OOXML package.
 ///
@@ -166,6 +166,10 @@ fn classify_container_magic<R: Read + Seek>(reader: &mut R) -> Result<Option<For
         return Ok(Some(format));
     }
 
+    if is_bare_biff(&head[..filled]) {
+        return Ok(Some(FormatType::Xls));
+    }
+
     if filled < ZIP_MAGIC.len() || head[..ZIP_MAGIC.len()] != ZIP_MAGIC {
         return Err(Error::UnknownFormat);
     }
@@ -206,25 +210,39 @@ fn classify_cfb_container<R: Read + Seek>(reader: &mut R) -> Result<FormatType> 
     if container.exists("/WordDocument") {
         return Ok(FormatType::Doc);
     }
-    if container.exists("/Workbook") {
+    // `Book` is the workbook stream of Excel 5.0/95 (BIFF5/BIFF7).
+    if container.exists("/Workbook") || container.exists("/Book") {
         return Ok(FormatType::Xls);
     }
     if container.exists("/PowerPoint Document") {
         return Ok(FormatType::Ppt);
     }
 
-    // Well-known root streams of the pre-2007 binary formats not read. Checked only to make
-    // the message specific; absence of both does not make the file openable.
-    let legacy = container
-        .exists("/Book")
-        .then_some("Excel 5.0/95 (.xls, BIFF5)");
-
-    Err(Error::UnsupportedFormat(match legacy {
-        Some(format) => format!("legacy binary Office format: {format}"),
-        None => "OLE/CFB container that is not a recognised Office document or encrypted \
-             OOXML package"
+    Err(Error::UnsupportedFormat(
+        "OLE/CFB container that is not a recognised Office document or encrypted OOXML package"
             .to_string(),
-    }))
+    ))
+}
+
+/// Whether `head` begins a bare BIFF record stream — how Excel 2.x–4.0 saved a workbook, with
+/// no container around it: a `BOF` record of BIFF2, BIFF3 or BIFF4, its expected length, and
+/// a substream type a workbook can start with.
+fn is_bare_biff(head: &[u8]) -> bool {
+    let [k0, k1, s0, s1, _, _, t0, t1, ..] = *head else {
+        return false;
+    };
+    let (kind, size, substream) = (
+        u16::from_le_bytes([k0, k1]),
+        u16::from_le_bytes([s0, s1]),
+        u16::from_le_bytes([t0, t1]),
+    );
+    let expected_size = match kind {
+        0x0009 => 4,
+        0x0209 | 0x0409 => 6,
+        _ => return false,
+    };
+    // Worksheet, chart, macro sheet, BIFF4 workbook.
+    size == expected_size && matches!(substream, 0x0010 | 0x0020 | 0x0040 | 0x0100)
 }
 
 /// Detect the format type from a reader.
@@ -463,21 +481,32 @@ mod tests {
         assert_eq!(format, FormatType::Ppt);
     }
 
-    /// The one binary Office layout not read — Excel 5.0/95 — is named, not just refused.
+    /// Excel 5.0/95 keeps its workbook in a `Book` stream rather than `Workbook`.
     #[test]
-    fn test_legacy_binary_office_names_the_format_it_found() {
-        let err = detect_format_from_bytes(&cfb_with_streams(&["/Book"])).unwrap_err();
+    fn test_excel_95_workbook_is_detected_as_xls() {
+        let format = detect_format_from_bytes(&cfb_with_streams(&["/Book"])).unwrap();
+        assert_eq!(format, FormatType::Xls);
+    }
 
-        assert_eq!(
-            err.kind(),
-            crate::ErrorKind::UnsupportedFormat,
-            "got: {err}"
-        );
-        let message = err.to_string();
-        assert!(
-            message.contains("Excel 5.0/95"),
-            "should be named in: {message}"
-        );
+    /// Excel 2.x–4.0 saved the record stream with no container: the BOF record is the
+    /// signature. Anything else that starts with those two bytes is not taken for one.
+    #[test]
+    fn test_bare_biff_streams_are_detected_as_xls() {
+        for head in [
+            &[0x09, 0x00, 0x04, 0x00, 0x02, 0x00, 0x10, 0x00][..],
+            &[0x09, 0x02, 0x06, 0x00, 0x00, 0x00, 0x10, 0x00, 0, 0],
+            &[0x09, 0x04, 0x06, 0x00, 0x00, 0x00, 0x00, 0x01, 0, 0],
+        ] {
+            assert_eq!(detect_format_from_bytes(head).unwrap(), FormatType::Xls);
+        }
+        for not_biff in [
+            &[0x09, 0x04, 0x07, 0x00, 0x00, 0x00, 0x10, 0x00, 0, 0][..], // wrong length
+            &[0x09, 0x04, 0x06, 0x00, 0x00, 0x00, 0x99, 0x00, 0, 0],     // no such substream
+            &[0x09, 0x04, 0x06],                                         // too short
+        ] {
+            let err = detect_format_from_bytes(not_biff).unwrap_err();
+            assert_eq!(err.kind(), crate::ErrorKind::UnknownFormat, "got: {err}");
+        }
     }
 
     /// The branch that exists for a container whose header proves it is an Office file

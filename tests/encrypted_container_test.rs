@@ -42,22 +42,26 @@ fn parsing_an_ecma376_encrypted_package_reports_encrypted() {
 }
 
 /// The same header, the opposite answer — this is the pair the classification exists for.
-/// A legacy binary format the library does not read is named as unsupported.
+/// A container that holds no Office document the library recognises is unsupported.
 #[test]
-fn parsing_a_legacy_binary_format_not_read_reports_an_unsupported_format() {
-    let biff5 = cfb_with_streams(&["/Book"]);
+fn parsing_an_unrecognised_cfb_container_reports_an_unsupported_format() {
+    let other = cfb_with_streams(&["/Contents"]);
     let encrypted = cfb_with_streams(&["/EncryptedPackage"]);
 
-    assert_eq!(biff5[..CFB_MAGIC.len()], CFB_MAGIC);
+    assert_eq!(other[..CFB_MAGIC.len()], CFB_MAGIC);
     assert_eq!(encrypted[..CFB_MAGIC.len()], CFB_MAGIC);
 
-    let err = parse_bytes(&biff5).expect_err("an Excel 5.0/95 workbook is not read");
+    let err = parse_bytes(&other).expect_err("no Office document in it");
 
     assert_eq!(err.kind(), ErrorKind::UnsupportedFormat, "got: {err}");
-    assert!(
-        err.to_string().contains("Excel 5.0/95"),
-        "the format should be named: {err}"
-    );
+}
+
+/// An Excel 5.0/95 workbook (`Book` stream) is read, so an empty one is a damaged workbook.
+#[test]
+fn an_empty_excel_95_book_stream_is_a_damaged_workbook() {
+    let err = parse_bytes(&cfb_with_streams(&["/Book"])).unwrap_err();
+
+    assert_eq!(err.kind(), ErrorKind::InvalidData, "got: {err}");
 }
 
 /// A Word 97-2003 document is read, so a Word stream with nothing in it is a damaged
@@ -75,7 +79,7 @@ fn an_empty_word_stream_is_a_damaged_document() {
 #[test]
 fn the_two_cfb_answers_are_distinguishable() {
     let encrypted = parse_bytes(&cfb_with_streams(&["/EncryptedPackage"])).unwrap_err();
-    let legacy = parse_bytes(&cfb_with_streams(&["/Book"])).unwrap_err();
+    let legacy = parse_bytes(&cfb_with_streams(&["/Contents"])).unwrap_err();
 
     assert_ne!(encrypted.kind(), legacy.kind());
 }

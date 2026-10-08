@@ -14,8 +14,9 @@ A high-performance Rust library for extracting content from Microsoft Office doc
 - **Multi-format support**: DOCX (Word), XLSX (Excel), PPTX (PowerPoint), and the 97-2003
   binary formats DOC, XLS and PPT — paragraphs, headings, tables, lists, notes and hyperlinks
   from DOC; every worksheet's cells, dates, links and comments from XLS; every slide's text,
-  links and notes from PPT (encrypted files report `Encrypted`; Word 6.0/95 and Excel 5.0/95
-  files are not supported)
+  links and notes from PPT (encrypted files report `Encrypted`; Word 6.0/95 files are not
+  supported). XLS covers every binary Excel version: 97-2003, 5.0/95 and the 2.x–4.0 files,
+  reading pre-97 text in the workbook's code page
 - **Multiple output formats**: Markdown, Plain Text, JSON (with full metadata)
 - **Structure preservation**: Headings, lists, tables, inline formatting
 - **Smart heading detection**: Style-based heading recognition (English/Korean)
@@ -705,6 +706,9 @@ Complete document structure with metadata:
 | Word | .docx | Supported |
 | Excel | .xlsx | Supported |
 | PowerPoint | .pptx | Supported |
+| Word 97-2003 | .doc | Supported (Word 6.0/95 is not) |
+| Excel binary | .xls | Supported — Excel 97-2003, 5.0/95 and 2.x–4.0 |
+| PowerPoint 97-2003 | .ppt | Supported |
 
 ---
 
@@ -715,6 +719,10 @@ Complete document structure with metadata:
 | `docx` | Word document support | Yes |
 | `xlsx` | Excel workbook support | Yes |
 | `pptx` | PowerPoint presentation support | Yes |
+| `doc` | Word 97-2003 document support | Yes |
+| `xls` | Excel binary workbook support (97-2003, 5.0/95, 2.x–4.0) | Yes |
+| `ppt` | PowerPoint 97-2003 presentation support | Yes |
+| `codepages` | Decode legacy text in any Windows code page (East Asian, Cyrillic, …); without it, only Windows-1252, UTF-8/16 and ASCII | Yes |
 | `refine` | Markdown shape-refinement pass (`RenderOptions::refine`) | Yes |
 | `ffi` | C-ABI foreign function interface | No |
 | `async` | Async I/O with Tokio | No |

@@ -1,9 +1,15 @@
-//! BIFF8 record stream ([MS-XLS] 2.1.4): a sequence of `(type, size, data)` records, where a
-//! record too long for one is carried on in `CONTINUE` records.
+//! BIFF record stream ([MS-XLS] 2.1.4): a sequence of `(type, size, data)` records, where a
+//! record too long for one is carried on in `CONTINUE` records. The framing is the same in every
+//! BIFF version since Excel 2.x; what changed between versions is the record types and layouts,
+//! named here by the version that uses them.
 
 use crate::error::{Error, Result};
 
 pub(super) const BOF: u16 = 0x0809;
+/// The `BOF` of BIFF2, BIFF3 and BIFF4 — the record type itself says the version.
+pub(super) const BOF_BIFF2: u16 = 0x0009;
+pub(super) const BOF_BIFF3: u16 = 0x0209;
+pub(super) const BOF_BIFF4: u16 = 0x0409;
 pub(super) const EOF: u16 = 0x000A;
 pub(super) const CONTINUE: u16 = 0x003C;
 pub(super) const FILEPASS: u16 = 0x002F;
@@ -25,8 +31,28 @@ pub(super) const HLINK: u16 = 0x01B8;
 pub(super) const OBJ: u16 = 0x005D;
 pub(super) const TXO: u16 = 0x01B6;
 pub(super) const NOTE: u16 = 0x001C;
+pub(super) const CODEPAGE: u16 = 0x0042;
+/// `FONT` of BIFF5 and later — the first that names a character set.
+pub(super) const FONT: u16 = 0x0031;
+/// A cell with rich text runs: BIFF5's byte string, BIFF8's `XLUnicodeString`.
+pub(super) const RSTRING: u16 = 0x00D6;
+/// BIFF4 workbook: the name of the worksheet substream that follows it.
+pub(super) const SHEETHDR: u16 = 0x008F;
+/// BIFF2–BIFF3 number format: the string alone, indexed by its order.
+pub(super) const FORMAT_BIFF2: u16 = 0x001E;
+pub(super) const XF_BIFF3: u16 = 0x0243;
+pub(super) const XF_BIFF4: u16 = 0x0443;
+pub(super) const FORMULA_BIFF3: u16 = 0x0206;
+pub(super) const FORMULA_BIFF4: u16 = 0x0406;
+/// BIFF2 cell records, whose head is a 3-byte cell attribute instead of an XF index.
+pub(super) const INTEGER_BIFF2: u16 = 0x0002;
+pub(super) const NUMBER_BIFF2: u16 = 0x0003;
+pub(super) const LABEL_BIFF2: u16 = 0x0004;
+pub(super) const BOOLERR_BIFF2: u16 = 0x0005;
+pub(super) const STRING_BIFF2: u16 = 0x0007;
 
-/// The BIFF version in a BIFF8 `BOF`.
+/// The BIFF version in a BIFF5 and later `BOF` (BIFF7 — Excel 95 — writes BIFF5's).
+pub(super) const BIFF5: u16 = 0x0500;
 pub(super) const BIFF8: u16 = 0x0600;
 
 /// One record, with the data of the `CONTINUE` records that follow it kept as separate
@@ -53,6 +79,11 @@ pub(super) struct Records<'a> {
 impl<'a> Records<'a> {
     pub fn new(stream: &'a [u8], offset: usize) -> Self {
         Self { stream, at: offset }
+    }
+
+    /// The stream offset of the next record.
+    pub fn position(&self) -> usize {
+        self.at
     }
 
     fn header(&self, at: usize) -> Option<(u16, usize)> {
@@ -214,6 +245,36 @@ impl<'a> Cursor<'a> {
     pub fn hyperlink_string(&mut self) -> Result<String> {
         let count = self.u32()? as usize;
         self.utf16_within(count * 2)
+    }
+
+    /// `n` bytes, read on across `CONTINUE` boundaries — a byte string restarts with no flags.
+    pub fn bytes(&mut self, n: usize) -> Result<Vec<u8>> {
+        let mut out = Vec::with_capacity(n.min(1 << 16));
+        for _ in 0..n {
+            out.push(self.u8()?);
+        }
+        Ok(out)
+    }
+
+    /// The rest of the record, continuations included.
+    pub fn rest(&mut self) -> Vec<u8> {
+        let mut out = Vec::new();
+        while let Ok(b) = self.u8() {
+            out.push(b);
+        }
+        out
+    }
+
+    /// A byte string with an 8-bit count — BIFF2–BIFF7 text, in the workbook's code page.
+    pub fn byte_string8(&mut self) -> Result<Vec<u8>> {
+        let n = self.u8()? as usize;
+        self.bytes(n)
+    }
+
+    /// A byte string with a 16-bit count — BIFF3–BIFF7 cell text.
+    pub fn byte_string16(&mut self) -> Result<Vec<u8>> {
+        let n = self.u16()? as usize;
+        self.bytes(n)
     }
 
     /// `XLUnicodeRichExtendedString` ([MS-XLS] 2.5.293) — the shared string table's entries.

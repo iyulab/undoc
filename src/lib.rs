@@ -56,6 +56,8 @@
 //! - `ffi`: C-ABI bindings for foreign language integration
 
 mod charts;
+#[cfg(any(feature = "doc", feature = "xls", feature = "ppt"))]
+mod codepage;
 pub mod container;
 mod decode;
 pub mod detect;

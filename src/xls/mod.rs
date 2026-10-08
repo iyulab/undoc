@@ -1,9 +1,14 @@
-//! Excel 97-2003 workbook (.xls) reader.
+//! Excel binary workbook (.xls) reader.
 //!
-//! Reads the BIFF8 record stream ([MS-XLS]): the workbook globals (sheets, shared strings,
-//! number formats) and each worksheet's cell records, assembled into one table per sheet by
-//! the same rules as the .xlsx reader. Excel 5.0/95 (BIFF5) workbooks are reported as
-//! unsupported; encrypted ones as [`Error::Encrypted`](crate::Error::Encrypted).
+//! Reads the BIFF record stream of every Excel version that wrote one: Excel 97-2003 (BIFF8,
+//! [MS-XLS]) and Excel 5.0/95 (BIFF5/BIFF7) in a compound file, and the bare streams of
+//! Excel 2.x, 3.0 and 4.0 (BIFF2–BIFF4, including the BIFF4 multi-sheet workbook). The
+//! workbook globals (sheets, shared strings, number formats) and each worksheet's cell
+//! records are assembled into one table per sheet by the same rules as the .xlsx reader.
+//!
+//! Text before BIFF8 is stored in the workbook's code page: the one its `CODEPAGE` record
+//! names, else the character set of its fonts, else Windows-1252. Encrypted workbooks are
+//! reported as [`Error::Encrypted`](crate::Error::Encrypted).
 //!
 //! # Example
 //!
@@ -25,3 +30,5 @@ pub use parser::XlsParser;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_legacy;

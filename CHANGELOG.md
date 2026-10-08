@@ -38,8 +38,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or `a:buAutoNum` at a nearer level replaces an inherited picture. The image a slide
   inherits this way is listed with the slide's media; an image that no slide paragraph ends up
   with is still not listed.
+- **Excel 5.0/95 and Excel 2.x–4.0 workbooks are read.** `.xls` files from every binary Excel
+  version now parse into the same sheet tables as Excel 97-2003 ones: Excel 5.0/95 (BIFF5/BIFF7,
+  a `Book` stream in a compound file) and the bare record streams of Excel 2.x, 3.0 and 4.0
+  (BIFF2–BIFF4), including the Excel 4.0 multi-sheet workbook. Cells, numbers, dates, formula
+  results and comments are read as in BIFF8; these versions have no merged cells or hyperlinks.
+  Text before BIFF8 is in a code page: the one the workbook's `CODEPAGE` record names, else the
+  character set of its fonts (so an Excel 95 workbook written in Korean without a `CODEPAGE`
+  record is still read as Korean), else Windows-1252. A byte the code page cannot decode — or any
+  non-ASCII byte in a code page left out by building without the `codepages` feature — reads as
+  U+FFFD instead of being dropped. Format detection recognises a compound file with a `Book`
+  stream and a bare BIFF2–BIFF4 stream as `FormatType::Xls`; both used to be refused
+  (`UnsupportedFormat` and `UnknownFormat`).
 
 ### Fixed
+
+- **An `.xls` sheet with an embedded chart lost everything written after the chart** — its merged
+  cells and comments among them: the chart's own end-of-substream record was taken for the
+  sheet's. Embedded substreams are now passed over.
+- **Rich-text cells in `.xls` workbooks (`RSTRING`) were left out.** Their text is now read.
 
 - A picture inherited the description of an earlier shape that held no picture (a described
   text box before a picture with no description of its own), and a picture bullet took the
