@@ -89,6 +89,53 @@ fn resolve_image_path(resource_id: &str, resource_map: &ResourceMap, prefix: &st
     format_link_destination(&format!("{}{}", prefix, filename))
 }
 
+/// Render a picture as `![alt](destination)`.
+///
+/// The alt text is data from the document and may be anything a person typed into a
+/// picture's description box -- several lines, blank lines, brackets. Written verbatim, a
+/// blank line ends the paragraph and the image is read back as literal text plus a body
+/// paragraph, and an unbalanced `]` closes the link text early. So the text is flattened to
+/// one line and the characters that are syntax inside link text are escaped. The original
+/// text stays untouched in the document model and the JSON output.
+fn image_markdown(alt: &str, destination: &str, in_table_cell: bool) -> String {
+    format!(
+        "![{}]({})",
+        escape_image_alt(alt, in_table_cell),
+        destination
+    )
+}
+
+/// Make `alt` safe to place between the brackets of `![...]`.
+///
+/// - Every run of whitespace (newlines, tabs, blank lines, repeated spaces) becomes one
+///   space and the ends are trimmed: link text cannot span a paragraph break, and a line
+///   inside it that starts with `#`, `-` or `>` is block syntax to some renderers.
+/// - `\`, `[`, `]` are escaped: they end or nest the link text. `` ` `` is escaped so a
+///   code span cannot swallow the closing bracket.
+/// - `|` is escaped inside a table cell, where it would end the cell.
+///
+/// `*` and `_` are left alone: unmatched they are literal and matched they only style the
+/// text, neither can end the image.
+fn escape_image_alt(alt: &str, in_table_cell: bool) -> String {
+    let mut out = String::with_capacity(alt.len());
+    for word in alt.split_whitespace() {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        for c in word.chars() {
+            match c {
+                '\\' | '[' | ']' | '`' => {
+                    out.push('\\');
+                    out.push(c);
+                }
+                '|' if in_table_cell => out.push_str("\\|"),
+                _ => out.push(c),
+            }
+        }
+    }
+    out
+}
+
 /// Format a link/image destination for `[text](destination)` syntax, wrapping it in
 /// `<...>` when it contains a character CommonMark's bare-parenthesis destination form
 /// forbids. A destination with a raw space is not valid CommonMark outside `<...>` at
@@ -208,7 +255,8 @@ fn render_section_impl(
                     let alt = alt_text.as_deref().unwrap_or("image");
                     let path =
                         resolve_image_path(resource_id, resource_map, &options.image_path_prefix);
-                    output.push_str(&format!("![{}]({})\n\n", alt, path));
+                    output.push_str(&image_markdown(alt, &path, false));
+                    output.push_str("\n\n");
                 }
             }
         }
@@ -379,7 +427,8 @@ fn to_markdown_with_analyzer(
                             &resource_map,
                             &options.image_path_prefix,
                         );
-                        output.push_str(&format!("![{}]({})\n\n", alt, path));
+                        output.push_str(&image_markdown(alt, &path, false));
+                        output.push_str("\n\n");
                     }
                 }
             }
@@ -597,7 +646,7 @@ fn render_paragraph(
         }
         let alt = image.alt_text.as_deref().unwrap_or("image");
         let path = resolve_image_path(&image.resource_id, resource_map, &options.image_path_prefix);
-        output.push_str(&format!("![{}]({})", alt, path));
+        output.push_str(&image_markdown(alt, &path, false));
     }
 
     output
@@ -912,7 +961,7 @@ fn render_cell_content(
             let alt = image.alt_text.as_deref().unwrap_or("image");
             let path =
                 resolve_image_path(&image.resource_id, resource_map, &options.image_path_prefix);
-            parts.push(format!("![{}]({})", alt, path));
+            parts.push(image_markdown(alt, &path, true));
         }
     }
 
@@ -1162,6 +1211,43 @@ fn escape_html(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn image_alt_blank_line_and_whitespace_become_one_line() {
+        assert_eq!(
+            escape_image_alt("  first\n\nsecond\t\tthird \r\n", false),
+            "first second third"
+        );
+    }
+
+    #[test]
+    fn image_alt_escapes_brackets_backslash_and_backtick() {
+        assert_eq!(
+            escape_image_alt(r"a ] b [c] \ `d`", false),
+            r"a \] b \[c\] \\ \`d\`"
+        );
+    }
+
+    #[test]
+    fn image_alt_leaves_quotes_emphasis_marks_and_plain_pipes_alone() {
+        assert_eq!(
+            escape_image_alt(r#"say "hi" a_b *c* | d"#, false),
+            r#"say "hi" a_b *c* | d"#
+        );
+    }
+
+    #[test]
+    fn image_alt_escapes_pipe_only_in_a_table_cell() {
+        assert_eq!(escape_image_alt("a | b", true), r"a \| b");
+    }
+
+    #[test]
+    fn image_markdown_keeps_the_destination_as_given() {
+        assert_eq!(
+            image_markdown("x\n\ny", "<my dir/a.png>", false),
+            "![x y](<my dir/a.png>)"
+        );
+    }
+
     use super::*;
     use crate::detect::FormatType;
     use crate::model::{Cell, HeadingLevel, RevisionType, Row, Section, TextStyle};

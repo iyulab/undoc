@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Picture descriptions can no longer break the image Markdown.** A picture's description was
+  written verbatim into `![alt](...)`, so a description with a blank line ended the paragraph
+  and left the image as literal text plus a stray body paragraph, and an unbalanced `]` closed
+  the alt text early. The alt text is now flattened to one line (runs of whitespace become a
+  single space) and `\`, `[`, `]` and `` ` `` are escaped; `|` is escaped as well inside a table
+  cell. Applies to DOCX, PPTX, XLSX and the legacy formats alike. The JSON output and the document
+  model keep the description unchanged.
+
 ## [0.16.1] - 2026-10-08
 
 ### Documentation

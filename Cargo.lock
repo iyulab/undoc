@@ -2238,6 +2238,7 @@ dependencies = [
  "criterion",
  "encoding_rs",
  "flate2",
+ "pulldown-cmark",
  "quick-xml",
  "serde",
  "serde_json",
