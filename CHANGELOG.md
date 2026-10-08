@@ -7,8 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Picture bullets name their image.** A PowerPoint paragraph whose bullet is a picture
+  (`a:buBlip`, set on the paragraph or in its shape's list style) is now a bullet list item,
+  and its `list_info` carries `marker_image`, the id of the image resource that marks it. The
+  image is the list's marker glyph, not a picture on the slide, so there is no image block per
+  item and Markdown and text stay a plain `- item` list; the resource is traceable through the
+  items that show it. `ListInfo` gains `marker_image` (omitted from the JSON when unset).
+- **Shapes filled with a picture are images of the slide, sheet or page they sit on.** A PowerPoint
+  shape whose fill is a picture (`a:blipFill` in the shape's `spPr`) becomes an image block
+  next to the slide's other pictures, with the shape's description as alt text and its size;
+  the shape's own text stays text. The same holds for an Excel drawing shape (`xdr:sp`) and a
+  Word VML shape filled with a picture (`v:fill` with `r:id`); Word's DrawingML shapes were
+  already read. Before this, the image was listed among the resources but nothing in the
+  content referenced it.
+
 ### Fixed
 
+- A picture inherited the description of an earlier shape that held no picture (a described
+  text box before a picture with no description of its own), and a picture bullet took the
+  description of the shape around it. A resource's alt text now comes only from the shape or
+  picture that shows it.
 - **Picture descriptions can no longer break the image Markdown.** A picture's description was
   written verbatim into `![alt](...)`, so a description with a blank line ended the paragraph
   and left the image as literal text plus a stray body paragraph, and an unbalanced `]` closed

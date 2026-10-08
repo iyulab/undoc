@@ -94,6 +94,11 @@ pub struct ListInfo {
     /// Item number (for numbered lists)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub number: Option<u32>,
+    /// The picture that marks each item of a picture-bulleted list: the id of an image
+    /// resource. The list renders as a plain bullet list; this keeps the marker image
+    /// traceable to the items that show it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub marker_image: Option<String>,
 }
 
 /// Text style properties.

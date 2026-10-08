@@ -1798,6 +1798,7 @@ mod tests {
                 list_type: ListType::Bullet,
                 level: 0,
                 number: None,
+                marker_image: None,
             });
             p
         };
@@ -2554,6 +2555,7 @@ mod tests {
         para.list_info = Some(ListInfo {
             level: 0,
             number: None,
+            marker_image: None,
             list_type: ListType::Bullet,
         });
 

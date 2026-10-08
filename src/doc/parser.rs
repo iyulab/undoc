@@ -475,6 +475,7 @@ impl<'a> Assembler<'a> {
                     list_type: level.kind,
                     level: props.ilvl,
                     number: (level.kind == ListType::Numbered).then_some(number),
+                    marker_image: None,
                 });
             }
             paragraph.heading = self.heading_of(props);

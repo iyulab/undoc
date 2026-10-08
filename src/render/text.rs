@@ -328,6 +328,7 @@ mod tests {
             list_type: crate::model::ListType::Bullet,
             level: 0,
             number: None,
+            marker_image: None,
         });
 
         let text = render_paragraph_text(&para);

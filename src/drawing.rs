@@ -42,14 +42,21 @@ pub(crate) fn scan_pictures(xml: &str) -> PictureRefs {
     let mut pending_alt: Option<String> = None;
     // The primary relationship of the `a:blip` being read, while inside it.
     let mut open_blip: Option<String> = None;
+    // Inside an `a:buBlip`: the picture of a list marker, which has no description of its own.
+    let mut in_bullet = false;
 
     loop {
         let (e, is_start) = match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => (e, true),
             Ok(Event::Empty(e)) => (e, false),
             Ok(Event::End(e)) => {
-                if e.name().local_name().as_ref() == "blip" {
-                    open_blip = None;
+                match e.name().local_name().as_ref() {
+                    "blip" => open_blip = None,
+                    "buBlip" => in_bullet = false,
+                    // A shape that holds no picture takes its description with it: the
+                    // next picture must not inherit it.
+                    "sp" | "cxnSp" | "graphicFrame" => pending_alt = None,
+                    _ => {}
                 }
                 buf.clear();
                 continue;
@@ -66,9 +73,12 @@ pub(crate) fn scan_pictures(xml: &str) -> PictureRefs {
                     pending_alt = Some(descr);
                 }
             }
+            // A new drawing starts without its predecessor's description.
+            "drawing" => pending_alt = None,
+            "buBlip" => in_bullet = is_start,
             "blip" => {
                 if let Some(id) = attr(&e, "embed") {
-                    if let Some(alt) = pending_alt.take() {
+                    if let Some(alt) = pending_alt.take().filter(|_| !in_bullet) {
                         refs.alt_texts.entry(id.clone()).or_insert(alt);
                     }
                     refs.referenced.push(id.clone());
@@ -131,6 +141,26 @@ mod tests {
         assert!(!refs.companions.contains_key("rIdPng"));
         assert!(!refs.companions.contains_key("rIdPlain"));
         assert_eq!(refs.referenced, ["rIdPng", "rIdWdp", "rIdSvg", "rIdPlain"]);
+    }
+
+    /// A shape's description describes that shape's picture; a picture bullet has none, and a
+    /// described shape without a picture does not lend its description to the next picture.
+    #[test]
+    fn description_does_not_leak_to_bullets_or_later_pictures() {
+        let xml = r#"<p:spTree>
+<p:sp><p:nvSpPr><p:cNvPr id="2" name="Body" descr="A list"/></p:nvSpPr><p:txBody><a:p><a:pPr><a:buBlip><a:blip r:embed="rIdBullet"/></a:buBlip></a:pPr></a:p></p:txBody></p:sp>
+<p:sp><p:nvSpPr><p:cNvPr id="3" name="Label" descr="Only a label"/></p:nvSpPr></p:sp>
+<p:pic><p:nvPicPr><p:cNvPr id="4" name="Picture 3"/></p:nvPicPr><p:blipFill><a:blip r:embed="rIdPlain"/></p:blipFill></p:pic>
+<p:sp><p:nvSpPr><p:cNvPr id="5" name="Card" descr="Card art"/></p:nvSpPr><p:spPr><a:blipFill><a:blip r:embed="rIdFill"/></a:blipFill></p:spPr></p:sp>
+</p:spTree>"#;
+        let refs = scan_pictures(xml);
+        assert_eq!(refs.referenced, ["rIdBullet", "rIdPlain", "rIdFill"]);
+        assert_eq!(refs.alt_texts.get("rIdBullet"), None);
+        assert_eq!(refs.alt_texts.get("rIdPlain"), None);
+        assert_eq!(
+            refs.alt_texts.get("rIdFill").map(String::as_str),
+            Some("Card art")
+        );
     }
 
     #[test]

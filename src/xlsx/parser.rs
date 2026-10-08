@@ -1293,7 +1293,11 @@ impl XlsxParser {
             .into_type_targets_by_id()
     }
 
-    /// Parse drawing XML for pic elements and create Block::Image for each.
+    /// Parse drawing XML for pictures and picture-filled shapes and create Block::Image
+    /// for each.
+    ///
+    /// A picture-filled shape is `xdr:sp > xdr:spPr > a:blipFill > a:blip[@r:embed]`; its
+    /// text stays in the shape and is not read here.
     ///
     /// Structure: xdr:pic > xdr:nvPicPr > xdr:cNvPr[@name]
     ///            xdr:pic > xdr:blipFill > a:blip[@r:embed]
@@ -1304,7 +1308,10 @@ impl XlsxParser {
         reader.config_mut().trim_text(true);
         let mut buf = Vec::new();
 
+        // A picture is an `xdr:pic`; a shape filled with a picture is an `xdr:sp` whose
+        // `spPr` holds an `a:blipFill`. Both show the image where they sit on the sheet.
         let mut in_pic = false;
+        let mut is_shape = false;
         let mut in_nvpicpr = false;
         let mut in_blipfill = false;
         let mut in_sppr = false;
@@ -1318,14 +1325,17 @@ impl XlsxParser {
                 Ok(quick_xml::events::Event::Start(ref e)) => {
                     let local_name = e.name().local_name();
                     match local_name.as_ref() {
-                        "pic" => {
+                        "pic" | "sp" if !in_pic => {
                             in_pic = true;
+                            is_shape = local_name.as_ref() == "sp";
+                            in_sppr = false;
+                            in_blipfill = false;
                             current_name = None;
                             current_rel_id = None;
                             current_width = None;
                             current_height = None;
                         }
-                        "nvPicPr" if in_pic => {
+                        "nvPicPr" | "nvSpPr" if in_pic => {
                             in_nvpicpr = true;
                         }
                         "cNvPr" if in_nvpicpr => {
@@ -1335,7 +1345,7 @@ impl XlsxParser {
                                 }
                             }
                         }
-                        "blipFill" if in_pic => {
+                        "blipFill" if in_pic && in_sppr == is_shape => {
                             in_blipfill = true;
                         }
                         "blip" if in_blipfill => {
@@ -1408,7 +1418,7 @@ impl XlsxParser {
                 Ok(quick_xml::events::Event::End(ref e)) => {
                     let local_name = e.name().local_name();
                     match local_name.as_ref() {
-                        "pic" => {
+                        "pic" | "sp" if in_pic && (local_name.as_ref() == "sp") == is_shape => {
                             if let Some(rel_id) = current_rel_id.take() {
                                 if let Some(filename) = rels.get(&rel_id) {
                                     images.push(Block::Image {
@@ -1421,7 +1431,7 @@ impl XlsxParser {
                             }
                             in_pic = false;
                         }
-                        "nvPicPr" => {
+                        "nvPicPr" | "nvSpPr" => {
                             in_nvpicpr = false;
                         }
                         "blipFill" => {
@@ -2828,6 +2838,49 @@ mod tests {
                 assert_eq!(*height, Some(1371600));
             }
             other => panic!("Expected Block::Image, got {:?}", other),
+        }
+    }
+
+    /// A shape filled with a picture (`xdr:sp > xdr:spPr > a:blipFill`) shows that image on
+    /// the sheet like a picture does; a shape with a colour fill, or one whose text is all it
+    /// has, adds no image.
+    #[test]
+    fn test_parse_drawing_images_includes_picture_filled_shapes() {
+        let drawing_xml = r#"<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing"
+                       xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+                       xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <xdr:twoCellAnchor>
+    <xdr:sp macro="" textlink="">
+      <xdr:nvSpPr><xdr:cNvPr id="2" name="Banner"/><xdr:cNvSpPr/></xdr:nvSpPr>
+      <xdr:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="500" cy="300"/></a:xfrm><a:blipFill><a:blip r:embed="rId1"/></a:blipFill></xdr:spPr>
+      <xdr:txBody><a:p><a:r><a:t>Caption</a:t></a:r></a:p></xdr:txBody>
+    </xdr:sp>
+  </xdr:twoCellAnchor>
+  <xdr:twoCellAnchor>
+    <xdr:sp macro="" textlink="">
+      <xdr:nvSpPr><xdr:cNvPr id="3" name="Plain"/><xdr:cNvSpPr/></xdr:nvSpPr>
+      <xdr:spPr><a:solidFill><a:srgbClr val="FF0000"/></a:solidFill></xdr:spPr>
+    </xdr:sp>
+  </xdr:twoCellAnchor>
+</xdr:wsDr>"#;
+        let mut rels = HashMap::new();
+        rels.insert("rId1".to_string(), "image1.png".to_string());
+
+        let images = XlsxParser::parse_drawing_images(drawing_xml, &rels).unwrap();
+
+        assert_eq!(images.len(), 1, "images: {images:?}");
+        match &images[0] {
+            Block::Image {
+                resource_id,
+                alt_text,
+                width,
+                height,
+            } => {
+                assert_eq!(resource_id, "image1.png");
+                assert_eq!(alt_text.as_deref(), Some("Banner"));
+                assert_eq!((*width, *height), (Some(500), Some(300)));
+            }
+            other => panic!("Expected Block::Image, got {other:?}"),
         }
     }
 

@@ -772,7 +772,9 @@ impl DocxParser {
                         para.images.extend(blip_image(e, &current_image_alt));
                     }
                     // VML image handling: v:imagedata references the image part
-                    "v:imagedata" if in_pict => {
+                    // A VML shape filled with a picture names the image in `v:fill`; a fill
+                    // without `r:id` is a colour or gradient and shows no image.
+                    "v:imagedata" | "v:fill" if in_pict => {
                         if let Some(image) = vml_inline_image(e) {
                             para.images.push(image);
                         }
@@ -1214,6 +1216,7 @@ impl DocxParser {
                     } else {
                         None
                     },
+                    marker_image: None,
                 });
             }
         }
@@ -1431,7 +1434,7 @@ impl DocxParser {
                         }
                         // VML image handling: skip mc:Fallback copies, which
                         // duplicate the DrawingML mc:Choice branch
-                        "v:imagedata" if in_pict && mc_fallback_depth == 0 => {
+                        "v:imagedata" | "v:fill" if in_pict && mc_fallback_depth == 0 => {
                             if let Some(image) = vml_inline_image(e) {
                                 if let Some(ref mut para) = current_paragraph {
                                     para.images.push(image);
@@ -1741,7 +1744,7 @@ fn parse_notes_xml(xml: &str, note_tag: &str) -> HashMap<String, String> {
     notes
 }
 
-/// Build an `InlineImage` from a VML `v:imagedata` element, if it carries an
+/// Build an `InlineImage` from a VML `v:imagedata` or `v:fill` element, if it carries an
 /// `r:id` relationship reference. `o:title` supplies the alt text.
 ///
 /// VML appears standalone in legacy documents (typically .doc → .docx
@@ -3145,6 +3148,54 @@ mod tests {
         assert_eq!(images.len(), 1, "VML image not extracted");
         assert_eq!(images[0].resource_id, "rId5");
         assert_eq!(images[0].alt_text.as_deref(), Some("legacy image"));
+    }
+
+    #[test]
+    fn test_shape_picture_fill_is_an_image() {
+        // A DrawingML shape filled with a picture (wps:wsp > wps:spPr > a:blipFill) and a
+        // VML shape filled with one (v:fill[@r:id]) show that image like a picture does;
+        // a VML fill without r:id is a colour and shows none.
+        let doc_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+            xmlns:v="urn:schemas-microsoft-com:vml"
+            xmlns:o="urn:schemas-microsoft-com:office:office"
+            xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+            xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+            xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"
+            xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <w:body>
+    <w:p><w:r><w:drawing><wp:inline><wp:docPr id="1" name="Rectangle 1" descr="Harbour at dusk"/>
+      <a:graphic><a:graphicData><wps:wsp><wps:spPr><a:blipFill><a:blip r:embed="rId8"/></a:blipFill></wps:spPr></wps:wsp></a:graphicData></a:graphic>
+    </wp:inline></w:drawing></w:r></w:p>
+    <w:p><w:r><w:pict>
+      <v:rect><v:fill type="frame" r:id="rId9" o:title="Paper texture"/></v:rect>
+      <v:rect><v:fill type="solid" color="red"/></v:rect>
+    </w:pict></w:r></w:p>
+  </w:body>
+</w:document>"#;
+
+        let data = create_minimal_docx(doc_xml);
+        let mut parser = DocxParser::from_bytes(data).unwrap();
+        let doc = parser.parse().unwrap();
+
+        let images: Vec<_> = doc
+            .sections
+            .iter()
+            .flat_map(|s| s.content.iter())
+            .filter_map(|b| match b {
+                Block::Paragraph(p) => Some(p),
+                _ => None,
+            })
+            .flat_map(|p| p.images.iter())
+            .map(|i| (i.resource_id.as_str(), i.alt_text.as_deref()))
+            .collect();
+        assert_eq!(
+            images,
+            [
+                ("rId8", Some("Harbour at dusk")),
+                ("rId9", Some("Paper texture"))
+            ]
+        );
     }
 
     #[test]

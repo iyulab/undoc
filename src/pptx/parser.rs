@@ -4,8 +4,8 @@ use crate::charts;
 use crate::container::OoxmlContainer;
 use crate::error::Result;
 use crate::model::{
-    Block, Cell, Document, HeadingLevel, Metadata, Paragraph, Resource, ResourceRole, RevisionType,
-    Row, Section, Table, TextRun, TextStyle,
+    Block, Cell, Document, HeadingLevel, ListInfo, ListType, Metadata, Paragraph, Resource,
+    ResourceRole, RevisionType, Row, Section, Table, TextRun, TextStyle,
 };
 use std::collections::HashMap;
 #[cfg(not(target_arch = "wasm32"))]
@@ -326,7 +326,10 @@ impl PptxParser {
         reader.config_mut().trim_text(true);
 
         let mut buf = Vec::new();
+        // A picture is a `p:pic`; a shape filled with a picture is a `p:sp` whose `spPr`
+        // holds an `a:blipFill`. Both show the image where they sit on the slide.
         let mut in_pic = false;
+        let mut is_shape = false;
         let mut in_nvpicpr = false;
         let mut in_blipfill = false;
         let mut in_sppr = false;
@@ -341,15 +344,18 @@ impl PptxParser {
                     let local_name = e.name().local_name();
                     match local_name.as_ref() {
                         // p:pic - picture element
-                        "pic" => {
+                        "pic" | "sp" if !in_pic => {
                             in_pic = true;
+                            is_shape = local_name.as_ref() == "sp";
+                            in_sppr = false;
+                            in_blipfill = false;
                             current_descr = None;
                             current_rel_id = None;
                             current_width = None;
                             current_height = None;
                         }
                         // p:nvPicPr - non-visual picture properties (contains name)
-                        "nvPicPr" if in_pic => {
+                        "nvPicPr" | "nvSpPr" if in_pic => {
                             in_nvpicpr = true;
                         }
                         // p:cNvPr - common non-visual properties (has name attribute)
@@ -359,7 +365,7 @@ impl PptxParser {
                             }
                         }
                         // p:blipFill - blip fill (contains the image reference)
-                        "blipFill" if in_pic => {
+                        "blipFill" if in_pic && in_sppr == is_shape => {
                             in_blipfill = true;
                         }
                         // a:blip - the actual image reference
@@ -437,7 +443,7 @@ impl PptxParser {
                 Ok(quick_xml::events::Event::End(ref e)) => {
                     let local_name = e.name().local_name();
                     match local_name.as_ref() {
-                        "pic" => {
+                        "pic" | "sp" if in_pic && (local_name.as_ref() == "sp") == is_shape => {
                             // Create image block if we have a valid relationship
                             if let Some(rel_id) = current_rel_id.take() {
                                 if let Some(target) = rels.get(&rel_id) {
@@ -455,7 +461,7 @@ impl PptxParser {
                             }
                             in_pic = false;
                         }
-                        "nvPicPr" => {
+                        "nvPicPr" | "nvSpPr" => {
                             in_nvpicpr = false;
                         }
                         "blipFill" => {
@@ -825,6 +831,16 @@ impl PptxParser {
         // Placeholder inheritance tracking
         let mut current_ph_key: Option<String> = None;
         let mut shape_para_start: usize = 0; // paragraphs.len() when current shape started
+                                             // Picture bullets (`a:buBlip`): the image of the paragraph's own bullet, and the
+                                             // ones the shape's list style sets per level (`a:lstStyle/a:lvlNpPr`).
+        let mut in_ppr = false;
+        let mut in_bu_blip = false;
+        let mut in_lst_style = false;
+        let mut lst_style_level: Option<u8> = None;
+        let mut shape_bullets: HashMap<u8, String> = HashMap::new();
+        let mut current_level: u8 = 0;
+        let mut current_bullet: Option<String> = None;
+        let mut bullet_overridden = false;
 
         loop {
             match reader.read_event_into(&mut buf) {
@@ -844,6 +860,34 @@ impl PptxParser {
                             current_heading = HeadingLevel::None;
                             current_ph_key = None;
                             shape_para_start = paragraphs.len();
+                            shape_bullets.clear();
+                        }
+                        "lstStyle" if in_shape && !in_table => {
+                            in_lst_style = true;
+                        }
+                        name if in_lst_style && list_style_level(name).is_some() => {
+                            lst_style_level = list_style_level(name);
+                        }
+                        // a:pPr - paragraph properties (level, bullet)
+                        "pPr" if in_paragraph && !in_table => {
+                            in_ppr = true;
+                            current_level = paragraph_level(e);
+                        }
+                        "buBlip" if in_ppr || lst_style_level.is_some() => {
+                            in_bu_blip = true;
+                        }
+                        "buNone" | "buChar" | "buAutoNum" if in_ppr => {
+                            bullet_overridden = true;
+                        }
+                        "blip" if in_bu_blip => {
+                            record_bullet(
+                                e,
+                                rels,
+                                in_ppr,
+                                lst_style_level,
+                                &mut current_bullet,
+                                &mut shape_bullets,
+                            );
                         }
                         // p:txBody - text body in shape
                         "txBody" if in_shape && !in_table => {
@@ -853,6 +897,10 @@ impl PptxParser {
                         "p" if !in_table && in_txbody => {
                             in_paragraph = true;
                             current_runs.clear();
+                            in_ppr = false;
+                            current_level = 0;
+                            current_bullet = None;
+                            bullet_overridden = false;
                         }
                         // a:r - text run
                         "r" if in_paragraph && !in_table => {
@@ -934,6 +982,22 @@ impl PptxParser {
                 Ok(quick_xml::events::Event::Empty(ref e)) => {
                     let local_name = e.name().local_name();
                     match local_name.as_ref() {
+                        "pPr" if in_paragraph && !in_table => {
+                            current_level = paragraph_level(e);
+                        }
+                        "buNone" | "buChar" | "buAutoNum" if in_ppr => {
+                            bullet_overridden = true;
+                        }
+                        "blip" if in_bu_blip => {
+                            record_bullet(
+                                e,
+                                rels,
+                                in_ppr,
+                                lst_style_level,
+                                &mut current_bullet,
+                                &mut shape_bullets,
+                            );
+                        }
                         // p:ph - placeholder type (self-closing)
                         "ph" if in_shape && !in_table => {
                             let mut ph_type = String::new();
@@ -1016,6 +1080,19 @@ impl PptxParser {
                         "t" if !in_table => {
                             in_text = false;
                         }
+                        "pPr" => {
+                            in_ppr = false;
+                        }
+                        "buBlip" => {
+                            in_bu_blip = false;
+                        }
+                        "lstStyle" => {
+                            in_lst_style = false;
+                            lst_style_level = None;
+                        }
+                        name if in_lst_style && list_style_level(name).is_some() => {
+                            lst_style_level = None;
+                        }
                         "rPr" if !in_table => {
                             in_rpr = false;
                         }
@@ -1035,13 +1112,28 @@ impl PptxParser {
                         }
                         "p" if !in_table => {
                             if !current_runs.is_empty() {
+                                let marker_image = current_bullet.clone().or_else(|| {
+                                    if bullet_overridden {
+                                        None
+                                    } else {
+                                        shape_bullets.get(&current_level).cloned()
+                                    }
+                                });
+                                let list_info = marker_image.map(|image| ListInfo {
+                                    list_type: ListType::Bullet,
+                                    level: current_level,
+                                    number: None,
+                                    marker_image: Some(image),
+                                });
                                 paragraphs.push(Paragraph {
                                     runs: current_runs.clone(),
                                     heading: current_heading,
+                                    list_info,
                                     ..Default::default()
                                 });
                             }
                             in_paragraph = false;
+                            in_ppr = false;
                         }
                         "txBody" if !in_table => {
                             in_txbody = false;
@@ -1602,6 +1694,52 @@ fn parse_placeholder_texts_from_xml(xml: &str) -> HashMap<String, Vec<Paragraph>
 
 /// A picture's description (`p:cNvPr descr`) — its alt text — if it has a non-blank one.
 /// The shape's `name` ("Picture 3") is an editing label, not a description.
+/// The list level a paragraph-properties element (`a:pPr`) sets (`lvl`, 0-based).
+fn paragraph_level(e: &quick_xml::events::BytesStart<'_>) -> u8 {
+    e.attributes()
+        .flatten()
+        .find(|a| a.key.local_name().as_ref() == "lvl")
+        .and_then(|a| a.value.parse::<u8>().ok())
+        .unwrap_or(0)
+}
+
+/// The 0-based level of a list-style level element (`a:lvl1pPr` … `a:lvl9pPr`).
+fn list_style_level(name: &str) -> Option<u8> {
+    let digit = name.strip_prefix("lvl")?.strip_suffix("pPr")?;
+    digit
+        .parse::<u8>()
+        .ok()
+        .filter(|n| (1..=9).contains(n))
+        .map(|n| n - 1)
+}
+
+/// Record the picture of an `a:buBlip`'s `a:blip`: the file name of the image it embeds,
+/// on the paragraph when the bullet is the paragraph's own, else on the shape's list style
+/// level it sits in.
+fn record_bullet(
+    blip: &quick_xml::events::BytesStart<'_>,
+    rels: &HashMap<String, String>,
+    in_paragraph_properties: bool,
+    list_style_level: Option<u8>,
+    paragraph_bullet: &mut Option<String>,
+    shape_bullets: &mut HashMap<u8, String>,
+) {
+    let Some(target) = blip
+        .attributes()
+        .flatten()
+        .find(|a| a.key.local_name().as_ref() == "embed")
+        .and_then(|a| rels.get(a.value.as_ref()))
+    else {
+        return;
+    };
+    let file = target.rsplit('/').next().unwrap_or(target).to_string();
+    if in_paragraph_properties {
+        *paragraph_bullet = Some(file);
+    } else if let Some(level) = list_style_level {
+        shape_bullets.insert(level, file);
+    }
+}
+
 fn picture_description(e: &quick_xml::events::BytesStart<'_>) -> Option<String> {
     e.attributes()
         .flatten()
@@ -2082,6 +2220,189 @@ mod tests {
             })
             .collect();
         assert_eq!(images, [("image1.png", Some("Quarterly revenue"))]);
+    }
+
+    /// Image rels for the picture-fill and picture-bullet tests below.
+    const IMAGE_RELS: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rIdFill" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/fill.png"/>
+  <Relationship Id="rIdBullet" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/bullet.png"/>
+</Relationships>"#;
+
+    /// The image blocks of a section, as `(resource_id, alt_text)`.
+    fn image_blocks(section: &Section) -> Vec<(&str, Option<&str>)> {
+        section
+            .content
+            .iter()
+            .filter_map(|b| match b {
+                Block::Image {
+                    resource_id,
+                    alt_text,
+                    ..
+                } => Some((resource_id.as_str(), alt_text.as_deref())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A shape filled with a picture shows that picture: the slide references it as an
+    /// image, with the shape's description, and the shape's own text stays text. A shape with
+    /// a plain colour fill adds nothing.
+    #[test]
+    fn test_shape_picture_fill_is_an_image_of_the_slide() {
+        let shapes = r#"<p:sp><p:nvSpPr><p:cNvPr id="2" name="Card" descr="Harbour at dusk"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="4000" cy="3000"/></a:xfrm><a:prstGeom prst="rect"/><a:blipFill><a:blip r:embed="rIdFill"/><a:stretch><a:fillRect/></a:stretch></a:blipFill></p:spPr><p:txBody><a:bodyPr/><a:p><a:r><a:t>Caption on the card</a:t></a:r></a:p></p:txBody></p:sp>
+<p:sp><p:nvSpPr><p:cNvPr id="3" name="Plain"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr><a:solidFill><a:srgbClr val="FF0000"/></a:solidFill></p:spPr><p:txBody><a:bodyPr/><a:p><a:r><a:t>Plain shape</a:t></a:r></a:p></p:txBody></p:sp>"#;
+        let data = deck(
+            &[(&slide(shapes), IMAGE_RELS)],
+            &[("ppt/media/fill.png", b"\x89PNG\r\n\x1a\n")],
+        );
+        let doc = PptxParser::from_bytes(data).unwrap().parse().unwrap();
+
+        let section = &doc.sections[0];
+        assert_eq!(
+            image_blocks(section),
+            [("fill.png", Some("Harbour at dusk"))]
+        );
+        let texts: Vec<_> = paragraphs(section).iter().map(|p| p.plain_text()).collect();
+        assert_eq!(texts, ["Caption on the card", "Plain shape"]);
+        match section
+            .content
+            .iter()
+            .find(|b| matches!(b, Block::Image { .. }))
+        {
+            Some(Block::Image { width, height, .. }) => {
+                assert_eq!((*width, *height), (Some(4000), Some(3000)));
+            }
+            other => panic!("expected an image block, got {other:?}"),
+        }
+        let md =
+            crate::render::to_markdown(&doc, &crate::render::RenderOptions::default()).unwrap();
+        assert!(
+            md.contains("![Harbour at dusk](fill.png)"),
+            "markdown: {md}"
+        );
+        assert_eq!(doc.resources["fill.png"].role, ResourceRole::Primary);
+    }
+
+    /// A picture bullet is a list marker, not a picture: the paragraph is a bullet item whose
+    /// `marker_image` names the image, the slide gets no image block per bullet, and the
+    /// Markdown stays a plain list. A paragraph that turns the bullet off is not a list item.
+    #[test]
+    fn test_picture_bullet_is_referenced_by_the_list_items() {
+        let shape = r#"<p:sp><p:nvSpPr><p:cNvPr id="2" name="Body"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr/><p:txBody><a:bodyPr/>
+<a:p><a:pPr><a:buBlip><a:blip r:embed="rIdBullet"/></a:buBlip></a:pPr><a:r><a:t>First</a:t></a:r></a:p>
+<a:p><a:pPr lvl="1"><a:buBlip><a:blip r:embed="rIdBullet"/></a:buBlip></a:pPr><a:r><a:t>Nested</a:t></a:r></a:p>
+<a:p><a:pPr><a:buNone/></a:pPr><a:r><a:t>No bullet</a:t></a:r></a:p>
+</p:txBody></p:sp>"#;
+        let data = deck(
+            &[(&slide(shape), IMAGE_RELS)],
+            &[("ppt/media/bullet.png", b"\x89PNG\r\n\x1a\n")],
+        );
+        let doc = PptxParser::from_bytes(data).unwrap().parse().unwrap();
+
+        let section = &doc.sections[0];
+        assert!(image_blocks(section).is_empty());
+        let items: Vec<_> = paragraphs(section)
+            .iter()
+            .map(|p| {
+                (
+                    p.plain_text(),
+                    p.list_info
+                        .as_ref()
+                        .map(|l| (l.list_type, l.level, l.marker_image.clone())),
+                )
+            })
+            .collect();
+        assert_eq!(
+            items,
+            [
+                (
+                    "First".to_string(),
+                    Some((ListType::Bullet, 0, Some("bullet.png".to_string())))
+                ),
+                (
+                    "Nested".to_string(),
+                    Some((ListType::Bullet, 1, Some("bullet.png".to_string())))
+                ),
+                ("No bullet".to_string(), None),
+            ]
+        );
+        let md =
+            crate::render::to_markdown(&doc, &crate::render::RenderOptions::default()).unwrap();
+        assert!(
+            md.contains("- First") && md.contains("  - Nested"),
+            "markdown: {md}"
+        );
+        assert!(!md.contains("bullet.png"), "markdown: {md}");
+        let json = serde_json::to_string(&doc).unwrap();
+        assert!(json.contains("\"marker_image\":\"bullet.png\""), "{json}");
+        assert_eq!(doc.resources["bullet.png"].role, ResourceRole::Primary);
+        assert_eq!(doc.resources["bullet.png"].alt_text, None);
+    }
+
+    /// A picture bullet set once in a shape's list style applies to the paragraphs of that
+    /// level, unless a paragraph sets its own bullet.
+    #[test]
+    fn test_picture_bullet_from_the_shape_list_style() {
+        let shape = r#"<p:sp><p:nvSpPr><p:cNvPr id="2" name="Body"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr/><p:txBody><a:bodyPr/>
+<a:lstStyle><a:lvl1pPr><a:buBlip><a:blip r:embed="rIdBullet"/></a:buBlip></a:lvl1pPr></a:lstStyle>
+<a:p><a:r><a:t>Inherits</a:t></a:r></a:p>
+<a:p><a:pPr><a:buChar char="-"/></a:pPr><a:r><a:t>Own bullet</a:t></a:r></a:p>
+<a:p><a:pPr lvl="1"/><a:r><a:t>Other level</a:t></a:r></a:p>
+</p:txBody></p:sp>"#;
+        let data = deck(
+            &[(&slide(shape), IMAGE_RELS)],
+            &[("ppt/media/bullet.png", b"\x89PNG\r\n\x1a\n")],
+        );
+        let doc = PptxParser::from_bytes(data).unwrap().parse().unwrap();
+
+        let markers: Vec<_> = paragraphs(&doc.sections[0])
+            .iter()
+            .map(|p| {
+                p.list_info
+                    .as_ref()
+                    .and_then(|l| l.marker_image.as_deref().map(str::to_string))
+            })
+            .collect();
+        assert_eq!(markers, [Some("bullet.png".to_string()), None, None]);
+    }
+
+    /// A picture fill or picture bullet on a slide layout is drawn by the layout, not the
+    /// slide: like every other layout media it is neither listed nor referenced.
+    #[test]
+    fn test_layout_picture_fill_and_bullet_are_not_slide_content() {
+        let slide_rels = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rIdLayout" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/slideLayout1.xml"/>
+</Relationships>"#;
+        let layout_rels = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rIdFill" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/fill.png"/>
+</Relationships>"#;
+        let layout = r#"<?xml version="1.0" encoding="UTF-8"?>
+<p:sldLayout xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><p:cSld><p:spTree>
+<p:sp><p:nvSpPr><p:cNvPr id="2" name="Frame"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr><a:blipFill><a:blip r:embed="rIdFill"/></a:blipFill></p:spPr></p:sp>
+<p:sp><p:nvSpPr><p:cNvPr id="3" name="Body"/><p:cNvSpPr/><p:nvPr><p:ph type="body" idx="1"/></p:nvPr></p:nvSpPr><p:spPr/><p:txBody><a:bodyPr/><a:p><a:pPr><a:buBlip><a:blip r:embed="rIdFill"/></a:buBlip></a:pPr><a:r><a:t>Prompt text</a:t></a:r></a:p></p:txBody></p:sp>
+</p:spTree></p:cSld></p:sldLayout>"#;
+        let data = deck(
+            &[(&slide(&text_shape("", "body")), slide_rels)],
+            &[
+                ("ppt/slideLayouts/slideLayout1.xml", layout.as_bytes()),
+                (
+                    "ppt/slideLayouts/_rels/slideLayout1.xml.rels",
+                    layout_rels.as_bytes(),
+                ),
+                ("ppt/media/fill.png", b"\x89PNG\r\n\x1a\n"),
+            ],
+        );
+        let doc = PptxParser::from_bytes(data).unwrap().parse().unwrap();
+
+        assert!(
+            doc.resources.is_empty(),
+            "resources: {:?}",
+            doc.resources.keys()
+        );
+        assert!(image_blocks(&doc.sections[0]).is_empty());
     }
 
     /// A one-slide deck whose slide points at `slideLayout1.xml`, with the layout's own
