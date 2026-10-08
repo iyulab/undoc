@@ -2011,6 +2011,7 @@ mod tests {
             vertical_alignment: crate::model::VerticalAlignment::Top,
             is_header: false,
             background: None,
+            background_image: None,
         };
 
         table.add_row(Row {
@@ -2053,6 +2054,7 @@ mod tests {
             vertical_alignment: crate::model::VerticalAlignment::Top,
             is_header: false,
             background: None,
+            background_image: None,
         };
 
         table.add_row(Row {
@@ -2093,6 +2095,7 @@ mod tests {
             vertical_alignment: crate::model::VerticalAlignment::Top,
             is_header: false,
             background: None,
+            background_image: None,
         };
 
         table.add_row(Row {
@@ -2146,6 +2149,7 @@ mod tests {
             vertical_alignment: crate::model::VerticalAlignment::Top,
             is_header: false,
             background: None,
+            background_image: None,
         };
 
         let cell2 = Cell {
@@ -2157,6 +2161,7 @@ mod tests {
             vertical_alignment: crate::model::VerticalAlignment::Top,
             is_header: false,
             background: None,
+            background_image: None,
         };
 
         table.add_row(Row {
@@ -2306,6 +2311,7 @@ mod tests {
                 vertical_alignment: crate::model::VerticalAlignment::Top,
                 is_header: false,
                 background: None,
+                background_image: None,
             }],
             is_header: false,
             height: None,
@@ -2334,6 +2340,7 @@ mod tests {
                 vertical_alignment: crate::model::VerticalAlignment::Top,
                 is_header: false,
                 background: None,
+                background_image: None,
             }],
             is_header: false,
             height: None,
@@ -2370,6 +2377,7 @@ mod tests {
             vertical_alignment: crate::model::VerticalAlignment::Top,
             is_header: false,
             background: None,
+            background_image: None,
         };
 
         let center_cell = Cell {
@@ -2381,6 +2389,7 @@ mod tests {
             vertical_alignment: crate::model::VerticalAlignment::Top,
             is_header: false,
             background: None,
+            background_image: None,
         };
 
         let right_cell = Cell {
@@ -2392,6 +2401,7 @@ mod tests {
             vertical_alignment: crate::model::VerticalAlignment::Top,
             is_header: false,
             background: None,
+            background_image: None,
         };
 
         table.add_row(Row {
@@ -2504,6 +2514,7 @@ mod tests {
                     vertical_alignment: crate::model::VerticalAlignment::Top,
                     is_header: false,
                     background: None,
+                    background_image: None,
                 },
                 Cell {
                     content: vec![Paragraph::with_text("B")],
@@ -2514,6 +2525,7 @@ mod tests {
                     vertical_alignment: crate::model::VerticalAlignment::Top,
                     is_header: false,
                     background: None,
+                    background_image: None,
                 },
             ],
             is_header: false,
@@ -2530,6 +2542,7 @@ mod tests {
                 vertical_alignment: crate::model::VerticalAlignment::Top,
                 is_header: false,
                 background: None,
+                background_image: None,
             }],
             is_header: false,
             height: None,

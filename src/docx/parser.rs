@@ -132,6 +132,14 @@ impl DocxParser {
             }
         }
 
+        // The page background picture (`w:background` with a VML fill) is drawn on every
+        // page; it is referenced from the section, not placed in the text.
+        main_section.background_image = self
+            .container
+            .read_xml_optional("word/document.xml")?
+            .and_then(|xml| crate::drawing::background_picture(&xml))
+            .filter(|id| self.relationships.by_id.contains_key(id));
+
         doc.add_section(main_section);
 
         // Extract resources (images)
@@ -1551,6 +1559,7 @@ impl DocxParser {
                                     vertical_alignment: VerticalAlignment::default(),
                                     is_header: is_header_row,
                                     background: None,
+                                    background_image: None,
                                 };
                                 // Track as vMerge origin: row_idx = table.rows.len() (index
                                 // the current row will have once pushed in </w:tr> handler)
@@ -3196,6 +3205,37 @@ mod tests {
                 ("rId9", Some("Paper texture"))
             ]
         );
+    }
+
+    /// A page background filled with a picture (`w:background` with a VML fill) is drawn on
+    /// every page: the section references it, the text does not.
+    #[test]
+    fn test_page_background_picture_is_referenced_by_the_section() {
+        let doc_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+            xmlns:v="urn:schemas-microsoft-com:vml"
+            xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <w:background w:color="FFFFFF"><v:background id="_x0000_s1025"><v:fill r:id="rId5" type="frame"/></v:background></w:background>
+  <w:body><w:p><w:r><w:t>Body</w:t></w:r></w:p></w:body>
+</w:document>"#;
+        let rels = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId5" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/paper.png"/>
+</Relationships>"#;
+        let data = create_minimal_docx_with_document_rels(doc_xml, Some(rels));
+        let doc = DocxParser::from_bytes(data).unwrap().parse().unwrap();
+
+        assert_eq!(doc.sections[0].background_image.as_deref(), Some("rId5"));
+        assert!(doc.sections[0]
+            .content
+            .iter()
+            .all(|b| matches!(b, Block::Paragraph(p) if p.images.is_empty())));
+
+        // A colour background (no picture) references nothing.
+        let plain = doc_xml.replace(r#"<v:fill r:id="rId5" type="frame"/>"#, "");
+        let data = create_minimal_docx_with_document_rels(&plain, Some(rels));
+        let doc = DocxParser::from_bytes(data).unwrap().parse().unwrap();
+        assert_eq!(doc.sections[0].background_image, None);
     }
 
     #[test]

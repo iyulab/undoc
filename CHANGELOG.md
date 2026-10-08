@@ -22,6 +22,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Word VML shape filled with a picture (`v:fill` with `r:id`); Word's DrawingML shapes were
   already read. Before this, the image was listed among the resources but nothing in the
   content referenced it.
+- **Background and cell pictures are referenced from where they are drawn.** A picture that fills
+  a PowerPoint slide background (`p:bg`), a Word page background (`w:background` with a VML
+  fill) or an Excel sheet background (`<picture>`) is now named by the section's new
+  `background_image` (the id of the image resource; omitted from the JSON when unset). A picture
+  that fills a PowerPoint table cell (`a:tcPr` `a:blipFill`) is named by the cell's new
+  `background_image`. A background is not content in reading order, so there is no image block
+  and Markdown and text are unchanged; a cell's text stays its text. A background a slide takes
+  from its layout or master is template decoration like the rest of the layout's media and is
+  not referenced. A picture bullet in a PowerPoint table cell paragraph now sets `list_info.marker_image`
+  like one in a shape.
+- **PowerPoint picture bullets are inherited.** A placeholder paragraph takes its bullet from
+  the slide shape's list style, the layout placeholder, the master placeholder and the master's
+  text styles (`titleStyle`, `bodyStyle`, `otherStyle`), level by level; `a:buNone`, `a:buChar`
+  or `a:buAutoNum` at a nearer level replaces an inherited picture. The image a slide
+  inherits this way is listed with the slide's media; an image that no slide paragraph ends up
+  with is still not listed.
 
 ### Fixed
 

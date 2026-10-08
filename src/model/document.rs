@@ -106,6 +106,13 @@ pub struct Section {
     /// Speaker notes (PPTX only)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notes: Option<Vec<Paragraph>>,
+
+    /// Resource id of the picture that fills the background of this slide, sheet or
+    /// document. A background is not content in reading order: it has no block and no
+    /// Markdown, only this reference, so the listed image can be traced to where it is
+    /// drawn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background_image: Option<String>,
 }
 
 impl Section {

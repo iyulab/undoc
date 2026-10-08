@@ -57,6 +57,11 @@ pub struct Cell {
     /// Background color (hex)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub background: Option<String>,
+
+    /// Resource id of the picture that fills the cell. A fill is not content: the cell's
+    /// text stays its text and the image is only referenced from here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background_image: Option<String>,
 }
 
 fn default_span() -> u32 {

@@ -275,6 +275,14 @@ impl XlsxParser {
                     self.parse_sheet(&xml, &hyperlink_map, &comment_map, rich_value_images)?;
                 section.add_block(Block::Table(table));
 
+                // The sheet's background picture (`<picture r:id>`), drawn behind the cells.
+                section.background_image = sheet_picture_rel(&xml)
+                    .and_then(|id| sheet_rels.get(&id))
+                    .map(|(_, target)| {
+                        let path = Self::resolve_relative_path(sheet_dir, target);
+                        path.rsplit('/').next().unwrap_or(&path).to_string()
+                    });
+
                 let images = self.parse_sheet_drawing_images(&sheet_path)?;
                 for image in images {
                     section.add_block(image);
@@ -605,6 +613,7 @@ impl XlsxParser {
             vertical_alignment: Default::default(),
             is_header: context.is_header,
             background: None,
+            background_image: None,
         })
     }
 
@@ -1537,6 +1546,28 @@ impl XlsxParser {
     /// Get sheet names.
     pub fn sheet_names(&self) -> Vec<&str> {
         self.sheets.iter().map(|s| s.name.as_str()).collect()
+    }
+}
+
+/// The relationship id of a worksheet's background picture (`<picture r:id="…"/>`).
+fn sheet_picture_rel(xml: &str) -> Option<String> {
+    let mut reader = crate::decode::reader_for(xml);
+    let mut buf = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(quick_xml::events::Event::Empty(e)) | Ok(quick_xml::events::Event::Start(e))
+                if e.name().local_name().as_ref() == "picture" =>
+            {
+                return e
+                    .attributes()
+                    .flatten()
+                    .find(|a| a.key.local_name().as_ref() == "id")
+                    .map(|a| crate::decode::attr_value(&a));
+            }
+            Ok(quick_xml::events::Event::Eof) | Err(_) => return None,
+            _ => {}
+        }
+        buf.clear();
     }
 }
 
@@ -2882,6 +2913,15 @@ mod tests {
             }
             other => panic!("Expected Block::Image, got {other:?}"),
         }
+    }
+
+    /// A worksheet's background picture is `<picture r:id>`; a sheet without one has none.
+    #[test]
+    fn test_sheet_background_picture_relationship() {
+        let with = r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheetData/><picture r:id="rId3"/></worksheet>"#;
+        let without = r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData/></worksheet>"#;
+        assert_eq!(sheet_picture_rel(with).as_deref(), Some("rId3"));
+        assert_eq!(sheet_picture_rel(without), None);
     }
 
     #[test]

@@ -105,6 +105,41 @@ pub(crate) fn scan_pictures(xml: &str) -> PictureRefs {
     refs
 }
 
+/// The relationship id of the picture a part's background is filled with: the blip of a
+/// PowerPoint `p:bg` (`a:blipFill`) or the `v:fill`/`v:imagedata` of a Word `w:background`.
+/// `None` when the background is a colour or gradient, or the part has none.
+pub(crate) fn background_picture(xml: &str) -> Option<String> {
+    let mut reader = crate::decode::reader_for(xml);
+    reader.config_mut().trim_text(true);
+    let mut buf = Vec::new();
+    let mut in_background = false;
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) | Ok(Event::Empty(e)) if in_background => {
+                let found = match e.name().local_name().as_ref() {
+                    "blip" => attr(&e, "embed"),
+                    "fill" | "imagedata" => attr(&e, "id"),
+                    _ => None,
+                };
+                if found.is_some() {
+                    return found;
+                }
+            }
+            Ok(Event::Start(e))
+                if matches!(e.name().local_name().as_ref(), "bg" | "background") =>
+            {
+                in_background = true;
+            }
+            Ok(Event::End(e)) if matches!(e.name().local_name().as_ref(), "bg" | "background") => {
+                in_background = false;
+            }
+            Ok(Event::Eof) | Err(_) => return None,
+            _ => {}
+        }
+        buf.clear();
+    }
+}
+
 /// An attribute's value by local name, with entities resolved.
 fn attr(e: &BytesStart<'_>, local: &str) -> Option<String> {
     e.attributes()

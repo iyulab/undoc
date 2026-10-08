@@ -1,5 +1,6 @@
 //! PPTX parser implementation.
 
+use super::bullets::InheritedBullets;
 use crate::charts;
 use crate::container::OoxmlContainer;
 use crate::error::Result;
@@ -223,14 +224,22 @@ impl PptxParser {
                 .container
                 .read_optional_relationships_for_part(&slide_path)?;
             let inherited_phs = self.build_inherited_phs(&slide_path, &slide_full_rels)?;
+            let inherited_bullets = self.build_inherited_bullets(&slide_path, &slide_full_rels)?;
             let slide_rels = slide_full_rels.into_targets_by_id();
 
             if let Some(xml) = self.container.read_xml_optional(&slide_path)? {
+                // The slide's own background picture. A background a slide takes from its
+                // layout or master is template decoration, like the other layout and
+                // master media, and is not referenced.
+                section.background_image = crate::drawing::background_picture(&xml)
+                    .and_then(|rel_id| slide_rels.get(&rel_id))
+                    .map(|target| media_name(target));
                 let blocks = self.parse_slide_content_with_rels(
                     &xml,
                     &slide_rels,
                     &slide_path,
                     &inherited_phs,
+                    &inherited_bullets,
                 )?;
                 for block in blocks {
                     section.add_block(block);
@@ -277,7 +286,13 @@ impl PptxParser {
     /// Parse slide XML into content blocks (paragraphs and tables).
     #[allow(dead_code)]
     fn parse_slide_content(&self, xml: &str) -> Result<Vec<Block>> {
-        self.parse_slide_content_with_rels(xml, &HashMap::new(), "", &HashMap::new())
+        self.parse_slide_content_with_rels(
+            xml,
+            &HashMap::new(),
+            "",
+            &HashMap::new(),
+            &InheritedBullets::default(),
+        )
     }
 
     /// Parse slide XML into content blocks with relationship map for hyperlinks, images, and charts.
@@ -287,12 +302,17 @@ impl PptxParser {
         rels: &HashMap<String, String>,
         slide_path: &str,
         inherited_phs: &HashMap<String, Vec<Paragraph>>,
+        inherited_bullets: &InheritedBullets,
     ) -> Result<Vec<Block>> {
         let mut blocks = Vec::new();
 
         // Parse text content first (title, headings usually come before tables)
-        let paragraphs =
-            self.parse_text_content_excluding_tables_with_rels(xml, rels, inherited_phs)?;
+        let paragraphs = self.parse_text_content_excluding_tables_with_rels(
+            xml,
+            rels,
+            inherited_phs,
+            inherited_bullets,
+        )?;
         for para in paragraphs {
             blocks.push(Block::Paragraph(para));
         }
@@ -584,6 +604,11 @@ impl PptxParser {
         let mut in_run = false;
         let mut in_text = false;
         let mut in_rpr = false;
+        let mut in_tc_pr = false;
+        let mut in_ppr = false;
+        let mut in_bu_blip = false;
+        let mut current_level: u8 = 0;
+        let mut current_bullet: Option<String> = None;
 
         let mut current_table = Table::new();
         let mut current_row = Row::new();
@@ -625,13 +650,38 @@ impl PptxParser {
                             row_under_merge |= cell_covered && is_vertically_covered(e);
                             current_paragraphs.clear();
                         }
+                        // a:tcPr - cell properties; its fill may be a picture
+                        "tcPr" if in_cell => {
+                            in_tc_pr = true;
+                        }
+                        "blip" if in_tc_pr => {
+                            if let Some(file) = blip_file(e, rels) {
+                                current_cell.background_image = Some(file);
+                            }
+                        }
                         // a:txBody - text body in cell
                         "txBody" if in_cell => {
                             in_txbody = true;
                         }
+                        // a:pPr / a:buBlip - the paragraph's own picture bullet
+                        "pPr" if in_paragraph => {
+                            in_ppr = true;
+                            current_level = paragraph_level(e);
+                        }
+                        "buBlip" if in_ppr => {
+                            in_bu_blip = true;
+                        }
+                        "blip" if in_bu_blip => {
+                            if let Some(file) = blip_file(e, rels) {
+                                current_bullet = Some(file);
+                            }
+                        }
                         // a:p - paragraph
                         "p" if in_txbody => {
                             in_paragraph = true;
+                            current_bullet = None;
+                            current_level = 0;
+                            in_ppr = false;
                             current_runs.clear();
                         }
                         // a:r - text run
@@ -686,6 +736,19 @@ impl PptxParser {
                             row_under_merge |= covered && is_vertically_covered(e);
                             if !covered {
                                 current_row.add_cell(cell);
+                            }
+                        }
+                        "blip" if in_tc_pr => {
+                            if let Some(file) = blip_file(e, rels) {
+                                current_cell.background_image = Some(file);
+                            }
+                        }
+                        "pPr" if in_paragraph => {
+                            current_level = paragraph_level(e);
+                        }
+                        "blip" if in_bu_blip => {
+                            if let Some(file) = blip_file(e, rels) {
+                                current_bullet = Some(file);
                             }
                         }
                         // Handle self-closing run properties
@@ -749,12 +812,29 @@ impl PptxParser {
                         }
                         "p" if in_txbody => {
                             if !current_runs.is_empty() {
+                                let list_info = current_bullet.take().map(|image| ListInfo {
+                                    list_type: ListType::Bullet,
+                                    level: current_level,
+                                    number: None,
+                                    marker_image: Some(image),
+                                });
                                 current_paragraphs.push(Paragraph {
                                     runs: current_runs.clone(),
+                                    list_info,
                                     ..Default::default()
                                 });
                             }
                             in_paragraph = false;
+                            in_ppr = false;
+                        }
+                        "pPr" => {
+                            in_ppr = false;
+                        }
+                        "buBlip" => {
+                            in_bu_blip = false;
+                        }
+                        "tcPr" => {
+                            in_tc_pr = false;
                         }
                         "txBody" => {
                             in_txbody = false;
@@ -798,7 +878,12 @@ impl PptxParser {
     /// Parse text content excluding tables (paragraphs from shapes, not table cells).
     #[allow(dead_code)]
     fn parse_text_content_excluding_tables(&self, xml: &str) -> Result<Vec<Paragraph>> {
-        self.parse_text_content_excluding_tables_with_rels(xml, &HashMap::new(), &HashMap::new())
+        self.parse_text_content_excluding_tables_with_rels(
+            xml,
+            &HashMap::new(),
+            &HashMap::new(),
+            &InheritedBullets::default(),
+        )
     }
 
     /// Parse text content excluding tables with relationship map for hyperlinks.
@@ -808,6 +893,7 @@ impl PptxParser {
         xml: &str,
         rels: &HashMap<String, String>,
         inherited_phs: &HashMap<String, Vec<Paragraph>>,
+        inherited_bullets: &InheritedBullets,
     ) -> Result<Vec<Paragraph>> {
         let mut paragraphs = Vec::new();
         let mut reader = crate::decode::reader_for(xml);
@@ -837,7 +923,9 @@ impl PptxParser {
         let mut in_bu_blip = false;
         let mut in_lst_style = false;
         let mut lst_style_level: Option<u8> = None;
-        let mut shape_bullets: HashMap<u8, String> = HashMap::new();
+        let mut shape_bullets: HashMap<u8, Option<String>> = HashMap::new();
+        let mut current_ph_type: Option<String> = None;
+        let mut current_ph_idx: Option<String> = None;
         let mut current_level: u8 = 0;
         let mut current_bullet: Option<String> = None;
         let mut bullet_overridden = false;
@@ -859,6 +947,8 @@ impl PptxParser {
                             in_shape = true;
                             current_heading = HeadingLevel::None;
                             current_ph_key = None;
+                            current_ph_type = None;
+                            current_ph_idx = None;
                             shape_para_start = paragraphs.len();
                             shape_bullets.clear();
                         }
@@ -878,6 +968,11 @@ impl PptxParser {
                         }
                         "buNone" | "buChar" | "buAutoNum" if in_ppr => {
                             bullet_overridden = true;
+                        }
+                        "buNone" | "buChar" | "buAutoNum" if lst_style_level.is_some() => {
+                            if let Some(level) = lst_style_level {
+                                shape_bullets.insert(level, None);
+                            }
                         }
                         "blip" if in_bu_blip => {
                             record_bullet(
@@ -970,6 +1065,8 @@ impl PptxParser {
                                     _ => {}
                                 }
                             }
+                            current_ph_type = Some(ph_type.clone()).filter(|t| !t.is_empty());
+                            current_ph_idx = ph_idx.clone();
                             current_ph_key = Some(if !ph_type.is_empty() {
                                 ph_type
                             } else {
@@ -987,6 +1084,11 @@ impl PptxParser {
                         }
                         "buNone" | "buChar" | "buAutoNum" if in_ppr => {
                             bullet_overridden = true;
+                        }
+                        "buNone" | "buChar" | "buAutoNum" if lst_style_level.is_some() => {
+                            if let Some(level) = lst_style_level {
+                                shape_bullets.insert(level, None);
+                            }
                         }
                         "blip" if in_bu_blip => {
                             record_bullet(
@@ -1018,6 +1120,8 @@ impl PptxParser {
                                     _ => {}
                                 }
                             }
+                            current_ph_type = Some(ph_type.clone()).filter(|t| !t.is_empty());
+                            current_ph_idx = ph_idx.clone();
                             current_ph_key = Some(if !ph_type.is_empty() {
                                 ph_type
                             } else {
@@ -1112,11 +1216,23 @@ impl PptxParser {
                         }
                         "p" if !in_table => {
                             if !current_runs.is_empty() {
+                                // The paragraph's own bullet, else the shape's list style,
+                                // else what the layout and master give the placeholder.
                                 let marker_image = current_bullet.clone().or_else(|| {
                                     if bullet_overridden {
-                                        None
-                                    } else {
-                                        shape_bullets.get(&current_level).cloned()
+                                        return None;
+                                    }
+                                    match shape_bullets.get(&current_level) {
+                                        Some(own) => own.clone(),
+                                        None => inherited_bullets
+                                            .levels(
+                                                current_ph_type.as_deref(),
+                                                current_ph_idx.as_deref(),
+                                            )
+                                            .and_then(|levels| levels.get(&current_level))
+                                            .cloned()
+                                            .flatten()
+                                            .map(|path| media_name(&path)),
                                     }
                                 });
                                 let list_info = marker_image.map(|image| ListInfo {
@@ -1404,6 +1520,84 @@ impl PptxParser {
         Ok(inherited)
     }
 
+    /// The picture bullets the slide's placeholders inherit from its layout and master.
+    fn build_inherited_bullets(
+        &self,
+        slide_path: &str,
+        slide_full_rels: &crate::container::Relationships,
+    ) -> Result<InheritedBullets> {
+        const SLIDE_LAYOUT_TYPE: &str =
+            "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout";
+        const SLIDE_MASTER_TYPE: &str =
+            "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster";
+
+        let Some(layout_rel) = slide_full_rels
+            .get_by_type(SLIDE_LAYOUT_TYPE)
+            .first()
+            .copied()
+        else {
+            return Ok(InheritedBullets::default());
+        };
+        let layout_path = OoxmlContainer::resolve_path(slide_path, &layout_rel.target);
+        let layout_rels = self
+            .container
+            .read_optional_relationships_for_part(&layout_path)?;
+        let master_path = layout_rels
+            .get_by_type(SLIDE_MASTER_TYPE)
+            .first()
+            .map(|rel| OoxmlContainer::resolve_path(&layout_path, &rel.target));
+
+        let layout_xml = self.container.read_xml_optional(&layout_path)?;
+        let layout_targets = layout_rels.into_targets_by_id();
+        let (master_xml, master_targets) = match &master_path {
+            Some(path) => (
+                self.container.read_xml_optional(path)?,
+                self.container
+                    .read_optional_relationships_for_part(path)?
+                    .into_targets_by_id(),
+            ),
+            None => (None, HashMap::new()),
+        };
+
+        Ok(InheritedBullets::new(
+            Some((&layout_path, &layout_targets)),
+            layout_xml.as_deref(),
+            master_path.as_deref().map(|p| (p, &master_targets)),
+            master_xml.as_deref(),
+        ))
+    }
+
+    /// The media a slide draws through bullets it inherits from its layout or master:
+    /// package path of each picture bullet that some paragraph of the slide ends up with.
+    fn inherited_bullet_media(&self, slide_path: &str) -> Result<Vec<String>> {
+        let slide_full_rels = self
+            .container
+            .read_optional_relationships_for_part(slide_path)?;
+        let bullets = self.build_inherited_bullets(slide_path, &slide_full_rels)?;
+        let Some(xml) = self.container.read_xml_optional(slide_path)? else {
+            return Ok(Vec::new());
+        };
+        let rels = slide_full_rels.into_targets_by_id();
+        let paragraphs = self.parse_text_content_excluding_tables_with_rels(
+            &xml,
+            &rels,
+            &HashMap::new(),
+            &bullets,
+        )?;
+        let mut paths: Vec<String> = Vec::new();
+        for file in paragraphs
+            .iter()
+            .filter_map(|p| p.list_info.as_ref()?.marker_image.as_deref())
+        {
+            if let Some(path) = bullets.path_of(file) {
+                if !paths.iter().any(|p| p == path) {
+                    paths.push(path.to_string());
+                }
+            }
+        }
+        Ok(paths)
+    }
+
     /// Extract resources (images, media) from the presentation.
     ///
     /// Lists the media the slides reference, keyed by file name, the way a Word document
@@ -1479,6 +1673,20 @@ impl PptxParser {
                 let resource = &mut resources[at];
                 if resource.alt_text.is_none() {
                     resource.alt_text = pictures.alt_texts.get(rel_id.as_str()).cloned();
+                }
+            }
+
+            // A picture bullet the slide takes from its layout or master is drawn by the
+            // slide's paragraphs, so its image is listed with the slide's media.
+            for path in self.inherited_bullet_media(&slide_path)? {
+                let name = media_name(&path);
+                shown.insert(name.clone());
+                if let std::collections::hash_map::Entry::Vacant(slot) = index.entry(name) {
+                    let Ok(data) = self.container.read_binary(&path) else {
+                        continue;
+                    };
+                    slot.insert(resources.len());
+                    resources.push(Resource::from_part(&path, data));
                 }
             }
         }
@@ -1722,7 +1930,7 @@ fn record_bullet(
     in_paragraph_properties: bool,
     list_style_level: Option<u8>,
     paragraph_bullet: &mut Option<String>,
-    shape_bullets: &mut HashMap<u8, String>,
+    shape_bullets: &mut HashMap<u8, Option<String>>,
 ) {
     let Some(target) = blip
         .attributes()
@@ -1732,12 +1940,29 @@ fn record_bullet(
     else {
         return;
     };
-    let file = target.rsplit('/').next().unwrap_or(target).to_string();
+    let file = media_name(target);
     if in_paragraph_properties {
         *paragraph_bullet = Some(file);
     } else if let Some(level) = list_style_level {
-        shape_bullets.insert(level, file);
+        shape_bullets.insert(level, Some(file));
     }
+}
+
+/// The media file an `a:blip`'s `r:embed` names, through the part's relationships.
+fn blip_file(
+    blip: &quick_xml::events::BytesStart<'_>,
+    rels: &HashMap<String, String>,
+) -> Option<String> {
+    blip.attributes()
+        .flatten()
+        .find(|a| a.key.local_name().as_ref() == "embed")
+        .and_then(|a| rels.get(a.value.as_ref()))
+        .map(|target| media_name(target))
+}
+
+/// The file name of a media part: the last segment of a relationship target.
+fn media_name(target: &str) -> String {
+    target.rsplit('/').next().unwrap_or(target).to_string()
 }
 
 fn picture_description(e: &quick_xml::events::BytesStart<'_>) -> Option<String> {
@@ -2403,6 +2628,219 @@ mod tests {
             doc.resources.keys()
         );
         assert!(image_blocks(&doc.sections[0]).is_empty());
+    }
+
+    const IMAGE_REL: &str =
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image";
+    const LAYOUT_REL: &str =
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout";
+    const MASTER_REL: &str =
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster";
+
+    fn rels_xml(entries: &[(&str, &str, &str)]) -> String {
+        let body: String = entries
+            .iter()
+            .map(|(id, ty, target)| {
+                format!(r#"<Relationship Id="{id}" Type="{ty}" Target="{target}"/>"#)
+            })
+            .collect();
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">{body}</Relationships>"#
+        )
+    }
+
+    const PNG: &[u8] = b"\x89PNG\r\n\x1a\n";
+
+    /// A slide whose own background is a picture references it from the slide (nothing in
+    /// the text); a colour background references nothing. The background a layout gives
+    /// the slide is template decoration, like the rest of the layout's media.
+    #[test]
+    fn test_slide_background_picture_is_referenced_by_the_section() {
+        let with_bg = r#"<?xml version="1.0" encoding="UTF-8"?>
+<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+<p:cSld><p:bg><p:bgPr><a:blipFill dpi="0"><a:blip r:embed="rIdBg"/><a:stretch><a:fillRect/></a:stretch></a:blipFill><a:effectLst/></p:bgPr></p:bg><p:spTree></p:spTree></p:cSld></p:sld>"#;
+        let colour_bg = r#"<?xml version="1.0" encoding="UTF-8"?>
+<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+<p:cSld><p:bg><p:bgPr><a:solidFill><a:srgbClr val="FF0000"/></a:solidFill></p:bgPr></p:bg><p:spTree></p:spTree></p:cSld></p:sld>"#;
+        let with_rels = rels_xml(&[
+            ("rIdBg", IMAGE_REL, "../media/bg.png"),
+            ("rIdLayout", LAYOUT_REL, "../slideLayouts/slideLayout1.xml"),
+        ]);
+        let layout_rels = rels_xml(&[("rIdLb", IMAGE_REL, "../media/layoutbg.png")]);
+        let layout = r#"<?xml version="1.0" encoding="UTF-8"?>
+<p:sldLayout xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><p:cSld><p:bg><p:bgPr><a:blipFill><a:blip r:embed="rIdLb"/></a:blipFill></p:bgPr></p:bg><p:spTree/></p:cSld></p:sldLayout>"#;
+        let colour_rels =
+            rels_xml(&[("rIdLayout", LAYOUT_REL, "../slideLayouts/slideLayout1.xml")]);
+        let data = deck(
+            &[(with_bg, &with_rels), (colour_bg, &colour_rels)],
+            &[
+                ("ppt/slideLayouts/slideLayout1.xml", layout.as_bytes()),
+                (
+                    "ppt/slideLayouts/_rels/slideLayout1.xml.rels",
+                    layout_rels.as_bytes(),
+                ),
+                ("ppt/media/bg.png", PNG),
+                ("ppt/media/layoutbg.png", PNG),
+            ],
+        );
+        let doc = PptxParser::from_bytes(data).unwrap().parse().unwrap();
+
+        assert_eq!(doc.sections[0].background_image.as_deref(), Some("bg.png"));
+        assert_eq!(doc.sections[1].background_image, None);
+        assert!(
+            doc.sections[0].content.is_empty(),
+            "a background is no block"
+        );
+        assert!(doc.resources.contains_key("bg.png"));
+        assert!(!doc.resources.contains_key("layoutbg.png"));
+        let json = serde_json::to_string(&doc.sections[0]).unwrap();
+        assert!(json.contains("\"background_image\":\"bg.png\""), "{json}");
+        let md =
+            crate::render::to_markdown(&doc, &crate::render::RenderOptions::default()).unwrap();
+        assert!(!md.contains("bg.png"), "markdown: {md}");
+    }
+
+    /// A table cell filled with a picture references it from the cell; the cell's text
+    /// stays its text and a picture bullet in a cell paragraph names its image.
+    #[test]
+    fn test_table_cell_picture_fill_and_bullet_are_referenced() {
+        let table = r#"<p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="4" name="Table"/><p:cNvGraphicFramePr/><p:nvPr/></p:nvGraphicFramePr><a:graphic><a:graphicData><a:tbl><a:tblGrid><a:gridCol w="100"/><a:gridCol w="100"/></a:tblGrid>
+<a:tr h="10"><a:tc><a:txBody><a:bodyPr/><a:p><a:r><a:t>Filled</a:t></a:r></a:p></a:txBody><a:tcPr><a:blipFill><a:blip r:embed="rIdCell"/><a:stretch><a:fillRect/></a:stretch></a:blipFill></a:tcPr></a:tc><a:tc><a:txBody><a:bodyPr/><a:p><a:pPr><a:buBlip><a:blip r:embed="rIdBullet"/></a:buBlip></a:pPr><a:r><a:t>Bulleted</a:t></a:r></a:p></a:txBody><a:tcPr><a:solidFill><a:srgbClr val="00FF00"/></a:solidFill></a:tcPr></a:tc></a:tr>
+<a:tr h="10"><a:tc><a:txBody><a:bodyPr/><a:p><a:endParaRPr/></a:p></a:txBody><a:tcPr><a:blipFill><a:blip r:embed="rIdCell"/></a:blipFill></a:tcPr></a:tc><a:tc><a:txBody><a:bodyPr/><a:p><a:r><a:t>Plain</a:t></a:r></a:p></a:txBody></a:tc></a:tr>
+</a:tbl></a:graphicData></a:graphic></p:graphicFrame>"#;
+        let rels = rels_xml(&[
+            ("rIdCell", IMAGE_REL, "../media/cell.png"),
+            ("rIdBullet", IMAGE_REL, "../media/bullet.png"),
+        ]);
+        let data = deck(
+            &[(&slide(table), &rels)],
+            &[("ppt/media/cell.png", PNG), ("ppt/media/bullet.png", PNG)],
+        );
+        let doc = PptxParser::from_bytes(data).unwrap().parse().unwrap();
+        let Block::Table(t) = &doc.sections[0].content[0] else {
+            panic!("expected a table: {:?}", doc.sections[0].content);
+        };
+        let cell = |r: usize, c: usize| &t.rows[r].cells[c];
+        assert_eq!(cell(0, 0).background_image.as_deref(), Some("cell.png"));
+        assert_eq!(cell(0, 0).plain_text(), "Filled");
+        assert_eq!(cell(0, 1).background_image, None);
+        assert_eq!(cell(1, 0).background_image.as_deref(), Some("cell.png"));
+        assert_eq!(cell(1, 1).background_image, None);
+        let bullet = cell(0, 1).content[0].list_info.as_ref().unwrap();
+        assert_eq!(bullet.marker_image.as_deref(), Some("bullet.png"));
+        assert!(doc.resources.contains_key("cell.png"));
+        assert!(doc.resources.contains_key("bullet.png"));
+        assert!(image_blocks(&doc.sections[0]).is_empty());
+        let md =
+            crate::render::to_markdown(&doc, &crate::render::RenderOptions::default()).unwrap();
+        assert!(!md.contains(".png"), "markdown: {md}");
+    }
+
+    /// Picture bullets come down the placeholder chain — master `txStyles`, master
+    /// placeholder, layout placeholder, slide shape, paragraph — level by level; a bullet
+    /// of another kind replaces an inherited picture. The image a slide inherits is listed
+    /// with the slide's media; one no slide paragraph ends up with is not.
+    #[test]
+    fn test_picture_bullets_are_inherited_through_the_placeholder_chain() {
+        let master = r#"<?xml version="1.0" encoding="UTF-8"?>
+<p:sldMaster xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><p:cSld><p:spTree/></p:cSld>
+<p:txStyles><p:titleStyle><a:lvl1pPr><a:buNone/></a:lvl1pPr></p:titleStyle>
+<p:bodyStyle><a:lvl1pPr><a:buBlip><a:blip r:embed="rIdMasterBullet"/></a:buBlip></a:lvl1pPr><a:lvl2pPr><a:buBlip><a:blip r:embed="rIdMasterBullet"/></a:buBlip></a:lvl2pPr></p:bodyStyle>
+<p:otherStyle><a:lvl1pPr><a:buBlip><a:blip r:embed="rIdUnused"/></a:buBlip></a:lvl1pPr></p:otherStyle></p:txStyles></p:sldMaster>"#;
+        let master_rels = rels_xml(&[
+            ("rIdMasterBullet", IMAGE_REL, "../media/master-bullet.png"),
+            ("rIdUnused", IMAGE_REL, "../media/unused.png"),
+        ]);
+        // Layout: idx 1 sets its own level-1 picture and replaces level 2 with a character
+        // bullet; idx 2 sets nothing and takes the master's.
+        let layout = r#"<?xml version="1.0" encoding="UTF-8"?>
+<p:sldLayout xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><p:cSld><p:spTree>
+<p:sp><p:nvSpPr><p:cNvPr id="2" name="A"/><p:cNvSpPr/><p:nvPr><p:ph type="body" idx="1"/></p:nvPr></p:nvSpPr><p:spPr/><p:txBody><a:bodyPr/><a:lstStyle><a:lvl1pPr><a:buBlip><a:blip r:embed="rIdLayoutBullet"/></a:buBlip></a:lvl1pPr><a:lvl2pPr><a:buChar char="-"/></a:lvl2pPr></a:lstStyle><a:p><a:r><a:t>Prompt</a:t></a:r></a:p></p:txBody></p:sp>
+<p:sp><p:nvSpPr><p:cNvPr id="3" name="B"/><p:cNvSpPr/><p:nvPr><p:ph idx="2"/></p:nvPr></p:nvSpPr><p:spPr/><p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>Prompt</a:t></a:r></a:p></p:txBody></p:sp>
+<p:sp><p:nvSpPr><p:cNvPr id="4" name="T"/><p:cNvSpPr/><p:nvPr><p:ph type="title"/></p:nvPr></p:nvSpPr><p:spPr/><p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>Prompt</a:t></a:r></a:p></p:txBody></p:sp>
+</p:spTree></p:cSld></p:sldLayout>"#;
+        let layout_rels = rels_xml(&[
+            ("rIdLayoutBullet", IMAGE_REL, "../media/layout-bullet.png"),
+            ("rIdMaster", MASTER_REL, "../slideMasters/slideMaster1.xml"),
+        ]);
+        let ph = |ph: &str, paras: &str| {
+            format!(
+                r#"<p:sp><p:nvSpPr><p:cNvPr id="9" name="S"/><p:cNvSpPr/><p:nvPr>{ph}</p:nvPr></p:nvSpPr><p:spPr/><p:txBody><a:bodyPr/><a:lstStyle/>{paras}</p:txBody></p:sp>"#
+            )
+        };
+        let p = |ppr: &str, text: &str| {
+            format!(r#"<a:p><a:pPr{ppr}</a:pPr><a:r><a:t>{text}</a:t></a:r></a:p>"#)
+        };
+        let shapes = [
+            ph(
+                r#"<p:ph type="body" idx="1"/>"#,
+                &[
+                    p(">", "layout one"),
+                    p(r#" lvl="1">"#, "layout char overrides master"),
+                    p("><a:buNone/>", "no bullet"),
+                ]
+                .concat(),
+            ),
+            ph(
+                r#"<p:ph idx="2"/>"#,
+                &[p(">", "master one"), p(r#" lvl="1">"#, "master two")].concat(),
+            ),
+            ph(r#"<p:ph type="title"/>"#, &p(">", "A title")),
+            // A plain text box inherits nothing.
+            ph("", &p(">", "text box")),
+        ]
+        .concat();
+        let slide_rels = rels_xml(&[("rIdLayout", LAYOUT_REL, "../slideLayouts/slideLayout1.xml")]);
+        let data = deck(
+            &[(&slide(&shapes), &slide_rels)],
+            &[
+                ("ppt/slideLayouts/slideLayout1.xml", layout.as_bytes()),
+                (
+                    "ppt/slideLayouts/_rels/slideLayout1.xml.rels",
+                    layout_rels.as_bytes(),
+                ),
+                ("ppt/slideMasters/slideMaster1.xml", master.as_bytes()),
+                (
+                    "ppt/slideMasters/_rels/slideMaster1.xml.rels",
+                    master_rels.as_bytes(),
+                ),
+                ("ppt/media/layout-bullet.png", PNG),
+                ("ppt/media/master-bullet.png", PNG),
+                ("ppt/media/unused.png", PNG),
+            ],
+        );
+        let doc = PptxParser::from_bytes(data).unwrap().parse().unwrap();
+        let got: Vec<(String, Option<(u8, String)>)> = paragraphs(&doc.sections[0])
+            .iter()
+            .map(|para| {
+                (
+                    para.plain_text(),
+                    para.list_info
+                        .as_ref()
+                        .map(|l| (l.level, l.marker_image.clone().unwrap_or_default())),
+                )
+            })
+            .collect();
+        let some = |level: u8, img: &str| Some((level, img.to_string()));
+        assert_eq!(
+            got,
+            [
+                ("layout one".to_string(), some(0, "layout-bullet.png")),
+                ("layout char overrides master".to_string(), None),
+                ("no bullet".to_string(), None),
+                ("master one".to_string(), some(0, "master-bullet.png")),
+                ("master two".to_string(), some(1, "master-bullet.png")),
+                ("A title".to_string(), None),
+                ("text box".to_string(), None),
+            ]
+        );
+        assert!(doc.resources.contains_key("layout-bullet.png"));
+        assert!(doc.resources.contains_key("master-bullet.png"));
+        assert!(
+            !doc.resources.contains_key("unused.png"),
+            "resources: {:?}",
+            doc.resources.keys()
+        );
     }
 
     /// A one-slide deck whose slide points at `slideLayout1.xml`, with the layout's own
