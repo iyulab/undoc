@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.1] - 2026-10-08
+
+### Documentation
+
+- **Benchmark results.** `docs/BENCHMARKS.md` reports the scores of the published package on a
+  DOCX edition of opendataloader-bench — its real-document ground truth typeset as Word
+  documents and scored with that benchmark's own evaluator — with the commands to reproduce
+  them. `benchmarks/build_odl_docx.py` builds that corpus. No library changes.
+
 ## [0.16.0] - 2026-10-07
 
 ### Added
