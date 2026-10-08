@@ -731,6 +731,12 @@ cargo add undoc --no-default-features --features docx
 
 ---
 
+## Benchmarks
+
+<!-- benchmarks:start -->
+On a DOCX edition of [opendataloader-bench](https://github.com/opendataloader-project/opendataloader-bench) (200 real documents typeset as Word, official evaluator), undoc 0.16.0 scores **0.993** overall. What that measures and how to reproduce: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+<!-- benchmarks:end -->
+
 ## Performance
 
 - Parallel section/sheet/slide processing with Rayon
