@@ -510,7 +510,7 @@ struct FfiSlideRasterOptions {
 /// Rasterize a section to a PNG. A section of a presentation is a slide.
 ///
 /// The slide is painted by the parser the handle keeps — the same package, and no second
-/// read of the file. What the rasterizer cannot paint yet (charts, SmartArt and other
+/// read of the file. What the rasterizer cannot paint yet (charts, embedded objects and other
 /// graphic frames, custom geometry, pictures in formats other than PNG and JPEG, text no
 /// face covers) is left out and counted in `out_info`; the rest of the slide is painted.
 ///

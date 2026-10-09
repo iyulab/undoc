@@ -47,7 +47,10 @@ public sealed class RenderGaps
     [JsonPropertyName("charts")]
     public uint Charts { get; init; }
 
-    /// <summary>Diagrams (SmartArt) and other graphic frames not drawn; tables are drawn.</summary>
+    /// <summary>
+    /// Graphic frames not drawn: embedded objects, and SmartArt PowerPoint left no drawing for.
+    /// Tables and SmartArt are drawn.
+    /// </summary>
     [JsonPropertyName("graphic_frames")]
     public uint GraphicFrames { get; init; }
 

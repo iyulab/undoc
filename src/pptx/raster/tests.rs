@@ -1389,3 +1389,72 @@ fn plain_run(text: &str) -> String {
         r#"<a:r><a:rPr lang="en-US" sz="2000"><a:latin typeface="Undoc Test Sans"/></a:rPr><a:t>{text}</a:t></a:r>"#
     )
 }
+
+// ---------------------------------------------------------------------------------------------
+// SmartArt
+
+/// A SmartArt graphic frame at (`x`, 0), 50 × 50 pt, whose data part (`rId10`) names its
+/// drawing through `dsp:dataModelExt` (`rId11`).
+fn diagram_frame(x: u32) -> String {
+    format!(
+        r#"<p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="5" name="Diagram"/><p:cNvGraphicFramePr/><p:nvPr/></p:nvGraphicFramePr><p:xfrm><a:off x="{}" y="0"/><a:ext cx="{}" cy="{}"/></p:xfrm><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/diagram"><dgm:relIds xmlns:dgm="http://schemas.openxmlformats.org/drawingml/2006/diagram" r:dm="rId10" r:lo="rId12" r:qs="rId13" r:cs="rId14"/></a:graphicData></a:graphic></p:graphicFrame>"#,
+        emu(x),
+        emu(50),
+        emu(50)
+    )
+}
+
+const DIAGRAM_DATA: &str = r#"<?xml version="1.0"?><dgm:dataModel xmlns:dgm="http://schemas.openxmlformats.org/drawingml/2006/diagram" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><dgm:ptLst/><dgm:extLst><a:ext uri="http://schemas.microsoft.com/office/drawing/2008/diagram"><dsp:dataModelExt xmlns:dsp="http://schemas.microsoft.com/office/drawing/2008/diagram" relId="rId11" minVer="http://schemas.openxmlformats.org/drawingml/2006/diagram"/></a:ext></dgm:extLst></dgm:dataModel>"#;
+
+/// A pre-drawn SmartArt part holding one shape: a red 20 × 20 pt square at (10, 10) of the
+/// frame, and a picture-filled one at (30, 30) whose picture is the drawing's own `rId1`.
+fn diagram_drawing() -> String {
+    format!(
+        r#"<?xml version="1.0"?><dsp:drawing xmlns:dsp="http://schemas.microsoft.com/office/drawing/2008/diagram" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><dsp:spTree><dsp:nvGrpSpPr><dsp:cNvPr id="0" name=""/><dsp:cNvGrpSpPr/></dsp:nvGrpSpPr><dsp:grpSpPr/><dsp:sp modelId="{{1}}"><dsp:nvSpPr><dsp:cNvPr id="0" name=""/><dsp:cNvSpPr/></dsp:nvSpPr><dsp:spPr><a:xfrm><a:off x="{a}" y="{a}"/><a:ext cx="{s}" cy="{s}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:solidFill><a:srgbClr val="FF0000"/></a:solidFill></dsp:spPr></dsp:sp><dsp:sp modelId="{{2}}"><dsp:nvSpPr><dsp:cNvPr id="0" name=""/><dsp:cNvSpPr/></dsp:nvSpPr><dsp:spPr><a:xfrm><a:off x="{b}" y="{b}"/><a:ext cx="{s}" cy="{s}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:blipFill><a:blip r:embed="rId1"/><a:stretch><a:fillRect/></a:stretch></a:blipFill></dsp:spPr></dsp:sp></dsp:spTree></dsp:drawing>"#,
+        a = emu(10),
+        b = emu(30),
+        s = emu(20)
+    )
+}
+
+/// SmartArt is drawn from the shapes PowerPoint drew for it, placed at its frame; its pictures
+/// come through the drawing part's own relationships.
+#[test]
+fn smartart_is_drawn_from_its_drawing() {
+    let png = red_blue_png(40, 20);
+    let drawing = diagram_drawing();
+    let drawing_rels = rels(&[("rId1", "image", "../media/image1.png")]);
+    let slide_rels = [
+        ("rId10", "diagramData", "../diagrams/data1.xml"),
+        ("rId11", "diagramDrawing", "../diagrams/drawing1.xml"),
+    ];
+    let parts: [(&str, &[u8]); 4] = [
+        ("ppt/diagrams/data1.xml", DIAGRAM_DATA.as_bytes()),
+        ("ppt/diagrams/drawing1.xml", drawing.as_bytes()),
+        (
+            "ppt/diagrams/_rels/drawing1.xml.rels",
+            drawing_rels.as_bytes(),
+        ),
+        ("ppt/media/image1.png", &png),
+    ];
+    let slide = render(deck_full(&diagram_frame(40), "", "", &slide_rels, &parts));
+    assert_eq!(
+        pixel(&slide, 60, 20),
+        RED,
+        "the square, at (10, 10) of the frame at x 40"
+    );
+    assert_eq!(pixel(&slide, 20, 20), WHITE, "nothing left of the frame");
+    assert_eq!(pixel(&slide, 73, 40), RED, "the picture's left half");
+    assert_eq!(pixel(&slide, 87, 40), BLUE, "the picture's right half");
+    assert!(slide.gaps.is_empty(), "{:?}", slide.gaps);
+
+    // Without a drawing part the diagram is not drawn, and counts as such.
+    let slide = render(deck_full(
+        &diagram_frame(40),
+        "",
+        "",
+        &slide_rels[..1],
+        &parts[..1],
+    ));
+    assert_eq!(slide.gaps.graphic_frames, 1);
+}

@@ -114,10 +114,10 @@ var slide = doc.RenderSection(0, new RenderSectionOptions { Dpi = 150 });
 File.WriteAllBytes("slide1.png", slide.Png);
 
 if (!slide.Gaps.IsEmpty)
-    Console.WriteLine($"{slide.Gaps.Charts} charts and {slide.Gaps.GraphicFrames} diagrams not painted");
+    Console.WriteLine($"{slide.Gaps.Charts} charts and {slide.Gaps.GraphicFrames} other graphic frames not painted");
 ```
 
-What the renderer cannot paint yet — charts, SmartArt and other graphic frames, custom geometry,
+What the renderer cannot paint yet — charts, embedded objects and other graphic frames, custom geometry,
 pictures other than PNG and JPEG, text in a script that needs shaping — is left out and counted
 in `Gaps`; the rest of the slide is painted. No font is bundled. Text is drawn in the directories you name
 (`FontDirectories`), then the system's. A Linux container without fonts draws no text — install a font

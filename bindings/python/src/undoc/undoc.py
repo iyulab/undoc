@@ -181,7 +181,7 @@ class RenderedSection:
 
     ``gaps`` counts, by kind, what the renderer left out — ``shapes`` (custom geometry),
     ``images`` (pictures other than PNG and JPEG), ``text_runs`` (text no face covers, in a
-    script that needs shaping, or vertical), ``charts``, ``graphic_frames`` (diagrams)
+    script that needs shaping, or vertical), ``charts``, ``graphic_frames`` (embedded objects, SmartArt with no drawing)
     and ``approximated_fills`` (fills drawn as a stand-in: a pattern in its foreground color,
     a rectangular or shape-following gradient as a radial one, a tiled picture stretched). All
     zero means everything was painted; otherwise the rest of the slide still was.
@@ -407,7 +407,7 @@ class Undoc:
         """Render a section to a PNG. A section of a presentation is a slide; it is painted
         from the package this document was parsed from, without reading the file again.
 
-        Anything the renderer cannot paint yet (charts, SmartArt and other graphic frames,
+        Anything the renderer cannot paint yet (charts, embedded objects and other graphic frames,
         custom geometry, pictures other than PNG and JPEG, text no face covers) is left out
         and counted in :attr:`RenderedSection.gaps`; the rest of the slide is painted.
 

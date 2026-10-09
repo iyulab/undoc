@@ -25,6 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (outer edges on its region's edge, `insideH`/`insideV` within it, `lnRef` through the theme) and
   text color and weight; a cell's own properties win. A style the file does not define counts as
   an approximated fill.
+- **SmartArt is drawn.** A diagram is drawn from the shapes PowerPoint drew for it
+  (`ppt/diagrams/drawingN.xml`, found through the data part's `dsp:dataModelExt`), placed at its
+  graphic frame, with each shape's own text rectangle (`dsp:txXfrm`) and pictures found through
+  the drawing's relationships. A diagram with no such part still counts in `graphic_frames`.
 - **Theme fill styles are drawn.** A shape's `a:fillRef` and a background's `p:bgRef` paint the
   theme style they name (`fillStyleLst`, and `bgFillStyleLst` from 1001), with `phClr` taken from
   the reference's own color; the color alone stood in for the style before.

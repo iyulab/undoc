@@ -12,9 +12,11 @@
 //! Tables are drawn cell by cell — fills, borders and text — in their table style when the
 //! presentation defines it.
 //!
+//! SmartArt is drawn from the shapes PowerPoint drew for it (`ppt/diagrams/drawingN.xml`).
+//!
 //! Not painted yet, and counted in the gaps instead: pictures in other formats, charts,
-//! SmartArt and other graphic frames, custom geometry, vertical text and scripts that need
-//! shaping.
+//! embedded objects and other graphic frames, custom geometry, vertical text and scripts that
+//! need shaping.
 
 use std::collections::HashMap;
 
@@ -34,6 +36,8 @@ use crate::raster::{RasteredSlide, SlideRasterGaps, SlideRasterOptions};
 const A: &str = "http://schemas.openxmlformats.org/drawingml/2006/main";
 const P: &str = "http://schemas.openxmlformats.org/presentationml/2006/main";
 const R: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+/// PowerPoint's pre-drawn SmartArt (`ppt/diagrams/drawingN.xml`).
+const DSP: &str = "http://schemas.microsoft.com/office/drawing/2008/diagram";
 
 const REL_LAYOUT: &str = "/slideLayout";
 const REL_MASTER: &str = "/slideMaster";
@@ -99,6 +103,7 @@ impl PptxParser {
             substituted: 0,
             container: &self.container,
             rels: &texts.rels,
+            local_rels: Vec::new(),
             images: HashMap::new(),
         };
 
@@ -166,6 +171,12 @@ fn num(node: Node, attr: &str) -> Option<f64> {
 
 fn child<'a, 'i>(node: Node<'a, 'i>, ns: &str, name: &str) -> Option<Node<'a, 'i>> {
     node.children().find(|n| n.has_tag_name((ns, name)))
+}
+
+/// A shape's part (`spPr`, `txBody`, `style`, …): in PresentationML, or in a pre-drawn
+/// SmartArt shape's namespace.
+fn sp_child<'a, 'i>(node: Node<'a, 'i>, name: &str) -> Option<Node<'a, 'i>> {
+    child(node, P, name).or_else(|| child(node, DSP, name))
 }
 
 /// The text of the slide and of the parts it inherits from.
@@ -695,6 +706,9 @@ struct Painter<'a> {
     container: &'a OoxmlContainer,
     /// The relationships of the slide, its layout and its master, in that order.
     rels: &'a [HashMap<String, String>; 3],
+    /// The relationships of parts read while painting (a SmartArt drawing), by the address of
+    /// their parsed document.
+    local_rels: Vec<(usize, HashMap<String, String>)>,
     /// Decoded pictures by part path; `None` for one that did not decode.
     images: HashMap<String, Option<Pixmap>>,
 }
@@ -703,7 +717,11 @@ impl<'a> Painter<'a> {
     /// The relationships a reference in `node` resolves against: those of the part `node` is
     /// in. A placeholder's picture fill or a list style's picture bullet can come from the
     /// layout or the master, and its `r:embed` names a relationship of that part.
-    fn rels_of(&self, node: Node) -> Option<&'a HashMap<String, String>> {
+    fn rels_of(&self, node: Node) -> Option<&HashMap<String, String>> {
+        let address = node.document() as *const _ as usize;
+        if let Some((_, rels)) = self.local_rels.iter().find(|(a, _)| *a == address) {
+            return Some(rels);
+        }
         let same = |root: Option<Node>| {
             root.is_some_and(|r| {
                 std::ptr::eq(
@@ -841,7 +859,7 @@ impl<'a> Painter<'a> {
             match node.tag_name().name() {
                 "sp" | "cxnSp" => self.shape(node, parent),
                 "grpSp" => {
-                    let transform = child(node, P, "grpSpPr")
+                    let transform = sp_child(node, "grpSpPr")
                         .and_then(|pr| child(pr, A, "xfrm"))
                         .map_or(parent, |x| group_transform(x).post_concat(parent));
                     self.children(node, transform, placeholders);
@@ -857,6 +875,8 @@ impl<'a> Painter<'a> {
                         self.gaps.charts += 1;
                     } else if uri.ends_with("/table") {
                         self.table(node, parent);
+                    } else if uri.ends_with("/diagram") {
+                        self.diagram(node, parent);
                     } else {
                         self.gaps.graphic_frames += 1;
                     }
@@ -877,7 +897,7 @@ impl<'a> Painter<'a> {
     fn shape(&mut self, node: Node, parent: Transform) {
         let ph = placeholder(node);
         let inherited = self.inherited(ph.as_ref());
-        let sp_pr = child(node, P, "spPr");
+        let sp_pr = sp_child(node, "spPr");
         // A placeholder without a position of its own takes its layout's, else its master's.
         let xfrm = sp_pr.and_then(|s| child(s, A, "xfrm")).or_else(|| {
             inherited
@@ -897,7 +917,7 @@ impl<'a> Painter<'a> {
         let Some((xfrm, x, y, w, h)) = place else {
             // Nowhere to draw it: whatever it holds is missing.
             self.gaps.text_runs += count_runs(node);
-            if child(node, P, "blipFill").is_some() {
+            if sp_child(node, "blipFill").is_some() {
                 self.gaps.images += 1;
             }
             return;
@@ -917,12 +937,12 @@ impl<'a> Painter<'a> {
         };
         // A picture's fill is its own `blipFill`; a shape's is in its properties.
         let fill_node =
-            child(node, P, "blipFill").or_else(|| sp_prs.iter().find_map(|s| fill_element(*s)));
+            sp_child(node, "blipFill").or_else(|| sp_prs.iter().find_map(|s| fill_element(*s)));
         let picture = fill_node.filter(|n| n.tag_name().name() == "blipFill");
 
         let style = std::iter::once(node)
             .chain(inherited.iter().copied())
-            .find_map(|n| child(n, P, "style"));
+            .find_map(|n| sp_child(n, "style"));
         let colors = self.colors;
         let style_color = |name: &str| {
             style
@@ -985,8 +1005,17 @@ impl<'a> Painter<'a> {
             }
         }
 
-        if let Some(body) = child(node, P, "txBody") {
-            let rect = geometry.as_ref().map_or((0.0, 0.0, w, h), |g| g.text_rect);
+        if let Some(body) = sp_child(node, "txBody") {
+            // A pre-drawn SmartArt shape places its text in a rectangle of its own
+            // (`dsp:txXfrm`, in the same space as the shape's).
+            let own_rect = child(node, DSP, "txXfrm").and_then(|t| {
+                let (off, ext) = (child(t, A, "off")?, child(t, A, "ext")?);
+                let (tx, ty) = (num(off, "x")? - x, num(off, "y")? - y);
+                Some((tx, ty, tx + num(ext, "cx")?, ty + num(ext, "cy")?))
+            });
+            let rect = own_rect
+                .or_else(|| geometry.as_ref().map(|g| g.text_rect))
+                .unwrap_or((0.0, 0.0, w, h));
             let font_color = style_color("fontRef");
             let frame = TextFrame {
                 rect,
@@ -1361,6 +1390,60 @@ impl<'a> Painter<'a> {
             };
             self.text(body, None, &[], frame, None, transform);
         }
+    }
+
+    /// Draw a SmartArt diagram from the shapes PowerPoint drew for it (`dsp:drawing`, reached
+    /// through the data part's `dsp:dataModelExt`), placed at the graphic frame. A diagram
+    /// with no drawing — its layout would have to be computed — counts as a graphic frame not
+    /// drawn.
+    fn diagram(&mut self, frame: Node, parent: Transform) {
+        let drawing_path = (|| {
+            let rel_ids = frame
+                .descendants()
+                .find(|n| n.tag_name().name() == "relIds")?;
+            let rels = self.rels_of(frame)?;
+            let data_path = rels.get(rel_ids.attribute((R, "dm"))?)?;
+            let data = self.container.read_xml(data_path).ok()?;
+            let data = roxmltree::Document::parse(&data).ok()?;
+            let ext = data
+                .descendants()
+                .find(|n| n.has_tag_name((DSP, "dataModelExt")))?;
+            rels.get(ext.attribute("relId")?).cloned()
+        })();
+        let offset = child(frame, P, "xfrm")
+            .and_then(|x| child(x, A, "off"))
+            .map(|o| (num(o, "x").unwrap_or(0.0), num(o, "y").unwrap_or(0.0)));
+        let text = drawing_path
+            .as_deref()
+            .and_then(|p| self.container.read_xml(p).ok());
+        let (Some(path), Some((x, y)), Some(text)) = (drawing_path, offset, text) else {
+            self.gaps.graphic_frames += 1;
+            return;
+        };
+        let Ok(drawing) = roxmltree::Document::parse(&text) else {
+            self.gaps.graphic_frames += 1;
+            return;
+        };
+        let Some(tree) = child(drawing.root_element(), DSP, "spTree") else {
+            self.gaps.graphic_frames += 1;
+            return;
+        };
+        let rels = self
+            .container
+            .read_optional_relationships_for_part(&path)
+            .map(|r| {
+                r.by_id
+                    .into_values()
+                    .filter(|r| !r.external)
+                    .map(|r| (r.id, OoxmlContainer::resolve_path(&path, &r.target)))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let address = &drawing as *const _ as usize;
+        self.local_rels.push((address, rels));
+        let at = Transform::from_translate(x as f32, y as f32).post_concat(parent);
+        self.children(tree, at, true);
+        self.local_rels.pop();
     }
 
     /// The color and width (EMU) a table border draws in: from the `a:ln` it holds, or from
