@@ -27,6 +27,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Character styles format their runs.** A run's `w:rStyle` was ignored, so text made bold or
+  italic through a character style (Word's Strong and Emphasis, or any custom one) came out
+  plain. The style's run properties — through its `basedOn` chain — now apply under the run's
+  own, which still win. A code character style (pandoc's `VerbatimChar`, Word's `HTML Code`,
+  `HTML Keyboard`, `HTML Sample`, `HTML Typewriter`, or a style based on one) marks the run as
+  code, written as a code span.
 - **Brackets in the text stay text.** `[` and `]` are escaped like the other Markdown
   characters (with `escape_special_chars`, on by default): text reading `[x](y)` became a link
   and lost `(y)`, and a paragraph opening `[x]: y` became a link reference definition, which is

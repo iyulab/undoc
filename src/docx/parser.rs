@@ -708,6 +708,11 @@ impl DocxParser {
                             }
                         }
                     }
+                    "w:rStyle" if in_rpr => {
+                        if let Some(id) = get_attr(e, "w:val") {
+                            apply_character_style(&self.styles, &id, &mut current_style);
+                        }
+                    }
                     "w:b" if in_rpr => {
                         let val = get_bool_attr(e, "w:val");
                         current_style.bold = val.unwrap_or(true);
@@ -1421,6 +1426,11 @@ impl DocxParser {
                             }
                         }
                         // Handle formatting in run properties
+                        "w:rStyle" if in_rpr => {
+                            if let Some(id) = get_attr(e, "w:val") {
+                                apply_character_style(&self.styles, &id, &mut current_style);
+                            }
+                        }
                         "w:b" if in_rpr => {
                             let val = get_bool_attr(e, "w:val");
                             current_style.bold = val.unwrap_or(true);
@@ -1688,6 +1698,60 @@ impl DocxParser {
     }
 }
 
+/// Character styles that set text as code: pandoc writes `VerbatimChar`, Word names its
+/// built-in ones `HTML Code`, `HTML Keyboard`, `HTML Sample` and `HTML Typewriter`.
+const CODE_CHARACTER_STYLES: &[&str] = &[
+    "VerbatimChar",
+    "HTMLCode",
+    "HTMLKeyboard",
+    "HTMLSample",
+    "HTMLTypewriter",
+];
+
+/// Apply the character style a run names (`w:rStyle`) to its style: the style's run
+/// properties, inheritance resolved, as the base the run's own properties then override —
+/// `w:rStyle` is the first child of `w:rPr`. A code character style also marks the run as code.
+fn apply_character_style(styles: &StyleMap, id: &str, style: &mut TextStyle) {
+    let Some(resolved) = styles.get_resolved(id) else {
+        return;
+    };
+    let props = &resolved.run_props;
+    if let Some(bold) = props.bold {
+        style.bold = bold;
+    }
+    if let Some(italic) = props.italic {
+        style.italic = italic;
+    }
+    if let Some(underline) = props.underline {
+        style.underline = underline;
+    }
+    if let Some(strike) = props.strike {
+        style.strikethrough = strike;
+    }
+    if props.font_name.is_some() {
+        style.font = props.font_name.clone();
+    }
+    if props.font_size.is_some() {
+        style.size = props.font_size;
+    }
+    if props.color.is_some() {
+        style.color = props.color.clone();
+    }
+    if props.highlight.is_some() {
+        style.highlight = props.highlight.clone();
+    }
+    let mut chain = Some(id.to_string());
+    let mut depth = 0;
+    while let (Some(current), true) = (chain, depth <= 10) {
+        if CODE_CHARACTER_STYLES.contains(&current.as_str()) {
+            style.code = true;
+            break;
+        }
+        chain = styles.styles.get(&current).and_then(|s| s.based_on.clone());
+        depth += 1;
+    }
+}
+
 /// Parse footnotes.xml or endnotes.xml into a map of id → plain text.
 ///
 /// `note_tag` should be `"w:footnote"` or `"w:endnote"`.
@@ -1794,6 +1858,14 @@ fn vml_inline_image(e: &quick_xml::events::BytesStart) -> Option<crate::model::I
 }
 
 /// Helper to get a boolean attribute value.
+/// An attribute's value as a string.
+fn get_attr(e: &quick_xml::events::BytesStart, key: &str) -> Option<String> {
+    e.attributes()
+        .flatten()
+        .find(|attr| attr.key.as_ref() == key)
+        .map(|attr| attr.value.to_string())
+}
+
 fn get_bool_attr(e: &quick_xml::events::BytesStart, key: &str) -> Option<bool> {
     for attr in e.attributes().flatten() {
         if attr.key.as_ref() == key {
