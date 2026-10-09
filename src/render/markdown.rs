@@ -710,6 +710,19 @@ fn render_run(
     // gets no markup: emphasis or a link wrapped around nothing produces delimiters with no
     // content between them. Its text is still emitted, because it separates its neighbours.
     let Some(span) = span else {
+        // A code span has no flanking rule: code that is nothing but punctuation — `()`, `->`
+        // — is still code. Only the whitespace around it stays outside.
+        let code = run.text.trim();
+        if run.style.code && !code.is_empty() {
+            let start = run.text.len() - run.text.trim_start().len();
+            return format!(
+                "{}{}{}{}",
+                &run.text[..start],
+                markdown::code_span(code, ctx.in_table_cell),
+                &run.text[start + code.len()..],
+                break_marker(run, options)
+            );
+        }
         let text = if options.escape_special_chars {
             escape_markdown(&run.text, ctx.in_table_cell)
         } else {
@@ -726,13 +739,14 @@ fn render_run(
     };
     let leading = escape(&run.text[..span.start]);
     let trailing = escape(&run.text[span.end..]);
-    let mut text = escape(&run.text[span]);
-
-    // Apply formatting, innermost first. Emphasis goes inside any HTML tag, where its
-    // delimiters touch `>` and `<` rather than the neighbouring text.
-    if run.style.code {
-        text = format!("`{}`", text.replace('`', "\\`"));
-    }
+    // Apply formatting, innermost first. Code is written raw — nothing is escaped inside a code
+    // span, a backslash there is printed — and fenced instead. Emphasis goes inside any HTML
+    // tag, where its delimiters touch `>` and `<` rather than the neighbouring text.
+    let mut text = if run.style.code {
+        markdown::code_span(&run.text[span], ctx.in_table_cell)
+    } else {
+        escape(&run.text[span])
+    };
     if run.style.strikethrough {
         text = format!("~~{}~~", text);
     }
@@ -1263,6 +1277,41 @@ mod tests {
             None,
             &empty_resource_map(),
         )
+    }
+
+    fn code(text: &str) -> TextRun {
+        TextRun::styled(
+            text,
+            TextStyle {
+                code: true,
+                ..TextStyle::default()
+            },
+        )
+    }
+
+    #[test]
+    fn a_code_run_is_written_raw_inside_its_fence() {
+        // Nothing is escaped inside a code span: a backslash there is printed, so `C:\dir`
+        // escaped would read back as `C:\\dir`, and `\`` would not keep a backtick inside.
+        assert_eq!(
+            render_runs(vec![TextRun::plain("Path "), code(r"C:\dir")]),
+            r"Path `C:\dir`"
+        );
+        assert_eq!(render_runs(vec![code("a`b")]), "``a`b``");
+    }
+
+    #[test]
+    fn code_that_is_only_punctuation_is_still_code() {
+        // Emphasis cannot wrap a run of punctuation between words, but a code span has no
+        // flanking rule — the run used to lose its code formatting.
+        assert_eq!(
+            render_runs(vec![
+                TextRun::plain("call"),
+                code("()"),
+                TextRun::plain(" now")
+            ]),
+            "call`()` now"
+        );
     }
 
     #[test]

@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Code is written raw inside its code span.** A run styled as code was escaped like body
+  text and then had its backticks backslash-escaped, but nothing is escaped inside a code span:
+  `C:\dir` read back as `C:\\dir`, and a backtick in the code ended the span. The span is now
+  fenced with enough backticks instead (`markdown::code_span` from `unparser-shared` 0.6), and a
+  code run that is only punctuation, such as `()`, keeps its code formatting.
+
+### Changed
+
+- Requires `unparser-shared` 0.6.
+
 ## [0.19.0] - 2026-10-09
 
 ### Added
