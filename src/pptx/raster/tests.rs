@@ -44,8 +44,47 @@ fn deck_full(
     slide_rels: &[(&str, &str, &str)],
     extra: &[(&str, &[u8])],
 ) -> Vec<u8> {
+    deck_parts(
+        shapes,
+        DeckParts {
+            master_bg,
+            layout_shapes,
+            slide_rels,
+            extra,
+            ..DeckParts::default()
+        },
+    )
+}
+
+/// What a test presentation varies beyond its slide's shapes: each part's shapes and
+/// relationships `(id, type, target)`, the master's background, and more parts.
+#[derive(Default)]
+struct DeckParts<'a> {
+    master_bg: &'a str,
+    master_shapes: &'a str,
+    layout_shapes: &'a str,
+    slide_rels: &'a [(&'a str, &'a str, &'a str)],
+    layout_rels: &'a [(&'a str, &'a str, &'a str)],
+    master_rels: &'a [(&'a str, &'a str, &'a str)],
+    extra: &'a [(&'a str, &'a [u8])],
+}
+
+fn deck_parts(shapes: &str, deck: DeckParts) -> Vec<u8> {
+    let DeckParts {
+        master_bg,
+        master_shapes,
+        layout_shapes,
+        slide_rels,
+        layout_rels,
+        master_rels,
+        extra,
+    } = deck;
     let mut slide_rel_list = vec![("rId1", "slideLayout", "../slideLayouts/slideLayout1.xml")];
     slide_rel_list.extend_from_slice(slide_rels);
+    let mut layout_rel_list = vec![("rId1", "slideMaster", "../slideMasters/slideMaster1.xml")];
+    layout_rel_list.extend_from_slice(layout_rels);
+    let mut master_rel_list = vec![("rId1", "theme", "../theme/theme1.xml")];
+    master_rel_list.extend_from_slice(master_rels);
     let parts: Vec<(&str, String)> = vec![
         (
             "[Content_Types].xml",
@@ -83,17 +122,17 @@ fn deck_full(
         ),
         (
             "ppt/slideLayouts/_rels/slideLayout1.xml.rels",
-            rels(&[("rId1", "slideMaster", "../slideMasters/slideMaster1.xml")]),
+            rels(&layout_rel_list),
         ),
         (
             "ppt/slideMasters/slideMaster1.xml",
             format!(
-                r#"<?xml version="1.0"?><p:sldMaster {NS}><p:cSld>{master_bg}<p:spTree/></p:cSld><p:clrMap bg1="lt1" tx1="dk1" bg2="lt2" tx2="dk2" accent1="accent1" accent2="accent2" accent3="accent3" accent4="accent4" accent5="accent5" accent6="accent6" hlink="hlink" folHlink="folHlink"/></p:sldMaster>"#
+                r#"<?xml version="1.0"?><p:sldMaster {NS}><p:cSld>{master_bg}<p:spTree><p:nvGrpSpPr/><p:grpSpPr/>{master_shapes}</p:spTree></p:cSld><p:clrMap bg1="lt1" tx1="dk1" bg2="lt2" tx2="dk2" accent1="accent1" accent2="accent2" accent3="accent3" accent4="accent4" accent5="accent5" accent6="accent6" hlink="hlink" folHlink="folHlink"/></p:sldMaster>"#
             ),
         ),
         (
             "ppt/slideMasters/_rels/slideMaster1.xml.rels",
-            rels(&[("rId1", "theme", "../theme/theme1.xml")]),
+            rels(&master_rel_list),
         ),
         (
             "ppt/theme/theme1.xml",
@@ -208,6 +247,77 @@ fn a_preset_shape_is_drawn_from_its_geometry() {
     assert_eq!(pixel(&slide, 97, 3), WHITE, "beside the tip");
     assert_eq!(pixel(&slide, 10, 25), RED, "the shaft");
     assert_eq!(pixel(&slide, 10, 3), WHITE, "above the shaft");
+}
+
+/// A red line 2 pt wide from (10, 20) to (90, 20), with `ends` inside its `a:ln`.
+fn line_with(ends: &str) -> crate::raster::RasteredSlide {
+    let ln = format!(
+        r#"<a:ln w="25400"><a:solidFill><a:srgbClr val="FF0000"/></a:solidFill>{ends}</a:ln>"#
+    );
+    render(deck(&shape("line", (10, 20, 80, 0), "", &ln, ""), ""))
+}
+
+/// A line's `tailEnd` is drawn at the end of its path: a large triangle is 5 times the line's
+/// width wide and long, its tip on the line's last point.
+#[test]
+fn a_line_end_draws_its_arrowhead() {
+    let plain = line_with("");
+    assert_eq!(pixel(&plain, 50, 20), RED, "the line");
+    assert_eq!(pixel(&plain, 83, 22), WHITE, "no head without an end");
+
+    let arrow = line_with(r#"<a:tailEnd type="triangle" w="lg" len="lg"/>"#);
+    assert_eq!(
+        pixel(&arrow, 83, 22),
+        RED,
+        "inside the triangle, off the line"
+    );
+    assert_eq!(pixel(&arrow, 82, 18), RED, "the other side");
+    assert_eq!(pixel(&arrow, 85, 15), WHITE, "outside the triangle");
+    assert_eq!(pixel(&arrow, 13, 23), WHITE, "no head at the start");
+    assert!(arrow.gaps.is_empty(), "{:?}", arrow.gaps);
+}
+
+/// `headEnd` decorates the first point; each kind has its own shape.
+#[test]
+fn each_line_end_kind_has_its_shape() {
+    // A medium oval (6 × 6 pt) centred on the start.
+    let oval = line_with(r#"<a:headEnd type="oval"/>"#);
+    assert_eq!(pixel(&oval, 10, 21), RED, "the oval, below the line");
+    assert_eq!(pixel(&oval, 10, 25), WHITE, "past the oval");
+
+    // A medium diamond: 6 pt long and wide, centred on the start.
+    let diamond = line_with(r#"<a:headEnd type="diamond"/>"#);
+    assert_eq!(
+        pixel(&diamond, 10, 21),
+        RED,
+        "the diamond, below its centre"
+    );
+    assert_eq!(pixel(&diamond, 7, 17), WHITE, "outside its corner");
+
+    // An open arrow is two strokes: its wing is painted, the space between wings is not.
+    let open = line_with(r#"<a:headEnd type="arrow" w="lg" len="lg"/>"#);
+    assert_eq!(pixel(&open, 15, 22), RED, "a wing");
+    assert_eq!(pixel(&open, 18, 22), WHITE, "between the wing and the line");
+
+    // An unknown or `none` end draws nothing.
+    let none = line_with(r#"<a:headEnd type="none"/>"#);
+    assert_eq!(pixel(&none, 10, 22), WHITE);
+}
+
+/// A filled head ends the line at its base, so the line's square end does not cross the tip.
+#[test]
+fn a_filled_head_shortens_the_line_beneath_it() {
+    let thick = |ends: &str| {
+        let ln = format!(
+            r#"<a:ln w="101600"><a:solidFill><a:srgbClr val="FF0000"/></a:solidFill>{ends}</a:ln>"#
+        );
+        render(deck(&shape("line", (10, 25, 80, 0), "", &ln, ""), ""))
+    };
+    // An 8 pt line with a small triangle (16 × 16 pt): the tip at x 90 is one point thin; a
+    // line reaching it would paint 4 pt above and below.
+    let arrow = thick(r#"<a:tailEnd type="triangle" w="sm" len="sm"/>"#);
+    assert_eq!(pixel(&arrow, 89, 28), WHITE, "beside the tip");
+    assert_eq!(pixel(&arrow, 76, 28), RED, "the head's body");
 }
 
 #[test]
@@ -578,4 +688,184 @@ fn a_character_bullet_hangs_in_the_indent() {
     );
     assert!(dark(&slide, (20, 0, 50, 30)) > 5, "the text, at the margin");
     assert_eq!(dark(&slide, (15, 0, 20, 30)), 0, "the gap between them");
+}
+
+/// A placeholder that takes its picture fill from its layout, or its master, finds the picture
+/// through that part's relationships: `r:embed` names a relationship of the part it is in.
+#[test]
+fn an_inherited_picture_fill_resolves_in_the_part_it_comes_from() {
+    let png = red_blue_png(40, 20);
+    let filled = |id: u32| {
+        format!(
+            r#"<p:sp><p:nvSpPr><p:cNvPr id="{id}" name="Body"/><p:cNvSpPr/><p:nvPr><p:ph type="body" idx="1"/></p:nvPr></p:nvSpPr><p:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="{}" cy="{}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:blipFill><a:blip r:embed="rId7"/><a:stretch><a:fillRect/></a:stretch></a:blipFill></p:spPr></p:sp>"#,
+            emu(100),
+            emu(50)
+        )
+    };
+    let slide_shape = r#"<p:sp><p:nvSpPr><p:cNvPr id="4" name="Body"/><p:cNvSpPr/><p:nvPr><p:ph type="body" idx="1"/></p:nvPr></p:nvSpPr><p:spPr/></p:sp>"#;
+    // The slide has its own rId7, pointing elsewhere: it must not be the one used.
+    let slide_rels = [("rId7", "image", "../media/missing.png")];
+    let image = [("rId7", "image", "../media/image1.png")];
+    let media: [(&str, &[u8]); 1] = [("ppt/media/image1.png", &png)];
+
+    let (layout_shape, master_shape) = (filled(3), filled(5));
+    let from_layout = DeckParts {
+        layout_shapes: &layout_shape,
+        slide_rels: &slide_rels,
+        layout_rels: &image,
+        extra: &media,
+        ..DeckParts::default()
+    };
+    let from_master = DeckParts {
+        master_shapes: &master_shape,
+        slide_rels: &slide_rels,
+        master_rels: &image,
+        extra: &media,
+        ..DeckParts::default()
+    };
+    for (part, deck) in [("layout", from_layout), ("master", from_master)] {
+        let slide = render(deck_parts(slide_shape, deck));
+        assert_eq!(pixel(&slide, 20, 25), RED, "from the {part}");
+        assert_eq!(pixel(&slide, 80, 25), BLUE, "from the {part}");
+        assert!(slide.gaps.is_empty(), "from the {part}: {:?}", slide.gaps);
+    }
+}
+
+#[test]
+fn numbers_are_written_in_their_scheme() {
+    use super::autonumber;
+    for (scheme, n, expected) in [
+        ("arabicPeriod", 3, "3."),
+        ("arabicParenR", 10, "10)"),
+        ("arabicParenBoth", 2, "(2)"),
+        ("arabicPlain", 7, "7"),
+        ("alphaLcParenR", 2, "b)"),
+        ("alphaUcPeriod", 26, "Z."),
+        ("alphaUcParenBoth", 28, "(BB)"),
+        ("romanUcPeriod", 14, "XIV."),
+        ("romanLcPlain", 9, "ix"),
+        ("romanLcParenR", 1994, "mcmxciv)"),
+        ("circleNumDbPlain", 3, "\u{2462}"),
+        ("circleNumWdBlackPlain", 12, "\u{24EC}"),
+        ("arabicDbPeriod", 12, "\u{FF11}\u{FF12}\u{FF0E}"),
+        ("ea1JpnKorPlain", 23, "二十三"),
+        ("ea1ChsPeriod", 10, "十、"),
+        ("thaiAlphaPeriod", 4, "4."),
+    ] {
+        assert_eq!(autonumber(scheme, n), expected, "{scheme} {n}");
+    }
+}
+
+/// A number continues its list at the same level; an outer level ends the deeper lists; a
+/// paragraph at the same level without a number, or in another scheme, starts it again.
+#[test]
+fn numbering_follows_its_list() {
+    use super::{Bullet, Numbering};
+    let number = |scheme: &str, start: u32| Bullet::Number {
+        scheme: scheme.into(),
+        start,
+    };
+    let arabic = number("arabicPeriod", 1);
+    let mut n = Numbering::default();
+    assert_eq!(n.next(0, Some(&arabic)), Some(1));
+    assert_eq!(n.next(0, Some(&arabic)), Some(2));
+    assert_eq!(
+        n.next(1, Some(&arabic)),
+        Some(1),
+        "a nested list starts at its start"
+    );
+    assert_eq!(n.next(1, Some(&arabic)), Some(2));
+    assert_eq!(n.next(0, Some(&arabic)), Some(3), "the outer list goes on");
+    assert_eq!(
+        n.next(1, Some(&arabic)),
+        Some(1),
+        "the nested list was ended"
+    );
+    assert_eq!(n.next(0, None), None);
+    assert_eq!(
+        n.next(0, Some(&arabic)),
+        Some(1),
+        "an unnumbered paragraph ends the list"
+    );
+    assert_eq!(
+        n.next(0, Some(&number("alphaLcPeriod", 1))),
+        Some(1),
+        "another scheme"
+    );
+    assert_eq!(
+        n.next(0, Some(&number("arabicPeriod", 5))),
+        Some(5),
+        "startAt"
+    );
+}
+
+/// A numbered paragraph hangs its number in the indent, and the next one's number differs.
+#[test]
+fn a_numbered_bullet_hangs_its_number_in_the_indent() {
+    let para = |text: &str| {
+        format!(
+            r#"<a:p><a:pPr marL="{}" indent="-{}"><a:buAutoNum type="arabicPeriod"/></a:pPr>{}</a:p>"#,
+            emu(30),
+            emu(30),
+            run(text, "")
+        )
+    };
+    let body = format!("{}{}", para("AB"), para("AB"));
+    let slide = render_text(deck(&text_box((0, 0, 100, 50), "", &body), ""));
+    // Each line is about 24 pt tall at 20 pt text; the numbers sit left of x 30.
+    let mark = |y0: u32, y1: u32| {
+        (y0..y1)
+            .flat_map(|y| (0..28).map(move |x| (x, y)))
+            .map(|(x, y)| dark(&slide, (x, y, x + 1, y + 1)))
+            .collect::<Vec<_>>()
+    };
+    let (first, second) = (mark(0, 24), mark(24, 48));
+    assert!(first.iter().sum::<usize>() > 0, "the first number");
+    assert!(second.iter().sum::<usize>() > 0, "the second number");
+    assert_ne!(first, second, "1. and 2. are different marks");
+    assert!(dark(&slide, (30, 0, 60, 24)) > 5, "the text, at the margin");
+    assert!(slide.gaps.is_empty(), "{:?}", slide.gaps);
+}
+
+/// A picture bullet draws its picture where the bullet goes; one that cannot be decoded is a
+/// gap and the text is still drawn.
+#[test]
+fn a_picture_bullet_draws_its_picture() {
+    let png = red_blue_png(40, 40);
+    let para = |embed: &str| {
+        format!(
+            r#"<a:p><a:pPr marL="{}" indent="-{}"><a:buBlip><a:blip r:embed="{embed}"/></a:buBlip></a:pPr>{}</a:p>"#,
+            emu(30),
+            emu(30),
+            run("AB", "")
+        )
+    };
+    let pptx = deck_full(
+        &text_box((0, 0, 100, 50), "", &para("rId5")),
+        "",
+        "",
+        &[("rId5", "image", "../media/image1.png")],
+        &[("ppt/media/image1.png", &png)],
+    );
+    let slide = render_text(pptx);
+    let colored = (0..24)
+        .flat_map(|y| (0..28).map(move |x| (x, y)))
+        .filter(|&(x, y)| matches!(pixel(&slide, x, y), RED | BLUE))
+        .count();
+    assert!(colored > 20, "the picture, in the indent: {colored} pixels");
+    assert!(dark(&slide, (30, 0, 60, 24)) > 5, "the text");
+    assert!(slide.gaps.is_empty(), "{:?}", slide.gaps);
+
+    let missing = render_text(deck_full(
+        &text_box((0, 0, 100, 50), "", &para("rId9")),
+        "",
+        "",
+        &[],
+        &[],
+    ));
+    assert_eq!(missing.gaps.images, 1);
+    assert!(
+        dark(&missing, (30, 0, 60, 24)) > 5,
+        "the text is still drawn"
+    );
 }

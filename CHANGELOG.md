@@ -28,13 +28,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `font_dirs`, then the system's font directories (`system_fonts`); no face is bundled. A run drawn
   in a stand-in face counts in `RasteredSlide::substituted_text_runs`; a run no face covers, in a
   script that needs shaping, or in vertical text counts in `SlideRasterGaps::text_runs`.
-  Character bullets (`buChar`, with `buFont`, `buClr`, `buSzPct`) hang in the first line's indent;
-  a bullet the named symbol face cannot draw is drawn as `•`. Numbered and picture bullets are not
-  drawn yet.
+  Bullets (`buChar`, `buAutoNum`, `buBlip`, with `buFont`, `buClr`, `buSzPct`) hang in the first
+  line's indent. A character bullet the named symbol face cannot draw is drawn as `•`. A numbered
+  bullet counts through its list — continuing at the same level, starting again after an
+  unnumbered paragraph or another scheme, its nested lists ended by an outer paragraph — in the
+  Latin, Roman, Arabic (with `.`, `)`, `()` or nothing), circled, full-width and CJK schemes; a
+  scheme not drawn yet is written as `1.`, `2.`, …. A picture bullet draws its PNG or JPEG; one that cannot
+  be shown keeps its place and counts in `SlideRasterGaps::images`.
 - **Slide pictures are drawn.** A picture (`p:pic`) or a shape filled with a picture fills its
   outline with the image — PNG or JPEG — cropped by `srcRect` and stretched over the shape. A
   picture in another format (EMF, WMF, TIFF, …) or one with no place on the slide counts in
-  `SlideRasterGaps::images`.
+  `SlideRasterGaps::images`. A picture a placeholder takes from its layout or master is found
+  through that part's relationships.
+- **Line ends are drawn.** A line's `headEnd` (at its first point) and `tailEnd` (at its last) —
+  triangle, stealth, diamond, oval or open arrow, small, medium or large — are drawn in the line's
+  color, sized to its width (2, 3 or 5 times it, from a 2 pt minimum). The line stops at a
+  filled head's base, so its end does not show through the tip.
 - **Slides render through the C ABI.** `undoc_render_section(doc, index, options_json, out_len,
   out_info)` paints a slide of a parsed `.pptx` to PNG (free with `undoc_free_bytes`), with
   `{"dpi", "font_dirs", "system_fonts"}` options and an `out_info` JSON of the size, the gaps by

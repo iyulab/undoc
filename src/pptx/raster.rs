@@ -91,7 +91,7 @@ impl PptxParser {
             theme_fonts: ThemeFonts::read(parts.theme.as_ref()),
             substituted: 0,
             container: &self.container,
-            rels: &texts.rels[0],
+            rels: &texts.rels,
             images: HashMap::new(),
         };
 
@@ -111,15 +111,12 @@ impl PptxParser {
                 .as_ref()
                 .is_none_or(|l| show_master(l.root_element()))
             {
-                painter.rels = &texts.rels[2];
                 painter.tree(master.root_element(), to_pixels, false);
             }
         }
         if let (Some(layout), true) = (&parts.layout, show_master(slide_root)) {
-            painter.rels = &texts.rels[1];
             painter.tree(layout.root_element(), to_pixels, false);
         }
-        painter.rels = &texts.rels[0];
         painter.tree(slide_root, to_pixels, true);
 
         let (gaps, substituted_text_runs) = (painter.gaps, painter.substituted);
@@ -540,13 +537,52 @@ struct Painter<'a> {
     /// Text runs drawn in a face standing in for the one they ask for.
     substituted: u32,
     container: &'a OoxmlContainer,
-    /// The relationships of the part whose shapes are being painted.
-    rels: &'a HashMap<String, String>,
+    /// The relationships of the slide, its layout and its master, in that order.
+    rels: &'a [HashMap<String, String>; 3],
     /// Decoded pictures by part path; `None` for one that did not decode.
     images: HashMap<String, Option<Pixmap>>,
 }
 
 impl<'a> Painter<'a> {
+    /// The relationships a reference in `node` resolves against: those of the part `node` is
+    /// in. A placeholder's picture fill or a list style's picture bullet can come from the
+    /// layout or the master, and its `r:embed` names a relationship of that part.
+    fn rels_of(&self, node: Node) -> &'a HashMap<String, String> {
+        let same = |root: Option<Node>| {
+            root.is_some_and(|r| {
+                std::ptr::eq(
+                    r.document() as *const _ as *const (),
+                    node.document() as *const _ as *const (),
+                )
+            })
+        };
+        if same(self.master) {
+            &self.rels[2]
+        } else if same(self.layout) {
+            &self.rels[1]
+        } else {
+            &self.rels[0]
+        }
+    }
+
+    /// The picture a `blip`-holding element (`blipFill`, `buBlip`) names, decoded and cached;
+    /// `None` when it is missing or not PNG or JPEG.
+    fn blip_image(&mut self, holder: Node) -> Option<String> {
+        let path = child(holder, A, "blip")
+            .and_then(|b| b.attribute((R, "embed")))
+            .and_then(|id| self.rels_of(holder).get(id))
+            .cloned()?;
+        if !self.images.contains_key(&path) {
+            let decoded = self
+                .container
+                .read_binary(&path)
+                .ok()
+                .and_then(|b| decode_image(&b));
+            self.images.insert(path.clone(), decoded);
+        }
+        matches!(self.images.get(&path), Some(Some(_))).then_some(path)
+    }
+
     /// Paint the shape tree of a slide, layout or master. Placeholders on a layout or master
     /// are prompts for the slide's content, not content of their own, and are passed over.
     fn tree(&mut self, root: Node, parent: Transform, placeholders: bool) {
@@ -657,23 +693,29 @@ impl<'a> Painter<'a> {
                 .unwrap_or_else(|| style_color("fillRef")),
         };
         let ln = sp_prs.iter().find_map(|s| child(*s, A, "ln"));
-        let line_fill = ln
-            .and_then(|l| {
-                l.children()
-                    .filter(|n| n.is_element())
-                    .find_map(|n| fill(n, self.colors, &mut self.gaps))
-            })
-            .unwrap_or_else(|| style_color("lnRef"));
-        let line_width = ln.and_then(|l| num(l, "w")).map(|w| w as f32).or_else(|| {
-            style
-                .and_then(|s| child(s, A, "lnRef"))
-                .and_then(|r| num(r, "idx"))
-                .and_then(|i| self.line_widths.get((i as usize).checked_sub(1)?).copied())
-        });
-        let dashed = ln
-            .and_then(|l| child(l, A, "prstDash"))
-            .and_then(|d| d.attribute("val"))
-            .is_some_and(|v| v != "solid");
+        let line = LineStyle {
+            color: ln
+                .and_then(|l| {
+                    l.children()
+                        .filter(|n| n.is_element())
+                        .find_map(|n| fill(n, self.colors, &mut self.gaps))
+                })
+                .unwrap_or_else(|| style_color("lnRef")),
+            width: ln.and_then(|l| num(l, "w")).map(|w| w as f32).or_else(|| {
+                style
+                    .and_then(|s| child(s, A, "lnRef"))
+                    .and_then(|r| num(r, "idx"))
+                    .and_then(|i| self.line_widths.get((i as usize).checked_sub(1)?).copied())
+            }),
+            dashed: ln
+                .and_then(|l| child(l, A, "prstDash"))
+                .and_then(|d| d.attribute("val"))
+                .is_some_and(|v| v != "solid"),
+            ends: LineEnds {
+                head: ln.and_then(|l| line_end(l, "headEnd")),
+                tail: ln.and_then(|l| line_end(l, "tailEnd")),
+            },
+        };
 
         if let Some(blip_fill) = picture {
             let painted = geometry
@@ -683,11 +725,9 @@ impl<'a> Painter<'a> {
                 self.gaps.images += 1;
             }
         }
-        if shape_fill.is_some() || line_fill.is_some() {
+        if shape_fill.is_some() || line.color.is_some() {
             match &geometry {
-                Some(geometry) => self.outlines(
-                    geometry, shape_fill, line_fill, line_width, dashed, transform,
-                ),
+                Some(geometry) => self.outlines(geometry, shape_fill, &line, transform),
                 None => self.gaps.shapes += 1,
             }
         }
@@ -709,21 +749,9 @@ impl<'a> Painter<'a> {
         h: f64,
         transform: Transform,
     ) -> bool {
-        let Some(path) = child(blip_fill, A, "blip")
-            .and_then(|b| b.attribute((R, "embed")))
-            .and_then(|id| self.rels.get(id))
-            .cloned()
-        else {
+        let Some(path) = self.blip_image(blip_fill) else {
             return false;
         };
-        if !self.images.contains_key(&path) {
-            let decoded = self
-                .container
-                .read_binary(&path)
-                .ok()
-                .and_then(|b| decode_image(&b));
-            self.images.insert(path.clone(), decoded);
-        }
         let Some(Some(image)) = self.images.get(&path) else {
             return false;
         };
@@ -771,15 +799,19 @@ impl<'a> Painter<'a> {
         &mut self,
         geometry: &geometry::Geometry,
         shape_fill: Option<Rgba>,
-        line_fill: Option<Rgba>,
-        line_width: Option<f32>,
-        dashed: bool,
+        line: &LineStyle,
         transform: Transform,
     ) {
+        let width = line.width.unwrap_or(9_525.0).max(1.0);
         for outline in &geometry.outlines {
             let Some(path) = to_path(&outline.segments) else {
                 continue;
             };
+            // An open, stroked path carries the line's ends; its line stops short of a filled
+            // arrowhead so the line's square end does not show through the tip.
+            let ended = (outline.stroke && line.color.is_some())
+                .then(|| arrowheads(&outline.segments, line.ends, width))
+                .flatten();
             if let Some(color) = shape_fill {
                 let color = match outline.fill {
                     PathFill::None => None,
@@ -797,22 +829,42 @@ impl<'a> Painter<'a> {
                         .fill_path(&path, &paint, FillRule::EvenOdd, transform, None);
                 }
             }
-            if let (true, Some(color)) = (outline.stroke, line_fill) {
+            if let (true, Some(color)) = (outline.stroke, line.color) {
                 let mut paint = Paint::default();
                 paint.set_color(color.to_color());
                 paint.anti_alias = true;
-                let width = line_width.unwrap_or(9_525.0).max(1.0);
                 let stroke = Stroke {
                     width,
-                    dash: if dashed {
+                    dash: if line.dashed {
                         StrokeDash::new(vec![width * 4.0, width * 3.0], 0.0)
                     } else {
                         None
                     },
                     ..Stroke::default()
                 };
+                let stroked = ended
+                    .as_ref()
+                    .and_then(|e| to_path(&e.line))
+                    .unwrap_or(path);
                 self.pixmap
-                    .stroke_path(&path, &paint, &stroke, transform, None);
+                    .stroke_path(&stroked, &paint, &stroke, transform, None);
+                for head in ended.iter().flat_map(|e| &e.heads) {
+                    match head {
+                        Arrowhead::Fill(shape) => {
+                            self.pixmap
+                                .fill_path(shape, &paint, FillRule::Winding, transform, None)
+                        }
+                        Arrowhead::Stroke(shape) => {
+                            let open = Stroke {
+                                width,
+                                line_join: tiny_skia::LineJoin::Miter,
+                                ..Stroke::default()
+                            };
+                            self.pixmap
+                                .stroke_path(shape, &paint, &open, transform, None)
+                        }
+                    }
+                }
             }
         }
     }
@@ -912,6 +964,7 @@ impl<'a> Painter<'a> {
         let mut run_index = 0u32;
         let mut missing_runs: Vec<u32> = Vec::new();
         let mut substituted_runs: Vec<u32> = Vec::new();
+        let mut numbering = Numbering::default();
         for para in body.children().filter(|n| n.has_tag_name((A, "p"))) {
             let p_pr = child(para, A, "pPr");
             let level = p_pr.and_then(|p| num(p, "lvl")).unwrap_or(0.0) as usize;
@@ -945,6 +998,7 @@ impl<'a> Painter<'a> {
 
             let mut items: Vec<Item> = Vec::new();
             let mut end_size = base.size;
+            let mut first_style: Option<RunStyle> = None;
             for run in para.children().filter(|n| n.is_element()) {
                 let name = run.tag_name().name();
                 if name == "endParaRPr" {
@@ -971,16 +1025,19 @@ impl<'a> Painter<'a> {
                 if text.is_empty() {
                     continue;
                 }
+                if first_style.is_none() {
+                    first_style = Some(style.clone());
+                }
                 let size = style.size * font_scale * EMU_PER_PT;
                 for ch in text.chars() {
                     if ch == '\t' || ch == '\n' || ch == '\r' {
-                        items.push(Item::Glyph(Glyph {
-                            ch: ' ',
-                            face: None,
+                        items.push(Item::Glyph(Glyph::new(
+                            ' ',
+                            None,
                             size,
-                            advance: size * 0.25,
-                            color: style.color,
-                        }));
+                            size * 0.25,
+                            style.color,
+                        )));
                         continue;
                     }
                     if needs_shaping(ch) {
@@ -1004,23 +1061,26 @@ impl<'a> Painter<'a> {
                             (None, size * 0.3)
                         }
                     };
-                    items.push(Item::Glyph(Glyph {
+                    items.push(Item::Glyph(Glyph::new(
                         ch,
                         face,
                         size,
                         advance,
-                        color: style.color,
-                    }));
+                        style.color,
+                    )));
                 }
                 run_index += 1;
             }
-            // A character bullet hangs in the first line's indent, sized and colored after
-            // the paragraph's first run unless the list says otherwise.
+            // A bullet hangs in the first line's indent, sized and colored after the
+            // paragraph's first run unless the list says otherwise. A paragraph with no text
+            // shows none, but still takes its place in a numbered list.
             let first_glyph = items.iter().find_map(|i| match i {
                 Item::Glyph(g) => Some(g.clone()),
                 Item::Break => None,
             });
-            if let (Some(bullet), Some(first_glyph)) = (bullet_char(&levels), first_glyph) {
+            let marker = bullet(&levels);
+            let number = numbering.next(level, marker.as_ref());
+            if let (Some(marker), Some(first_glyph)) = (marker, first_glyph) {
                 let size_pct = levels
                     .iter()
                     .rev()
@@ -1040,34 +1100,69 @@ impl<'a> Painter<'a> {
                     .find_map(|n| child(*n, A, "buFont"))
                     .and_then(|f| f.attribute("typeface"))
                     .map(str::to_string);
-                // A symbol face's private-use codes mean nothing in another face: a bullet the
-                // named face cannot draw is drawn as a plain one.
                 let wanted: Vec<&str> = font.iter().map(String::as_str).collect();
-                let (ch, face) = match self.fonts.pick(&wanted, false, false, bullet) {
-                    Some((face, substituted)) if !substituted || wanted.is_empty() => {
-                        (bullet, Some(face))
+                let mut glyphs: Vec<Glyph> = Vec::new();
+                match marker {
+                    Bullet::Char(bullet) => {
+                        // A symbol face's private-use codes mean nothing in another face: a
+                        // bullet the named face cannot draw is drawn as a plain one.
+                        let (ch, face) = match self.fonts.pick(&wanted, false, false, bullet) {
+                            Some((face, substituted)) if !substituted || wanted.is_empty() => {
+                                (bullet, Some(face))
+                            }
+                            _ => (
+                                '\u{2022}',
+                                self.fonts.pick(&[], false, false, '\u{2022}').map(|p| p.0),
+                            ),
+                        };
+                        let advance = face.map_or(size * 0.5, |f| self.fonts.advance(f, ch, size));
+                        glyphs.push(Glyph::new(ch, face, size, advance, color));
                     }
-                    _ => (
-                        '\u{2022}',
-                        self.fonts.pick(&[], false, false, '\u{2022}').map(|p| p.0),
-                    ),
-                };
-                let own = face.map_or(size * 0.5, |f| self.fonts.advance(f, ch, size));
-                let advance = if indent < 0.0 {
+                    Bullet::Number { scheme, .. } => {
+                        // Numbers are drawn in the bullet font when the list names one, else
+                        // in the paragraph's first run's face.
+                        let style = first_style.clone().unwrap_or_else(|| base.clone());
+                        for ch in autonumber(&scheme, number.unwrap_or(1)).chars() {
+                            let families = if wanted.is_empty() {
+                                self.families(&style, ch)
+                            } else {
+                                font.iter().cloned().collect()
+                            };
+                            let refs: Vec<&str> = families.iter().map(String::as_str).collect();
+                            let face = self
+                                .fonts
+                                .pick(&refs, style.bold, style.italic, ch)
+                                .map(|p| p.0);
+                            let advance =
+                                face.map_or(size * 0.5, |f| self.fonts.advance(f, ch, size));
+                            glyphs.push(Glyph::new(ch, face, size, advance, color));
+                        }
+                    }
+                    Bullet::Picture(holder) => {
+                        // A picture that cannot be shown still holds its place: the text
+                        // starts where it would beside the picture.
+                        let mut g = Glyph::new('\u{FFFC}', None, size, size, color);
+                        g.picture = self.blip_image(holder);
+                        if g.picture.is_none() {
+                            self.gaps.images += 1;
+                        }
+                        glyphs.push(g);
+                    }
+                }
+                // The text starts at the indent's end, or a quarter em after the bullet when
+                // the bullet is wider than the indent leaves.
+                let own: f32 = glyphs.iter().map(|g| g.advance).sum();
+                let hang = if indent < 0.0 {
                     -indent
                 } else {
                     own + size * 0.25
                 };
-                items.insert(
-                    0,
-                    Item::Glyph(Glyph {
-                        ch,
-                        face,
-                        size,
-                        advance: advance.max(own),
-                        color,
-                    }),
-                );
+                if let Some(last) = glyphs.last_mut() {
+                    last.advance += hang.max(own) - own;
+                }
+                for (k, g) in glyphs.into_iter().enumerate() {
+                    items.insert(k, Item::Glyph(g));
+                }
             }
             let first = box_width - mar_l - indent;
             let rest = box_width - mar_l;
@@ -1121,6 +1216,28 @@ impl<'a> Painter<'a> {
             let baseline = y + ascent + (height - line.height()) / 2.0;
             let mut x = x0;
             for g in &line.glyphs {
+                if let Some(Some(image)) = g.picture.as_ref().and_then(|p| self.images.get(p)) {
+                    let side = g.size * 0.8;
+                    let (iw, ih) = (image.width() as f32, image.height() as f32);
+                    let place = Transform::from_scale(side / iw, side / ih)
+                        .post_translate(x, baseline - side);
+                    let paint = Paint {
+                        shader: Pattern::new(
+                            image.as_ref(),
+                            SpreadMode::Pad,
+                            FilterQuality::Bilinear,
+                            1.0,
+                            place,
+                        ),
+                        anti_alias: true,
+                        ..Paint::default()
+                    };
+                    if let Some(rect) = tiny_skia::Rect::from_xywh(x, baseline - side, side, side) {
+                        self.pixmap.fill_rect(rect, &paint, transform, None);
+                    }
+                    x += g.advance;
+                    continue;
+                }
                 if let (Some(face), false) = (g.face, g.ch.is_whitespace()) {
                     if let Some(path) = self.fonts.glyph(face, g.ch, g.size, x, baseline) {
                         let mut paint = Paint::default();
@@ -1326,6 +1443,7 @@ impl ThemeFonts {
 }
 
 /// A character placed on a line: its face (none when no face has it), size and advance (EMU).
+/// A picture bullet is a glyph that draws a picture (a decoded part's path) instead.
 #[derive(Debug, Clone)]
 struct Glyph {
     ch: char,
@@ -1333,6 +1451,20 @@ struct Glyph {
     size: f32,
     advance: f32,
     color: Option<Rgba>,
+    picture: Option<String>,
+}
+
+impl Glyph {
+    fn new(ch: char, face: Option<usize>, size: f32, advance: f32, color: Option<Rgba>) -> Self {
+        Self {
+            ch,
+            face,
+            size,
+            advance,
+            color,
+            picture: None,
+        }
+    }
 }
 
 enum Item {
@@ -1444,19 +1576,185 @@ fn break_lines(items: &[Item], widths: Option<(f32, f32)>, lines: &mut Vec<Line>
     }
 }
 
-/// The character a paragraph's bullet draws, from its list levels (nearest last): `None` with
-/// no bullet, or a numbered or picture bullet, which are not drawn yet.
-fn bullet_char(levels: &[Node]) -> Option<char> {
+/// A paragraph's bullet.
+#[derive(Debug, Clone)]
+enum Bullet<'a, 'i> {
+    Char(char),
+    /// A number in `scheme` (`arabicPeriod`, `alphaLcParenR`, …), counting from `start`.
+    Number {
+        scheme: String,
+        start: u32,
+    },
+    /// The picture the `a:buBlip` element names.
+    Picture(Node<'a, 'i>),
+}
+
+/// The bullet a paragraph draws, from its list levels (nearest last); `None` with no bullet.
+fn bullet<'a, 'i>(levels: &[Node<'a, 'i>]) -> Option<Bullet<'a, 'i>> {
     for n in levels.iter().rev() {
         for c in n.children().filter(|c| c.is_element()) {
             match c.tag_name().name() {
-                "buNone" | "buAutoNum" | "buBlip" => return None,
-                "buChar" => return c.attribute("char")?.chars().next(),
+                "buNone" => return None,
+                "buChar" => return c.attribute("char")?.chars().next().map(Bullet::Char),
+                "buAutoNum" => {
+                    return Some(Bullet::Number {
+                        scheme: c.attribute("type").unwrap_or("arabicPeriod").to_string(),
+                        start: num(c, "startAt").map_or(1, |v| v.max(1.0) as u32),
+                    })
+                }
+                "buBlip" => return Some(Bullet::Picture(c)),
                 _ => {}
             }
         }
     }
     None
+}
+
+/// The running numbers of a text body's numbered paragraphs, one per list level.
+///
+/// A number continues from the paragraph before at the same level when that one was numbered
+/// in the same scheme; a paragraph at an outer level ends the deeper lists, and one at the same
+/// level without a number ends its list. A paragraph with no text is not drawn but counts.
+#[derive(Default)]
+struct Numbering {
+    /// For each level: the scheme and the last number given.
+    levels: [Option<(String, u32)>; 9],
+}
+
+impl Numbering {
+    fn next(&mut self, level: usize, bullet: Option<&Bullet>) -> Option<u32> {
+        let level = level.min(8);
+        for deeper in &mut self.levels[level + 1..] {
+            *deeper = None;
+        }
+        match bullet {
+            Some(Bullet::Number { scheme, start }) => {
+                let n = match &self.levels[level] {
+                    Some((s, n)) if s == scheme => n + 1,
+                    _ => *start,
+                };
+                self.levels[level] = Some((scheme.clone(), n));
+                Some(n)
+            }
+            _ => {
+                self.levels[level] = None;
+                None
+            }
+        }
+    }
+}
+
+/// `n` written in a DrawingML autonumber `scheme`. Schemes this does not know are written as
+/// `arabicPeriod`.
+fn autonumber(scheme: &str, n: u32) -> String {
+    const SUFFIXES: [(&str, &str, &str); 5] = [
+        ("ParenBoth", "(", ")"),
+        ("ParenR", "", ")"),
+        ("Period", "", "."),
+        ("Plain", "", ""),
+        ("Minus", "", "-"),
+    ];
+    let digits = |n: u32| n.to_string();
+    let fullwidth = |n: u32| {
+        n.to_string()
+            .chars()
+            .map(|c| char::from_u32(0xFF10 + (c as u32 - '0' as u32)).unwrap_or(c))
+            .collect::<String>()
+    };
+    let alpha = |n: u32, upper: bool| {
+        let letter = (b'a' + ((n - 1) % 26) as u8) as char;
+        let letter = if upper {
+            letter.to_ascii_uppercase()
+        } else {
+            letter
+        };
+        std::iter::repeat_n(letter, ((n - 1) / 26 + 1) as usize).collect::<String>()
+    };
+    let roman = |n: u32, upper: bool| {
+        const NUMERALS: [(u32, &str); 13] = [
+            (1000, "m"),
+            (900, "cm"),
+            (500, "d"),
+            (400, "cd"),
+            (100, "c"),
+            (90, "xc"),
+            (50, "l"),
+            (40, "xl"),
+            (10, "x"),
+            (9, "ix"),
+            (5, "v"),
+            (4, "iv"),
+            (1, "i"),
+        ];
+        let mut rest = n;
+        let mut out = String::new();
+        for (value, numeral) in NUMERALS {
+            while rest >= value {
+                out.push_str(numeral);
+                rest -= value;
+            }
+        }
+        if upper {
+            out.to_ascii_uppercase()
+        } else {
+            out
+        }
+    };
+    let cjk = |n: u32| {
+        const DIGITS: [char; 10] = ['〇', '一', '二', '三', '四', '五', '六', '七', '八', '九'];
+        match n {
+            0..=9 => DIGITS[n as usize].to_string(),
+            10..=99 => {
+                let (tens, ones) = (n / 10, n % 10);
+                let mut out = String::new();
+                if tens > 1 {
+                    out.push(DIGITS[tens as usize]);
+                }
+                out.push('十');
+                if ones > 0 {
+                    out.push(DIGITS[ones as usize]);
+                }
+                out
+            }
+            _ => n.to_string(),
+        }
+    };
+    let circled = |n: u32, black: bool| {
+        match (n, black) {
+            (1..=20, false) => char::from_u32(0x2460 + n - 1).map(String::from),
+            (1..=10, true) => char::from_u32(0x2776 + n - 1).map(String::from),
+            (11..=20, true) => char::from_u32(0x24EB + n - 11).map(String::from),
+            _ => None,
+        }
+        .unwrap_or_else(|| n.to_string())
+    };
+
+    match scheme {
+        "circleNumDbPlain" | "circleNumWdWhitePlain" => return circled(n, false),
+        "circleNumWdBlackPlain" => return circled(n, true),
+        "arabicDbPlain" => return fullwidth(n),
+        "arabicDbPeriod" => return format!("{}．", fullwidth(n)),
+        "ea1JpnKorPlain" | "ea1ChsPlain" | "ea1ChtPlain" => return cjk(n),
+        "ea1JpnKorPeriod" => return format!("{}．", cjk(n)),
+        "ea1ChsPeriod" | "ea1ChtPeriod" => return format!("{}、", cjk(n)),
+        _ => {}
+    }
+    let (kind, rest) = ["alphaLc", "alphaUc", "romanLc", "romanUc", "arabic"]
+        .iter()
+        .find_map(|k| scheme.strip_prefix(k).map(|r| (*k, r)))
+        .unwrap_or(("arabic", "Period"));
+    let body = match kind {
+        "alphaLc" => alpha(n, false),
+        "alphaUc" => alpha(n, true),
+        "romanLc" => roman(n, false),
+        "romanUc" => roman(n, true),
+        _ => digits(n),
+    };
+    let (open, close) = SUFFIXES
+        .iter()
+        .find(|(name, _, _)| rest.ends_with(name))
+        .map_or(("", "."), |(_, o, c)| (*o, *c));
+    format!("{open}{body}{close}")
 }
 
 /// A picture as pixels: PNG and JPEG; anything else (EMF, WMF, TIFF, …) is not decoded.
@@ -1596,6 +1894,256 @@ fn shaded(c: Rgba, amount: f32) -> Rgba {
         g: mix(c.g),
         b: mix(c.b),
         a: c.a,
+    }
+}
+
+/// How a shape's outline is stroked: its color (none for no line), width in EMU (the default
+/// hairline when unset), dash, and end decorations.
+#[derive(Debug, Clone, Copy)]
+struct LineStyle {
+    color: Option<Rgba>,
+    width: Option<f32>,
+    dashed: bool,
+    ends: LineEnds,
+}
+
+/// The decorations at the two ends of a line (`a:headEnd` at its start, `a:tailEnd` at its end).
+#[derive(Debug, Clone, Copy, Default)]
+struct LineEnds {
+    head: Option<LineEnd>,
+    tail: Option<LineEnd>,
+}
+
+/// One line end: its kind, and its width and length as multiples of the line's width.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct LineEnd {
+    kind: LineEndKind,
+    width: f32,
+    length: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum LineEndKind {
+    Triangle,
+    Stealth,
+    Diamond,
+    Oval,
+    /// An open arrow: two strokes meeting at the tip.
+    Arrow,
+}
+
+/// The `a:headEnd` or `a:tailEnd` of a line, unless it is absent or `none`. Sizes `sm`, `med`
+/// (the default) and `lg` are 2, 3 and 5 times the line's width, as PowerPoint draws them.
+fn line_end(ln: Node, name: &str) -> Option<LineEnd> {
+    let end = child(ln, A, name)?;
+    let kind = match end.attribute("type")? {
+        "triangle" => LineEndKind::Triangle,
+        "stealth" => LineEndKind::Stealth,
+        "diamond" => LineEndKind::Diamond,
+        "oval" => LineEndKind::Oval,
+        "arrow" => LineEndKind::Arrow,
+        _ => return None,
+    };
+    let size = |attr: &str| match end.attribute(attr) {
+        Some("sm") => 2.0,
+        Some("lg") => 5.0,
+        _ => 3.0,
+    };
+    Some(LineEnd {
+        kind,
+        width: size("w"),
+        length: size("len"),
+    })
+}
+
+/// A line's arrowheads, and the line itself, shortened where a filled head covers its end.
+struct EndedLine {
+    line: Vec<Segment>,
+    heads: Vec<Arrowhead>,
+}
+
+enum Arrowhead {
+    Fill(tiny_skia::Path),
+    Stroke(tiny_skia::Path),
+}
+
+/// Arrowheads for the ends of `segments`, if it is an open path with any. Sizes scale with the
+/// line `width`, which is never taken below 2 pt so a hairline still gets a visible head.
+fn arrowheads(segments: &[Segment], ends: LineEnds, width: f32) -> Option<EndedLine> {
+    if ends.head.is_none() && ends.tail.is_none() || segments.contains(&Segment::Close) {
+        return None;
+    }
+    let base = f64::from(width.max(25_400.0));
+    let mut line = segments.to_vec();
+    let mut heads = Vec::new();
+    let mut place = |end: LineEnd, at: usize, tip: geometry::Point, toward: geometry::Point| {
+        let (dx, dy) = (tip.x - toward.x, tip.y - toward.y);
+        let norm = dx.hypot(dy);
+        if norm == 0.0 {
+            return;
+        }
+        let u = (dx / norm, dy / norm);
+        let (half_w, len) = (
+            base * f64::from(end.width) / 2.0,
+            base * f64::from(end.length),
+        );
+        // Local coordinates: x along the line toward the tip, y across it; the tip at 0.
+        let local = |x: f64, y: f64| {
+            (
+                (tip.x + u.0 * x - u.1 * y) as f32,
+                (tip.y + u.1 * x + u.0 * y) as f32,
+            )
+        };
+        let polygon = |points: &[(f64, f64)]| {
+            let mut pb = PathBuilder::new();
+            for (i, &(x, y)) in points.iter().enumerate() {
+                let (px, py) = local(x, y);
+                if i == 0 {
+                    pb.move_to(px, py);
+                } else {
+                    pb.line_to(px, py);
+                }
+            }
+            pb
+        };
+        let (head, setback) = match end.kind {
+            LineEndKind::Triangle => {
+                let mut pb = polygon(&[(0.0, 0.0), (-len, half_w), (-len, -half_w)]);
+                pb.close();
+                (pb.finish().map(Arrowhead::Fill), len)
+            }
+            LineEndKind::Stealth => {
+                let mut pb = polygon(&[
+                    (0.0, 0.0),
+                    (-len, half_w),
+                    (-len / 2.0, 0.0),
+                    (-len, -half_w),
+                ]);
+                pb.close();
+                (pb.finish().map(Arrowhead::Fill), len / 2.0)
+            }
+            LineEndKind::Diamond => {
+                let mut pb = polygon(&[
+                    (len / 2.0, 0.0),
+                    (0.0, half_w),
+                    (-len / 2.0, 0.0),
+                    (0.0, -half_w),
+                ]);
+                pb.close();
+                (pb.finish().map(Arrowhead::Fill), 0.0)
+            }
+            LineEndKind::Oval => {
+                let oval = tiny_skia::Rect::from_xywh(
+                    (-len / 2.0) as f32,
+                    -half_w as f32,
+                    len as f32,
+                    (2.0 * half_w) as f32,
+                )
+                .and_then(PathBuilder::from_oval)
+                .and_then(|p| {
+                    p.transform(Transform::from_row(
+                        u.0 as f32,
+                        u.1 as f32,
+                        -u.1 as f32,
+                        u.0 as f32,
+                        tip.x as f32,
+                        tip.y as f32,
+                    ))
+                });
+                (oval.map(Arrowhead::Fill), 0.0)
+            }
+            LineEndKind::Arrow => {
+                let pb = polygon(&[(-len, half_w), (0.0, 0.0), (-len, -half_w)]);
+                (pb.finish().map(Arrowhead::Stroke), 0.0)
+            }
+        };
+        heads.extend(head);
+        // Pull a straight end segment back to the head's base, when it is long enough to keep.
+        if setback > 0.0 {
+            let shortened = geometry::Point {
+                x: tip.x - u.0 * setback,
+                y: tip.y - u.1 * setback,
+            };
+            if norm > setback {
+                match line.get_mut(at) {
+                    Some(Segment::Move(p)) | Some(Segment::Line(p)) => *p = shortened,
+                    _ => {}
+                }
+            }
+        }
+    };
+
+    if let Some(end) = ends.head {
+        // The start: the first point, and the first point after it that differs from it.
+        if let Some((tip, toward, straight)) = path_start(segments) {
+            let at = if straight { 0 } else { usize::MAX };
+            place(end, at, tip, toward);
+        }
+    }
+    if let Some(end) = ends.tail {
+        if let Some((tip, toward, straight)) = path_end(segments) {
+            let at = if straight {
+                segments.len() - 1
+            } else {
+                usize::MAX
+            };
+            place(end, at, tip, toward);
+        }
+    }
+    Some(EndedLine { line, heads })
+}
+
+/// Where a path starts, the point its first segment heads for, and whether that segment is a
+/// straight line from it.
+fn path_start(segments: &[Segment]) -> Option<(geometry::Point, geometry::Point, bool)> {
+    let Some(Segment::Move(start)) = segments.first() else {
+        return None;
+    };
+    let next = segments.get(1).and_then(|s| match *s {
+        Segment::Line(a) => Some((a, true)),
+        Segment::Quad(c, a) => Some((if c == *start { a } else { c }, false)),
+        Segment::Cubic(c1, c2, a) => Some((
+            if c1 != *start {
+                c1
+            } else if c2 != *start {
+                c2
+            } else {
+                a
+            },
+            false,
+        )),
+        _ => None,
+    })?;
+    Some((*start, next.0, next.1))
+}
+
+/// Where a path ends, the point its last segment comes from, and whether that segment is a
+/// straight line to it.
+fn path_end(segments: &[Segment]) -> Option<(geometry::Point, geometry::Point, bool)> {
+    let last = segments.len().checked_sub(1)?;
+    let anchor = |s: &Segment| match *s {
+        Segment::Move(a) | Segment::Line(a) | Segment::Quad(_, a) | Segment::Cubic(_, _, a) => {
+            Some(a)
+        }
+        Segment::Close => None,
+    };
+    let end = anchor(&segments[last])?;
+    let previous = segments[..last].iter().rev().find_map(anchor)?;
+    match segments[last] {
+        Segment::Line(_) => Some((end, previous, true)),
+        Segment::Quad(c, _) => Some((end, if c == end { previous } else { c }, false)),
+        Segment::Cubic(c1, c2, _) => Some((
+            end,
+            if c2 != end {
+                c2
+            } else if c1 != end {
+                c1
+            } else {
+                previous
+            },
+            false,
+        )),
+        _ => None,
     }
 }
 
