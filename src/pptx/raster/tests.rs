@@ -28,6 +28,11 @@ fn rels(items: &[(&str, &str, &str)]) -> String {
 /// A presentation of one 100 × 50 pt slide whose shape tree is `shapes`, with a layout, a
 /// master (background `master_bg`, which may be empty) and a theme (`accent1` 4472C4).
 fn deck(shapes: &str, master_bg: &str) -> Vec<u8> {
+    deck_with(shapes, master_bg, "")
+}
+
+/// [`deck`], with `layout_shapes` in the layout's shape tree.
+fn deck_with(shapes: &str, master_bg: &str, layout_shapes: &str) -> Vec<u8> {
     let parts: Vec<(&str, String)> = vec![
         (
             "[Content_Types].xml",
@@ -61,7 +66,7 @@ fn deck(shapes: &str, master_bg: &str) -> Vec<u8> {
         ),
         (
             "ppt/slideLayouts/slideLayout1.xml",
-            format!(r#"<?xml version="1.0"?><p:sldLayout {NS}><p:cSld><p:spTree/></p:cSld></p:sldLayout>"#),
+            format!(r#"<?xml version="1.0"?><p:sldLayout {NS}><p:cSld><p:spTree><p:nvGrpSpPr/><p:grpSpPr/>{layout_shapes}</p:spTree></p:cSld></p:sldLayout>"#),
         ),
         (
             "ppt/slideLayouts/_rels/slideLayout1.xml.rels",
@@ -118,7 +123,14 @@ fn solid(hex: &str) -> String {
 fn render(pptx: Vec<u8>) -> crate::raster::RasteredSlide {
     PptxParser::from_bytes(pptx)
         .unwrap()
-        .render_slide(0, &SlideRasterOptions { dpi: 72.0 })
+        .render_slide(
+            0,
+            &SlideRasterOptions {
+                dpi: 72.0,
+                system_fonts: false,
+                ..Default::default()
+            },
+        )
         .unwrap()
 }
 
@@ -263,4 +275,151 @@ fn a_slide_index_out_of_range_is_an_error() {
     assert!(parser
         .render_slide(1, &SlideRasterOptions::default())
         .is_err());
+}
+
+// ---------------------------------------------------------------------------------------------
+// Text, drawn in the test font (a subset of Noto Sans KR, see tests/fixtures/fonts/README.md)
+
+const TEST_FONT: &[u8] = include_bytes!("../../../tests/fixtures/fonts/UndocTestSans-Regular.ttf");
+
+fn render_text(pptx: Vec<u8>) -> crate::raster::RasteredSlide {
+    PptxParser::from_bytes(pptx)
+        .unwrap()
+        .render_slide(
+            0,
+            &SlideRasterOptions {
+                dpi: 72.0,
+                fonts: vec![TEST_FONT.to_vec()],
+                system_fonts: false,
+                ..Default::default()
+            },
+        )
+        .unwrap()
+}
+
+/// How many pixels in `x0..x1` × `y0..y1` are dark (text drawn in black).
+fn dark(slide: &crate::raster::RasteredSlide, (x0, y0, x1, y1): (u32, u32, u32, u32)) -> usize {
+    (y0..y1)
+        .flat_map(|y| (x0..x1).map(move |x| (x, y)))
+        .filter(|&(x, y)| {
+            let [r, g, b] = pixel(slide, x, y);
+            (r as u32 + g as u32 + b as u32) < 3 * 128
+        })
+        .count()
+}
+
+/// A text box: no fill, no line, the given body properties and paragraphs.
+fn text_box((x, y, w, h): (u32, u32, u32, u32), body_pr: &str, paragraphs: &str) -> String {
+    format!(
+        r#"<p:sp><p:nvSpPr><p:cNvPr id="8" name="T"/><p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="{}" y="{}"/><a:ext cx="{}" cy="{}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/></p:spPr><p:txBody><a:bodyPr lIns="0" tIns="0" rIns="0" bIns="0"{body_pr}/><a:lstStyle/>{paragraphs}</p:txBody></p:sp>"#,
+        emu(x),
+        emu(y),
+        emu(w),
+        emu(h)
+    )
+}
+
+fn run(text: &str, attrs: &str) -> String {
+    format!(
+        r#"<a:r><a:rPr lang="ko-KR" sz="2000"{attrs}><a:solidFill><a:srgbClr val="000000"/></a:solidFill><a:latin typeface="Undoc Test Sans"/><a:ea typeface="Undoc Test Sans"/></a:rPr><a:t>{text}</a:t></a:r>"#
+    )
+}
+
+#[test]
+fn text_is_drawn_inside_its_box_in_the_face_it_asks_for() {
+    let para = format!("<a:p>{}</a:p>", run("한글 AB", ""));
+    let slide = render_text(deck(&text_box((10, 10, 80, 30), "", &para), ""));
+    assert!(dark(&slide, (10, 10, 90, 40)) > 20, "no text drawn");
+    assert_eq!(dark(&slide, (0, 40, 100, 50)), 0, "text below its box");
+    assert_eq!(dark(&slide, (0, 0, 100, 10)), 0, "text above its box");
+    assert!(slide.gaps.is_empty(), "{:?}", slide.gaps);
+    assert_eq!(slide.substituted_text_runs, 0);
+}
+
+#[test]
+fn a_face_that_is_not_there_is_stood_in_for_and_counted() {
+    let para = r#"<a:p><a:r><a:rPr sz="2000"><a:solidFill><a:srgbClr val="000000"/></a:solidFill><a:latin typeface="No Such Face"/></a:rPr><a:t>AB</a:t></a:r></a:p>"#;
+    let slide = render_text(deck(&text_box((10, 10, 80, 30), "", para), ""));
+    assert!(dark(&slide, (10, 10, 90, 40)) > 10);
+    assert_eq!(slide.substituted_text_runs, 1);
+    assert_eq!(slide.gaps.text_runs, 0);
+}
+
+#[test]
+fn without_any_face_text_is_a_gap() {
+    let para = format!("<a:p>{}</a:p>", run("AB", ""));
+    let slide = render(deck(&text_box((10, 10, 80, 30), "", &para), ""));
+    assert_eq!(slide.gaps.text_runs, 1);
+    assert_eq!(dark(&slide, (0, 0, 100, 50)), 0);
+}
+
+#[test]
+fn a_long_line_wraps_inside_a_narrow_box() {
+    // Four words at 20 pt in a 40 pt wide box need more than one line.
+    let para = format!("<a:p>{}</a:p>", run("AB AB AB AB", ""));
+    let slide = render_text(deck(&text_box((0, 0, 40, 50), "", &para), ""));
+    assert!(dark(&slide, (0, 0, 40, 22)) > 5, "first line");
+    assert!(dark(&slide, (0, 25, 40, 50)) > 5, "second line");
+    assert_eq!(dark(&slide, (40, 0, 100, 50)), 0, "nothing past the box");
+}
+
+#[test]
+fn centered_text_sits_in_the_middle_of_its_line() {
+    let para = format!(r#"<a:p><a:pPr algn="ctr"/>{}</a:p>"#, run("A", ""));
+    let slide = render_text(deck(&text_box((0, 0, 100, 30), "", &para), ""));
+    assert!(dark(&slide, (40, 0, 60, 30)) > 5);
+    assert_eq!(dark(&slide, (0, 0, 30, 30)), 0);
+}
+
+#[test]
+fn a_bottom_anchored_body_puts_its_text_at_the_bottom() {
+    let para = format!("<a:p>{}</a:p>", run("AB", ""));
+    let slide = render_text(deck(
+        &text_box((0, 0, 100, 50), r#" anchor="b""#, &para),
+        "",
+    ));
+    assert!(dark(&slide, (0, 25, 100, 50)) > 5);
+    assert_eq!(dark(&slide, (0, 0, 100, 20)), 0);
+}
+
+/// A slide placeholder with no position of its own takes its layout's.
+#[test]
+fn a_placeholder_takes_its_position_from_the_layout() {
+    let layout_title = format!(
+        r#"<p:sp><p:nvSpPr><p:cNvPr id="2" name="Title"/><p:cNvSpPr/><p:nvPr><p:ph type="title"/></p:nvPr></p:nvSpPr><p:spPr><a:xfrm><a:off x="0" y="{}"/><a:ext cx="{}" cy="{}"/></a:xfrm></p:spPr><p:txBody><a:bodyPr lIns="0" tIns="0" rIns="0" bIns="0" anchor="t"/><a:lstStyle/><a:p/></p:txBody></p:sp>"#,
+        emu(30),
+        emu(100),
+        emu(20)
+    );
+    let slide_title = format!(
+        r#"<p:sp><p:nvSpPr><p:cNvPr id="2" name="Title"/><p:cNvSpPr/><p:nvPr><p:ph type="title"/></p:nvPr></p:nvSpPr><p:spPr/><p:txBody><a:bodyPr/><a:lstStyle/><a:p>{}</a:p></p:txBody></p:sp>"#,
+        run("AB", "")
+    );
+    let slide = render_text(deck_with(&slide_title, "", &layout_title));
+    assert!(
+        dark(&slide, (0, 30, 100, 50)) > 5,
+        "drawn where the layout puts it"
+    );
+    assert_eq!(dark(&slide, (0, 0, 100, 28)), 0);
+    assert_eq!(slide.gaps.text_runs, 0);
+}
+
+/// A placeholder that names no geometry or fill of its own draws its layout's.
+#[test]
+fn a_placeholder_takes_its_geometry_and_fill_from_the_layout() {
+    let layout_ph = format!(
+        r#"<p:sp><p:nvSpPr><p:cNvPr id="2" name="B"/><p:cNvSpPr/><p:nvPr><p:ph idx="1"/></p:nvPr></p:nvSpPr><p:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="{}" cy="{}"/></a:xfrm><a:prstGeom prst="ellipse"><a:avLst/></a:prstGeom>{}</p:spPr></p:sp>"#,
+        emu(50),
+        emu(50),
+        solid("FF0000")
+    );
+    let slide_ph = r#"<p:sp><p:nvSpPr><p:cNvPr id="2" name="B"/><p:cNvSpPr/><p:nvPr><p:ph idx="1"/></p:nvPr></p:nvSpPr><p:spPr/></p:sp>"#;
+    let slide = render(deck_with(slide_ph, "", &layout_ph));
+    assert_eq!(pixel(&slide, 25, 25), RED, "the ellipse's centre");
+    assert_eq!(
+        pixel(&slide, 2, 2),
+        WHITE,
+        "outside the ellipse, inside its box"
+    );
+    assert!(slide.gaps.is_empty(), "{:?}", slide.gaps);
 }

@@ -18,6 +18,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   text, pictures, charts, tables and other graphic frames, custom geometry — is counted in
   `SlideRasterGaps`; a gradient or pattern fill is painted in one of its colors and counted as
   approximated.
+- **Slide text is drawn.** Each shape's paragraphs are laid out in its text rectangle (insets,
+  top/middle/bottom anchoring, left/center/right alignment, margins and first-line indent, line
+  spacing, `normAutofit` font scale) with sizes, weight, slant, color and typefaces resolved through
+  the run, the shape's list style, the layout's and master's placeholders and the master's text
+  styles, theme fonts (`+mn-lt`, `+mj-ea`, per-script faces) included. Lines break at spaces and
+  between CJK characters. A placeholder with no position, geometry, fill or line of its own takes
+  them from its layout, then its master. Faces come from `SlideRasterOptions::fonts`, then
+  `font_dirs`, then the system's font directories (`system_fonts`); no face is bundled. A run drawn
+  in a stand-in face counts in `RasteredSlide::substituted_text_runs`; a run no face covers, in a
+  script that needs shaping, or in vertical text counts in `SlideRasterGaps::text_runs`. Bullets
+  are not drawn yet.
 
 ### Fixed
 

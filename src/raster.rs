@@ -6,15 +6,32 @@
 //! so a consumer can tell a slide drawn in full from one with holes.
 
 /// How to rasterize a slide.
+///
+/// Text is drawn in the faces in [`fonts`](Self::fonts), then those in
+/// [`font_dirs`](Self::font_dirs), then — with [`system_fonts`](Self::system_fonts) — the
+/// system's font directories. No face is bundled: a host without fonts (a minimal container)
+/// draws no text unless faces are passed in, and reports the runs in
+/// [`SlideRasterGaps::text_runs`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct SlideRasterOptions {
     /// Resolution in dots per inch; a slide point is `dpi / 72` pixels. Default 150.
     pub dpi: f32,
+    /// Font files (TrueType, OpenType, or collections of them) to draw text in.
+    pub fonts: Vec<Vec<u8>>,
+    /// Directories searched, with their subdirectories, for font files.
+    pub font_dirs: Vec<std::path::PathBuf>,
+    /// Whether the system's font directories are searched too. Default `true`.
+    pub system_fonts: bool,
 }
 
 impl Default for SlideRasterOptions {
     fn default() -> Self {
-        Self { dpi: 150.0 }
+        Self {
+            dpi: 150.0,
+            fonts: Vec::new(),
+            font_dirs: Vec::new(),
+            system_fonts: true,
+        }
     }
 }
 
@@ -26,7 +43,8 @@ pub struct SlideRasterGaps {
     pub shapes: u32,
     /// Pictures not painted.
     pub images: u32,
-    /// Text runs not painted.
+    /// Text runs not painted, or painted only in part: no face has their characters, their
+    /// script needs shaping, or the text is vertical.
     pub text_runs: u32,
     /// Charts not drawn.
     pub charts: u32,
@@ -50,6 +68,9 @@ pub struct RasteredSlide {
     pub height: u32,
     pub rgba: Vec<u8>,
     pub gaps: SlideRasterGaps,
+    /// Text runs drawn in a face standing in for the one they ask for (it is not installed, or
+    /// lacks their characters): readable, but not the slide's own typeface. Not a gap.
+    pub substituted_text_runs: u32,
 }
 
 impl RasteredSlide {
