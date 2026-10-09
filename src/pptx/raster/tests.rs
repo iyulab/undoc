@@ -69,6 +69,8 @@ struct DeckParts<'a> {
     /// The theme's `fillStyleLst` and `bgFillStyleLst` contents.
     fill_styles: &'a str,
     bg_fill_styles: &'a str,
+    /// The `a:tblStyle` elements of `ppt/tableStyles.xml`; none means no such part.
+    table_styles: &'a str,
     extra: &'a [(&'a str, &'a [u8])],
 }
 
@@ -82,8 +84,13 @@ fn deck_parts(shapes: &str, deck: DeckParts) -> Vec<u8> {
         master_rels,
         fill_styles,
         bg_fill_styles,
+        table_styles,
         extra,
     } = deck;
+    let mut presentation_rels = vec![("rId2", "slide", "slides/slide1.xml")];
+    if !table_styles.is_empty() {
+        presentation_rels.push(("rId3", "tableStyles", "tableStyles.xml"));
+    }
     let mut slide_rel_list = vec![("rId1", "slideLayout", "../slideLayouts/slideLayout1.xml")];
     slide_rel_list.extend_from_slice(slide_rels);
     let mut layout_rel_list = vec![("rId1", "slideMaster", "../slideMasters/slideMaster1.xml")];
@@ -109,7 +116,7 @@ fn deck_parts(shapes: &str, deck: DeckParts) -> Vec<u8> {
         ),
         (
             "ppt/_rels/presentation.xml.rels",
-            rels(&[("rId2", "slide", "slides/slide1.xml")]),
+            rels(&presentation_rels),
         ),
         (
             "ppt/slides/slide1.xml",
@@ -146,13 +153,21 @@ fn deck_parts(shapes: &str, deck: DeckParts) -> Vec<u8> {
             ),
         ),
     ];
+    let table_styles_part = format!(
+        r#"<?xml version="1.0"?><a:tblStyleLst xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" def="">{table_styles}</a:tblStyleLst>"#
+    );
+    let table_styles_parts: Vec<(&str, &[u8])> = if table_styles.is_empty() {
+        Vec::new()
+    } else {
+        vec![("ppt/tableStyles.xml", table_styles_part.as_bytes())]
+    };
     let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
     for (name, body) in parts {
         zip.start_file(name, zip::write::SimpleFileOptions::default())
             .unwrap();
         zip.write_all(body.as_bytes()).unwrap();
     }
-    for (name, body) in extra {
+    for (name, body) in extra.iter().chain(&table_styles_parts) {
         zip.start_file(*name, zip::write::SimpleFileOptions::default())
             .unwrap();
         zip.write_all(body).unwrap();
@@ -1241,4 +1256,136 @@ fn a_table_style_not_applied_is_counted() {
     ));
     assert_eq!(slide.gaps.approximated_fills, 1);
     assert_eq!(slide.gaps.graphic_frames, 0);
+}
+
+/// A table style whose parts fill: the whole table red, the header row blue, odd body rows
+/// green; borders between rows black; the header's text bold and white.
+const STYLE: &str = r#"<a:tblStyle styleId="{TEST}" styleName="Test"><a:wholeTbl><a:tcTxStyle><a:srgbClr val="000000"/></a:tcTxStyle><a:tcStyle><a:tcBdr><a:insideH><a:ln w="25400"><a:solidFill><a:srgbClr val="000000"/></a:solidFill></a:ln></a:insideH></a:tcBdr><a:fill><a:solidFill><a:srgbClr val="FF0000"/></a:solidFill></a:fill></a:tcStyle></a:wholeTbl><a:band1H><a:tcStyle><a:tcBdr/><a:fill><a:solidFill><a:srgbClr val="00FF00"/></a:solidFill></a:fill></a:tcStyle></a:band1H><a:firstRow><a:tcTxStyle b="on"><a:srgbClr val="FFFFFF"/></a:tcTxStyle><a:tcStyle><a:tcBdr/><a:fill><a:solidFill><a:srgbClr val="0000FF"/></a:solidFill></a:fill></a:tcStyle></a:firstRow></a:tblStyle>"#;
+
+/// Three rows of two cells (rows 25 pt tall — the slide shows the first two), styled `{TEST}`
+/// with `flags` on `a:tblPr`; `first_cell` stands in for the first row's first cell.
+fn styled_table(flags: &str, first_cell: &str) -> crate::raster::RasteredSlide {
+    let empty = || cell("", "<a:p/>", "", "");
+    let rows: Vec<String> = (0..3)
+        .map(|r| {
+            let first = if r == 0 && !first_cell.is_empty() {
+                first_cell.to_string()
+            } else {
+                empty()
+            };
+            format!("{first}{}", empty())
+        })
+        .collect();
+    let refs: Vec<&str> = rows.iter().map(String::as_str).collect();
+    let frame = table(&[50, 50], &refs, "<a:tableStyleId>{TEST}</a:tableStyleId>")
+        .replace("<a:tblPr>", &format!("<a:tblPr{flags}>"));
+    render_text(deck_parts(
+        &frame,
+        DeckParts {
+            table_styles: STYLE,
+            ..DeckParts::default()
+        },
+    ))
+}
+
+#[test]
+fn a_table_style_fills_each_part() {
+    let slide = styled_table(r#" firstRow="1" bandRow="1""#, "");
+    assert_eq!(pixel(&slide, 25, 10), BLUE, "the header row");
+    assert_eq!(
+        pixel(&slide, 25, 40),
+        [0, 255, 0],
+        "the first body row is band 1"
+    );
+    assert!(
+        slide.gaps.is_empty(),
+        "a defined style is applied: {:?}",
+        slide.gaps
+    );
+
+    // Without the flags, only the whole-table part applies.
+    let plain = styled_table("", "");
+    assert_eq!(pixel(&plain, 25, 10), RED);
+    assert_eq!(pixel(&plain, 25, 40), RED);
+}
+
+/// Between rows a cell's bottom is the style's inside border; at the table's edge it is the
+/// style's bottom border.
+#[test]
+fn a_table_style_draws_the_borders_inside_it() {
+    let slide = styled_table("", "");
+    assert_eq!(
+        pixel(&slide, 25, 25),
+        [0, 0, 0],
+        "insideH, between the rows"
+    );
+    assert_eq!(
+        pixel(&slide, 25, 0),
+        RED,
+        "no top border: the style has none"
+    );
+
+    // A style whose inside border is black and outer bottom red, in a two-row table whose
+    // second row draws no top border of its own: the line between the rows is the first row's
+    // bottom, which must be the inside one.
+    let style = r#"<a:tblStyle styleId="{EDGES}" styleName="Edges"><a:wholeTbl><a:tcStyle><a:tcBdr><a:bottom><a:ln w="25400"><a:solidFill><a:srgbClr val="FF0000"/></a:solidFill></a:ln></a:bottom><a:insideH><a:ln w="25400"><a:solidFill><a:srgbClr val="000000"/></a:solidFill></a:ln></a:insideH></a:tcBdr></a:tcStyle></a:wholeTbl></a:tblStyle>"#;
+    let no_top = r#"<a:lnT><a:noFill/></a:lnT>"#;
+    let row1 = format!(
+        "{}{}",
+        cell("", "<a:p/>", "", ""),
+        cell("", "<a:p/>", "", "")
+    );
+    let row2 = format!(
+        "{}{}",
+        cell("", "<a:p/>", "", no_top),
+        cell("", "<a:p/>", "", no_top)
+    );
+    let slide = render(deck_parts(
+        &table(
+            &[50, 50],
+            &[&row1, &row2],
+            "<a:tableStyleId>{EDGES}</a:tableStyleId>",
+        ),
+        DeckParts {
+            table_styles: style,
+            ..DeckParts::default()
+        },
+    ));
+    assert_eq!(
+        pixel(&slide, 25, 25),
+        [0, 0, 0],
+        "the first row's bottom is inside"
+    );
+    assert_eq!(
+        pixel(&slide, 25, 49),
+        RED,
+        "the second row's bottom is the table's"
+    );
+}
+
+/// A cell's own fill wins over the style's.
+#[test]
+fn a_cell_fill_overrides_the_table_style() {
+    let own = cell("", "<a:p/>", "", &filled("FFFF00"));
+    let slide = styled_table(r#" firstRow="1""#, &own);
+    assert_eq!(pixel(&slide, 25, 10), [255, 255, 0]);
+    assert_eq!(pixel(&slide, 75, 10), BLUE);
+}
+
+/// The header part's text color reaches the cell's text, over the list styles' default.
+#[test]
+fn a_table_style_colors_its_text() {
+    let text = cell("", &format!("<a:p>{}</a:p>", plain_run("AB")), "", "");
+    let slide = styled_table(r#" firstRow="1""#, &text);
+    let white = (0..25)
+        .flat_map(|y| (0..50).map(move |x| (x, y)))
+        .filter(|&(x, y)| pixel(&slide, x, y) == WHITE)
+        .count();
+    assert!(white > 5, "white text on the blue header: {white} pixels");
+}
+
+fn plain_run(text: &str) -> String {
+    format!(
+        r#"<a:r><a:rPr lang="en-US" sz="2000"><a:latin typeface="Undoc Test Sans"/></a:rPr><a:t>{text}</a:t></a:r>"#
+    )
 }

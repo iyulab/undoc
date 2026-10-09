@@ -9,7 +9,8 @@
 //!
 //! Pictures (PNG, JPEG) fill their shape's outline, cropped by `srcRect` and stretched.
 //!
-//! Tables are drawn cell by cell — fills, borders and text — without their table style.
+//! Tables are drawn cell by cell — fills, borders and text — in their table style when the
+//! presentation defines it.
 //!
 //! Not painted yet, and counted in the gaps instead: pictures in other formats, charts,
 //! SmartArt and other graphic frames, custom geometry, vertical text and scripts that need
@@ -37,6 +38,7 @@ const R: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relations
 const REL_LAYOUT: &str = "/slideLayout";
 const REL_MASTER: &str = "/slideMaster";
 const REL_THEME: &str = "/theme";
+const REL_TABLE_STYLES: &str = "/tableStyles";
 
 /// EMU per point.
 const EMU_PER_PT: f32 = 12_700.0;
@@ -92,6 +94,7 @@ impl PptxParser {
             layout: parts.layout.as_ref().map(|d| d.root_element()),
             master: parts.master.as_ref().map(|d| d.root_element()),
             theme: parts.theme.as_ref().map(|d| d.root_element()),
+            table_styles: parts.table_styles.as_ref().map(|d| d.root_element()),
             theme_fonts: ThemeFonts::read(parts.theme.as_ref()),
             substituted: 0,
             container: &self.container,
@@ -171,6 +174,8 @@ struct PartTexts {
     layout: Option<String>,
     master: Option<String>,
     theme: Option<String>,
+    /// The presentation's table styles (`ppt/tableStyles.xml`).
+    table_styles: Option<String>,
     /// Each part's internal relationships (id -> part path): slide, layout, master.
     rels: [HashMap<String, String>; 3],
 }
@@ -201,6 +206,7 @@ impl PartTexts {
             Some(p) => related(p, REL_THEME)?,
             None => None,
         };
+        let table_styles_path = related("ppt/presentation.xml", REL_TABLE_STYLES)?;
         let targets = |part: &Option<String>| -> Result<HashMap<String, String>> {
             let Some(part) = part else {
                 return Ok(HashMap::new());
@@ -223,6 +229,7 @@ impl PartTexts {
             layout: read(&layout_path)?,
             master: read(&master_path)?,
             theme: read(&theme_path)?,
+            table_styles: read(&table_styles_path)?,
             rels,
         })
     }
@@ -233,6 +240,7 @@ impl PartTexts {
             layout: parse_optional(&self.layout)?,
             master: parse_optional(&self.master)?,
             theme: parse_optional(&self.theme)?,
+            table_styles: parse_optional(&self.table_styles)?,
         })
     }
 }
@@ -247,6 +255,7 @@ struct Parts<'a> {
     layout: Option<roxmltree::Document<'a>>,
     master: Option<roxmltree::Document<'a>>,
     theme: Option<roxmltree::Document<'a>>,
+    table_styles: Option<roxmltree::Document<'a>>,
 }
 
 impl<'a> Parts<'a> {
@@ -678,6 +687,8 @@ struct Painter<'a> {
     master: Option<Node<'a, 'a>>,
     /// The theme's root element, for the fill styles shapes and backgrounds name.
     theme: Option<Node<'a, 'a>>,
+    /// The presentation's table styles (`a:tblStyleLst`).
+    table_styles: Option<Node<'a, 'a>>,
     theme_fonts: ThemeFonts,
     /// Text runs drawn in a face standing in for the one they ask for.
     substituted: u32,
@@ -977,7 +988,12 @@ impl<'a> Painter<'a> {
         if let Some(body) = child(node, P, "txBody") {
             let rect = geometry.as_ref().map_or((0.0, 0.0, w, h), |g| g.text_rect);
             let font_color = style_color("fontRef");
-            let frame = TextFrame { rect, anchor: None };
+            let frame = TextFrame {
+                rect,
+                anchor: None,
+                color: None,
+                bold: None,
+            };
             self.text(body, ph.as_ref(), &inherited, frame, font_color, transform);
         }
     }
@@ -1113,8 +1129,10 @@ impl<'a> Painter<'a> {
     /// Draw a table (`a:tbl` in a graphic frame): its grid of columns and rows, each cell's
     /// fill, borders and text. A cell that spans columns or rows covers them; the cells it
     /// covers (`hMerge`, `vMerge`) draw nothing of their own. The table's style
-    /// (`tableStyleId`) is not applied — its fills and borders are missing, and the table counts
-    /// as an approximated fill.
+    /// (`tableStyleId`, defined in `ppt/tableStyles.xml`) gives each cell the fill, borders and
+    /// text color and weight of the parts it falls in; the cell's own properties override it. A
+    /// style the presentation does not define (PowerPoint's built-in ones are not in the file
+    /// unless used from it) is not applied, and the table counts as an approximated fill.
     fn table(&mut self, frame: Node, parent: Transform) {
         let tbl = frame.descendants().find(|n| n.has_tag_name((A, "tbl")));
         let place = child(frame, P, "xfrm").and_then(|x| {
@@ -1156,15 +1174,36 @@ impl<'a> Painter<'a> {
             self.gaps.graphic_frames += 1;
             return;
         }
-        if child(tbl, A, "tblPr")
+        let tbl_pr = child(tbl, A, "tblPr");
+        let style_id = tbl_pr
             .and_then(|p| child(p, A, "tableStyleId"))
-            .is_some()
-        {
+            .and_then(|i| i.text())
+            .map(str::trim);
+        let style = style_id.and_then(|id| {
+            self.table_styles?
+                .children()
+                .find(|s| s.has_tag_name((A, "tblStyle")) && s.attribute("styleId") == Some(id))
+        });
+        if style_id.is_some() && style.is_none() {
             self.gaps.approximated_fills += 1;
         }
+        let flag = |name: &str| {
+            tbl_pr
+                .and_then(|p| p.attribute(name))
+                .is_some_and(|v| v == "1" || v == "true")
+        };
+        let flags = TableFlags {
+            first_row: flag("firstRow"),
+            last_row: flag("lastRow"),
+            first_col: flag("firstCol"),
+            last_col: flag("lastCol"),
+            band_row: flag("bandRow"),
+            band_col: flag("bandCol"),
+        };
+        let (n_cols, n_rows) = (cols.len() - 1, row_edges.len() - 1);
 
-        // Each drawn cell with the rectangle it covers.
-        let mut cells: Vec<(Node, (f64, f64, f64, f64))> = Vec::new();
+        // Each drawn cell with the rectangle it covers and its grid span (rows, columns).
+        let mut cells: Vec<PlacedCell> = Vec::new();
         for (ri, row) in rows.iter().enumerate() {
             let tcs = row.children().filter(|n| n.has_tag_name((A, "tc")));
             for (ci, tc) in tcs.enumerate() {
@@ -1177,18 +1216,50 @@ impl<'a> Painter<'a> {
                 let span = |attr: &str| num(tc, attr).map_or(1, |v| v.max(1.0) as usize);
                 let c1 = (ci + span("gridSpan")).min(cols.len() - 1);
                 let r1 = (ri + span("rowSpan")).min(row_edges.len() - 1);
-                cells.push((tc, (cols[ci], row_edges[ri], cols[c1], row_edges[r1])));
+                cells.push(PlacedCell {
+                    tc,
+                    rect: (cols[ci], row_edges[ri], cols[c1], row_edges[r1]),
+                    span: Span {
+                        rows: (ri, r1),
+                        cols: (ci, c1),
+                    },
+                });
             }
         }
 
         // Fills, then borders over them, then text over both.
-        for &(tc, (x0, y0, x1, y1)) in &cells {
-            let fill = child(tc, A, "tcPr").and_then(|pr| {
+        let grid = (n_rows, n_cols);
+        for &PlacedCell {
+            tc,
+            rect: (x0, y0, x1, y1),
+            span,
+        } in &cells
+        {
+            let own = child(tc, A, "tcPr").and_then(|pr| {
                 pr.children()
                     .filter(|n| n.is_element())
                     .find_map(|n| self.fill(n, None))
-                    .flatten()
             });
+            let fill = match own {
+                Some(fill) => fill,
+                None => {
+                    // The last part of the style that fills the cell.
+                    let parts = style_parts(style, flags, span, grid);
+                    let filled = parts.iter().rev().find_map(|(part, _)| {
+                        let tc_style = child(*part, A, "tcStyle")?;
+                        child(tc_style, A, "fill").or_else(|| child(tc_style, A, "fillRef"))
+                    });
+                    match filled {
+                        Some(f) if f.tag_name().name() == "fillRef" => self.style_fill(f),
+                        Some(f) => f
+                            .children()
+                            .filter(|n| n.is_element())
+                            .find_map(|n| self.fill(n, None))
+                            .flatten(),
+                        None => None,
+                    }
+                }
+            };
             let (Some(fill), Some(rect)) = (
                 fill,
                 tiny_skia::Rect::from_xywh(0.0, 0.0, (x1 - x0) as f32, (y1 - y0) as f32),
@@ -1200,28 +1271,35 @@ impl<'a> Painter<'a> {
                 self.pixmap.fill_rect(rect, &paint, at, None);
             }
         }
-        for &(tc, (x0, y0, x1, y1)) in &cells {
-            let Some(pr) = child(tc, A, "tcPr") else {
-                continue;
-            };
-            for (name, from, to) in [
-                ("lnL", (x0, y0), (x0, y1)),
-                ("lnR", (x1, y0), (x1, y1)),
-                ("lnT", (x0, y0), (x1, y0)),
-                ("lnB", (x0, y1), (x1, y1)),
-                ("lnTlToBr", (x0, y0), (x1, y1)),
-                ("lnBlToTr", (x0, y1), (x1, y0)),
+        for &PlacedCell {
+            tc,
+            rect: (x0, y0, x1, y1),
+            span,
+        } in &cells
+        {
+            let pr = child(tc, A, "tcPr");
+            let parts = style_parts(style, flags, span, grid);
+            for (own, edge, from, to) in [
+                ("lnL", Edge::Left, (x0, y0), (x0, y1)),
+                ("lnR", Edge::Right, (x1, y0), (x1, y1)),
+                ("lnT", Edge::Top, (x0, y0), (x1, y0)),
+                ("lnB", Edge::Bottom, (x0, y1), (x1, y1)),
+                ("lnTlToBr", Edge::TopLeftToBottomRight, (x0, y0), (x1, y1)),
+                ("lnBlToTr", Edge::BottomLeftToTopRight, (x0, y1), (x1, y0)),
             ] {
-                let Some(ln) = child(pr, A, name) else {
+                // The cell's own border, else the last style part that draws this edge.
+                let border = pr.and_then(|p| child(p, A, own)).or_else(|| {
+                    parts.iter().rev().find_map(|(part, region)| {
+                        let name = edge.style_name(span, *region);
+                        child(*part, A, "tcStyle")
+                            .and_then(|s| child(s, A, "tcBdr"))
+                            .and_then(|b| child(b, A, name))
+                    })
+                });
+                let Some(border) = border else {
                     continue;
                 };
-                let color = ln
-                    .children()
-                    .filter(|n| n.is_element())
-                    .find_map(|n| self.fill(n, None))
-                    .flatten()
-                    .and_then(|f| f.line_color(&mut self.gaps));
-                let Some(color) = color else {
+                let Some((color, width)) = self.border(border) else {
                     continue;
                 };
                 let mut pb = PathBuilder::new();
@@ -1234,17 +1312,37 @@ impl<'a> Painter<'a> {
                 paint.set_color(color.to_color());
                 paint.anti_alias = true;
                 let stroke = Stroke {
-                    width: num(ln, "w").map_or(12_700.0, |w| w as f32).max(1.0),
+                    width: width.max(1.0),
                     ..Stroke::default()
                 };
                 self.pixmap
                     .stroke_path(&path, &paint, &stroke, transform, None);
             }
         }
-        for &(tc, (x0, y0, x1, y1)) in &cells {
+        for &PlacedCell {
+            tc,
+            rect: (x0, y0, x1, y1),
+            span,
+        } in &cells
+        {
             let Some(body) = child(tc, A, "txBody") else {
                 continue;
             };
+            // The last style parts that set the text's color and weight.
+            let parts = style_parts(style, flags, span, grid);
+            let tx_styles: Vec<Node> = parts
+                .iter()
+                .filter_map(|(p, _)| child(*p, A, "tcTxStyle"))
+                .collect();
+            let text_color = tx_styles
+                .iter()
+                .rev()
+                .find_map(|t| color_child(*t, self.colors, None));
+            let text_bold = tx_styles
+                .iter()
+                .rev()
+                .find_map(|t| t.attribute("b"))
+                .map(|b| b == "on");
             // Cell margins stand where a text box's insets would; the defaults are the same.
             let pr = child(tc, A, "tcPr");
             let margin = |name: &str, default: f64| {
@@ -1258,9 +1356,35 @@ impl<'a> Painter<'a> {
                     y1 - margin("marB", 45_720.0),
                 ),
                 anchor: pr.and_then(|p| p.attribute("anchor")),
+                color: text_color,
+                bold: text_bold,
             };
             self.text(body, None, &[], frame, None, transform);
         }
+    }
+
+    /// The color and width (EMU) a table border draws in: from the `a:ln` it holds, or from
+    /// the theme line style its `a:lnRef` names, in the reference's color. `None` draws nothing.
+    fn border(&mut self, border: Node) -> Option<(Rgba, f32)> {
+        let name = border.tag_name().name();
+        let (ln, reference) = if name.starts_with("ln") && name != "lnRef" {
+            (Some(border), None)
+        } else {
+            (child(border, A, "ln"), child(border, A, "lnRef"))
+        };
+        if let Some(ln) = ln {
+            let color = ln
+                .children()
+                .filter(|n| n.is_element())
+                .find_map(|n| self.fill(n, None))
+                .flatten()
+                .and_then(|f| f.line_color(&mut self.gaps))?;
+            return Some((color, num(ln, "w").map_or(12_700.0, |w| w as f32)));
+        }
+        let reference = reference?;
+        let idx = num(reference, "idx")? as usize;
+        let width = *self.line_widths.get(idx.checked_sub(1)?)?;
+        Some((color_child(reference, self.colors, None)?, width))
     }
 
     /// The layout's and the master's counterparts of a placeholder, nearest first.
@@ -1389,6 +1513,12 @@ impl<'a> Painter<'a> {
                 if let Some(d) = child(*n, A, "defRPr") {
                     base.apply(d, self.colors);
                 }
+            }
+            if let Some(color) = frame.color {
+                base.color = Some(color);
+            }
+            if let Some(bold) = frame.bold {
+                base.bold = bold;
             }
 
             let mut items: Vec<Item> = Vec::new();
@@ -1664,12 +1794,143 @@ impl<'a> Painter<'a> {
     }
 }
 
+/// Which of a table style's parts a table turns on (`a:tblPr` attributes).
+#[derive(Debug, Clone, Copy, Default)]
+struct TableFlags {
+    first_row: bool,
+    last_row: bool,
+    first_col: bool,
+    last_col: bool,
+    band_row: bool,
+    band_col: bool,
+}
+
+/// A table cell that draws: its element, the rectangle it covers and its place in the grid.
+#[derive(Debug, Clone, Copy)]
+struct PlacedCell<'a, 'i> {
+    tc: Node<'a, 'i>,
+    rect: (f64, f64, f64, f64),
+    span: Span,
+}
+
+/// A cell's place in the grid: the rows and columns it covers, end exclusive.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Span {
+    rows: (usize, usize),
+    cols: (usize, usize),
+}
+
+/// A cell edge, and which border of a style part draws it.
+#[derive(Debug, Clone, Copy)]
+enum Edge {
+    Left,
+    Right,
+    Top,
+    Bottom,
+    TopLeftToBottomRight,
+    BottomLeftToTopRight,
+}
+
+impl Edge {
+    /// The part's border element for this edge of a cell in `region`: the region's own edge
+    /// (`left`, `top`, …) where the cell meets it, the inside border (`insideV`, `insideH`)
+    /// where it does not.
+    fn style_name(self, cell: Span, region: Span) -> &'static str {
+        match self {
+            Edge::Left if cell.cols.0 == region.cols.0 => "left",
+            Edge::Right if cell.cols.1 == region.cols.1 => "right",
+            Edge::Left | Edge::Right => "insideV",
+            Edge::Top if cell.rows.0 == region.rows.0 => "top",
+            Edge::Bottom if cell.rows.1 == region.rows.1 => "bottom",
+            Edge::Top | Edge::Bottom => "insideH",
+            Edge::TopLeftToBottomRight => "tl2br",
+            Edge::BottomLeftToTopRight => "tr2bl",
+        }
+    }
+}
+
+/// The parts of table style `style` a cell in `span` of a `rows` × `cols` grid falls in, in the
+/// order they apply — later ones win — each with the region it covers: the whole table, the
+/// column band, the row band, the last and first column, the last and first row, then the
+/// corner cells.
+fn style_parts<'a, 'i>(
+    style: Option<Node<'a, 'i>>,
+    flags: TableFlags,
+    span: Span,
+    (rows, cols): (usize, usize),
+) -> Vec<(Node<'a, 'i>, Span)> {
+    let Some(style) = style else {
+        return Vec::new();
+    };
+    let whole = Span {
+        rows: (0, rows),
+        cols: (0, cols),
+    };
+    let row_strip = Span {
+        rows: span.rows,
+        cols: (0, cols),
+    };
+    let col_strip = Span {
+        rows: (0, rows),
+        cols: span.cols,
+    };
+    let first_row = flags.first_row && span.rows.0 == 0;
+    let last_row = flags.last_row && span.rows.1 == rows;
+    let first_col = flags.first_col && span.cols.0 == 0;
+    let last_col = flags.last_col && span.cols.1 == cols;
+    // Bands count from the first row or column that is not a header.
+    let band = |at: usize, header: bool, edge: bool| {
+        (!edge).then(|| (at - usize::from(header)).is_multiple_of(2))
+    };
+    let mut wanted: Vec<(&str, Span)> = vec![("wholeTbl", whole)];
+    if flags.band_col {
+        if let Some(odd) = band(span.cols.0, flags.first_col, first_col || last_col) {
+            wanted.push((if odd { "band1V" } else { "band2V" }, col_strip));
+        }
+    }
+    if flags.band_row {
+        if let Some(odd) = band(span.rows.0, flags.first_row, first_row || last_row) {
+            wanted.push((if odd { "band1H" } else { "band2H" }, row_strip));
+        }
+    }
+    if last_col {
+        wanted.push(("lastCol", col_strip));
+    }
+    if first_col {
+        wanted.push(("firstCol", col_strip));
+    }
+    if last_row {
+        wanted.push(("lastRow", row_strip));
+    }
+    if first_row {
+        wanted.push(("firstRow", row_strip));
+    }
+    for (corner, on) in [
+        ("seCell", last_row && last_col),
+        ("swCell", last_row && first_col),
+        ("neCell", first_row && last_col),
+        ("nwCell", first_row && first_col),
+    ] {
+        if on {
+            wanted.push((corner, span));
+        }
+    }
+    wanted
+        .into_iter()
+        .filter_map(|(name, region)| Some((child(style, A, name)?, region)))
+        .collect()
+}
+
 /// Where a text body is laid out: its rectangle (before the body's insets) and, for a table
 /// cell, the vertical anchor its cell properties give.
 #[derive(Debug, Clone, Copy)]
 struct TextFrame<'s> {
     rect: (f64, f64, f64, f64),
     anchor: Option<&'s str>,
+    /// A table style's text color and weight, over the list styles' defaults and under the
+    /// runs' own.
+    color: Option<Rgba>,
+    bold: Option<bool>,
 }
 
 /// A placeholder's type and index.

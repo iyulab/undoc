@@ -19,8 +19,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   column widths and row heights, cells spanning columns (`gridSpan`) and rows (`rowSpan`), the
   cells they cover left to them — with each cell's fill, borders (`lnL`, `lnR`, `lnT`, `lnB` and
   the diagonals) and text, inset by the cell margins and anchored top, middle or bottom. It no
-  longer counts in `graphic_frames`. The table style (`tableStyleId`) is not applied yet: a styled
-  table counts as an approximated fill.
+  longer counts in `graphic_frames`. The table's style (`tableStyleId`, defined in
+  `ppt/tableStyles.xml`) is applied part by part — whole table, column and row bands, first and
+  last column and row, corner cells, as `tblPr` turns them on — with each part's fill, borders
+  (outer edges on its region's edge, `insideH`/`insideV` within it, `lnRef` through the theme) and
+  text color and weight; a cell's own properties win. A style the file does not define counts as
+  an approximated fill.
 - **Theme fill styles are drawn.** A shape's `a:fillRef` and a background's `p:bgRef` paint the
   theme style they name (`fillStyleLst`, and `bgFillStyleLst` from 1001), with `phClr` taken from
   the reference's own color; the color alone stood in for the style before.
