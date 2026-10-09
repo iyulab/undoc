@@ -698,6 +698,7 @@ mod tests {
                 line_break: false,
                 page_break: false,
                 revision: RevisionType::None,
+                note: None,
             }],
             heading: HeadingLevel::None,
             ..Default::default()

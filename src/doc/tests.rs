@@ -592,13 +592,24 @@ fn footnotes_are_referenced_inline_and_written_at_the_end() {
         },
     )
     .unwrap();
+    assert_eq!(paragraphs(&doc), ["Claim[^1] and another[^2].", "After."]);
+    // The note bodies close the section as notes, not as paragraphs that spell out `[^n]:`.
+    let notes: Vec<_> = doc.sections[0]
+        .content
+        .iter()
+        .filter_map(|block| match block {
+            Block::Note { label, content } => Some((
+                label.as_str(),
+                content.iter().map(|p| p.plain_text()).collect::<Vec<_>>(),
+            )),
+            _ => None,
+        })
+        .collect();
     assert_eq!(
-        paragraphs(&doc),
+        notes,
         [
-            "Claim[^1] and another[^2].",
-            "After.",
-            "[^1]: First source.",
-            "[^2]: Second source.",
+            ("1", vec!["First source.".to_string()]),
+            ("2", vec!["Second source.".to_string()]),
         ]
     );
 }

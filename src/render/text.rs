@@ -42,6 +42,13 @@ pub fn to_text(doc: &Document, options: &RenderOptions) -> Result<String> {
                 Block::PageBreak | Block::SectionBreak => {
                     output.push_str("\n---\n\n");
                 }
+                Block::Note { label, content } => {
+                    let text: Vec<String> = content.iter().map(render_paragraph_text).collect();
+                    output.push_str(&format!("[^{label}]: {}\n", text.join("\n")));
+                    if options.paragraph_spacing {
+                        output.push('\n');
+                    }
+                }
                 Block::Image { alt_text, .. } => {
                     if let Some(alt) = alt_text {
                         output.push_str(&format!("[Image: {}]\n", alt));
@@ -101,6 +108,9 @@ fn render_paragraph_text(para: &Paragraph) -> String {
     // side by side: a word split across two runs is still one word.
     for run in &para.runs {
         output.push_str(&run.text);
+        if let Some(label) = &run.note {
+            output.push_str(&format!("[^{label}]"));
+        }
         if run.line_break {
             output.push('\n');
         }

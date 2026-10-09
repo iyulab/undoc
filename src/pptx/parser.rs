@@ -805,6 +805,7 @@ impl PptxParser {
                                     line_break: false,
                                     page_break: false,
                                     revision: RevisionType::None,
+                                    note: None,
                                 });
                             }
                             in_run = false;
@@ -1209,6 +1210,7 @@ impl PptxParser {
                                     line_break: false,
                                     page_break: false,
                                     revision: RevisionType::None,
+                                    note: None,
                                 });
                             }
                             in_run = false;
@@ -1437,6 +1439,7 @@ impl PptxParser {
                                     line_break: false,
                                     page_break: false,
                                     revision: RevisionType::None,
+                                    note: None,
                                 });
                             }
                             in_run = false;
@@ -1861,6 +1864,7 @@ fn parse_placeholder_texts_from_xml(xml: &str) -> HashMap<String, Vec<Paragraph>
                                 line_break: false,
                                 page_break: false,
                                 revision: RevisionType::None,
+                                note: None,
                             });
                         }
                         in_run = false;

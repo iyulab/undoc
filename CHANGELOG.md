@@ -7,8 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Footnotes and endnotes are structure in the model.** A reference is a `TextRun` with its
+  note's label in the new `note` field (and no text), and the note is a new `Block::Note`
+  (`label`, `content`) where the section closes; both used to be plain text spelling out
+  `[^1]` and `[^1]: …`. Markdown still writes GFM footnotes (`[^1]`, `[^e1]` for endnotes, with
+  each later paragraph of a note indented under it), and plain text still writes `[^1]`.
+  JSON consumers read the reference from `note` and the note from a `Note` block.
+
 ### Fixed
 
+- **Brackets in the text stay text.** `[` and `]` are escaped like the other Markdown
+  characters (with `escape_special_chars`, on by default): text reading `[x](y)` became a link
+  and lost `(y)`, and a paragraph opening `[x]: y` became a link reference definition, which is
+  not printed at all. Footnotes are no longer carried as bracketed text, so escaping does not
+  touch them.
+- **Merging adjacent runs keeps tracked changes and note references.** Runs were joined when
+  their style and link matched, so inserted or deleted text next to plain text lost its
+  revision mark, and a note reference disappeared into its neighbour.
 - **Code is written raw inside its code span.** A run styled as code was escaped like body
   text and then had its backticks backslash-escaped, but nothing is escaped inside a code span:
   `C:\dir` read back as `C:\\dir`, and a backtick in the code ended the span. The span is now

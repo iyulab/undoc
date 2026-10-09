@@ -116,10 +116,10 @@ impl DocParser {
         }
         // Note bodies close the section, as the .docx reader writes them.
         for note in notes.iter().filter(|n| !n.text.is_empty()) {
-            section.add_paragraph(Paragraph::with_text(format!(
-                "[^{}]: {}",
-                note.label, note.text
-            )));
+            section.add_block(Block::Note {
+                label: note.label.clone(),
+                content: vec![Paragraph::with_text(note.text.clone())],
+            });
         }
         // The first section's headers and footers — the stories Word shows on odd pages,
         // which are every page's unless the document asks for different ones.
@@ -341,7 +341,7 @@ impl<'a> Assembler<'a> {
                 NOTE_REFERENCE => {
                     if let Some(note) = self.notes.iter().find(|n| n.cp == c.cp) {
                         self.flush_run();
-                        self.runs.push(TextRun::plain(format!("[^{}]", note.label)));
+                        self.runs.push(TextRun::note_reference(note.label.clone()));
                     }
                 }
                 OPTIONAL_HYPHEN => {}

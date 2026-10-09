@@ -170,6 +170,9 @@ fn render_section_impl(
                 output.push_str(&render_table(table, options, resource_map));
                 output.push_str("\n\n");
             }
+            Block::Note { label, content } => {
+                output.push_str(&render_note(label, content, options, resource_map));
+            }
             Block::PageBreak => {
                 if options.emit_page_breaks {
                     push_thematic_break(output);
@@ -338,6 +341,9 @@ fn to_markdown_with_analyzer(
                 Block::Table(table) => {
                     output.push_str(&render_table(table, options, &resource_map));
                     output.push_str("\n\n");
+                }
+                Block::Note { label, content } => {
+                    output.push_str(&render_note(label, content, options, &resource_map));
                 }
                 Block::PageBreak => {
                     if options.emit_page_breaks {
@@ -622,7 +628,6 @@ struct RunContext {
     suppress_emphasis: bool,
 }
 
-/// Render a text run to Markdown.
 /// Append a thematic break, separated from what precedes it by exactly one blank line.
 ///
 /// A block-level element cannot see what came before it, so prepending a newline
@@ -653,6 +658,56 @@ fn break_marker(run: &TextRun, options: &RenderOptions) -> &'static str {
     }
 }
 
+/// A note label as a GFM footnote label: whitespace and the characters that would end or
+/// break the label (`[`, `]`, `\`, `^`) become `-`. Labels the parsers give (`1`, `e2`) pass
+/// through; a reference and its definition map the same label to the same text.
+fn footnote_label(label: &str) -> String {
+    label
+        .chars()
+        .map(|c| match c {
+            '[' | ']' | '\\' | '^' => '-',
+            c if c.is_whitespace() => '-',
+            c => c,
+        })
+        .collect()
+}
+
+/// A footnote definition, `[^label]: text`: the first paragraph follows the label, each later
+/// one is indented four spaces after a blank line, which keeps it inside the definition.
+/// A note with no text writes nothing.
+fn render_note(
+    label: &str,
+    content: &[Paragraph],
+    options: &RenderOptions,
+    resource_map: &ResourceMap,
+) -> String {
+    let paragraphs: Vec<String> = content
+        .iter()
+        .map(|para| render_paragraph(para, options, None, resource_map))
+        .filter(|md| !md.trim().is_empty())
+        .collect();
+    if paragraphs.is_empty() {
+        return String::new();
+    }
+    let mut out = format!("[^{}]: ", footnote_label(label));
+    for (i, md) in paragraphs.iter().enumerate() {
+        if i > 0 {
+            out.push_str("\n\n");
+        }
+        for (j, line) in md.lines().enumerate() {
+            if j > 0 {
+                out.push('\n');
+            }
+            if (i > 0 || j > 0) && !line.is_empty() {
+                out.push_str("    ");
+            }
+            out.push_str(line);
+        }
+    }
+    out.push_str("\n\n");
+    out
+}
+
 /// Render one run. `before` is the last character already written and `after` the first
 /// one the next run will write — what the run's emphasis delimiters land between.
 fn render_run(
@@ -675,6 +730,10 @@ fn render_run(
         }
         // ShowMarkup or normal text: continue with rendering
         _ => {}
+    }
+
+    if let Some(label) = &run.note {
+        return format!("[^{}]{}", footnote_label(label), break_marker(run, options));
     }
 
     let effective_bold = run.style.bold && !ctx.suppress_emphasis;
@@ -796,6 +855,9 @@ fn render_run(
 ///
 /// - `\` - always escape (escape character)
 /// - `` ` `` - always escape (inline code)
+/// - `[`, `]` - always escape: text written `[x](y)` would be a link, and a line opening
+///   `[x]: y` a link reference definition, which is not printed at all. Footnote references
+///   and definitions are written by the renderer from the model, not carried in the text.
 /// - `|` - escape only inside table cells (where it is the column delimiter).
 ///   In regular paragraphs `|` is just a literal character.
 /// - `*` - escape only when it could trigger emphasis (CommonMark flanking
@@ -805,7 +867,7 @@ fn render_run(
 ///   are left intact.
 ///
 /// Characters NOT escaped (only special in specific contexts):
-/// - `()`, `[]`, `{}` - only special in link/image syntax `[text](url)`
+/// - `()`, `{}` - only special after a link's `]`, which is always escaped
 /// - `#` - only special at start of line (headings)
 /// - `+`, `-` - only special at start of line (lists) or `---` (rules)
 /// - `!` - only special before `[` (images)
@@ -816,7 +878,7 @@ fn escape_markdown(s: &str, in_table_cell: bool) -> String {
 
     for (i, &c) in chars.iter().enumerate() {
         match c {
-            '\\' | '`' => {
+            '\\' | '`' | '[' | ']' => {
                 result.push('\\');
                 result.push(c);
             }
@@ -1287,6 +1349,30 @@ mod tests {
                 ..TextStyle::default()
             },
         )
+    }
+
+    #[test]
+    fn a_note_of_several_paragraphs_stays_one_definition() {
+        let content = vec![
+            Paragraph::with_text("First."),
+            Paragraph::with_text("Second."),
+        ];
+        let md = render_note("e2", &content, &RenderOptions::default(), &HashMap::new());
+        assert_eq!(md, "[^e2]: First.\n\n    Second.\n\n");
+        // A label the GFM syntax cannot carry is mapped, the same way for its reference.
+        assert_eq!(footnote_label("a b]"), "a-b-");
+        let reference = render_runs(vec![TextRun::note_reference("a b]")]);
+        assert_eq!(reference, "[^a-b-]");
+        // An empty note writes nothing rather than a definition with no text.
+        assert_eq!(
+            render_note(
+                "1",
+                &[Paragraph::new()],
+                &RenderOptions::default(),
+                &HashMap::new()
+            ),
+            ""
+        );
     }
 
     #[test]
@@ -2238,6 +2324,7 @@ mod tests {
             line_break: true,
             page_break: false,
             revision: RevisionType::None,
+            note: None,
         });
         para.runs.push(TextRun::plain("Second line"));
 

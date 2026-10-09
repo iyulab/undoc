@@ -65,6 +65,15 @@ pub enum Block {
     PageBreak,
     /// A section break
     SectionBreak,
+    /// A footnote or endnote, placed where the document collects its notes (the end of the
+    /// section for .docx and .doc). The runs that refer to it carry its `label` in
+    /// [`TextRun::note`](crate::model::TextRun::note).
+    Note {
+        /// The label its references carry: `1`, `2`, … for footnotes, `e1`, `e2`, … for endnotes
+        label: String,
+        /// The note's text
+        content: Vec<Paragraph>,
+    },
     /// An image (standalone, not inline)
     Image {
         /// Resource ID for the image
@@ -288,6 +297,7 @@ mod tests {
                     line_break: false,
                     page_break: false,
                     revision: RevisionType::None,
+                    note: None,
                 },
                 TextRun::plain("!"),
             ],

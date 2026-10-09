@@ -110,8 +110,10 @@ impl DocxParser {
             });
             for id in ids {
                 if let Some(text) = self.footnotes.get(id) {
-                    let para = Paragraph::with_text(format!("[^{}]: {}", id, text));
-                    main_section.add_block(Block::Paragraph(para));
+                    main_section.add_block(Block::Note {
+                        label: id.clone(),
+                        content: vec![Paragraph::with_text(text.clone())],
+                    });
                 }
             }
         }
@@ -126,8 +128,10 @@ impl DocxParser {
             });
             for id in ids {
                 if let Some(text) = self.endnotes.get(id) {
-                    let para = Paragraph::with_text(format!("[^e{}]: {}", id, text));
-                    main_section.add_block(Block::Paragraph(para));
+                    main_section.add_block(Block::Note {
+                        label: format!("e{id}"),
+                        content: vec![Paragraph::with_text(text.clone())],
+                    });
                 }
             }
         }
@@ -819,6 +823,7 @@ impl DocxParser {
                                     line_break: false,
                                     page_break: true,
                                     revision: current_revision,
+                                    note: None,
                                 });
                             }
                         } else {
@@ -833,6 +838,7 @@ impl DocxParser {
                                     line_break: true,
                                     page_break: false,
                                     revision: current_revision,
+                                    note: None,
                                 });
                             }
                         }
@@ -853,6 +859,7 @@ impl DocxParser {
                             line_break: false,
                             page_break: false,
                             revision: current_revision,
+                            note: None,
                         });
                     }
                     // Carriage return handling - convert <w:cr/> to newline
@@ -874,6 +881,7 @@ impl DocxParser {
                                 line_break: true,
                                 page_break: false,
                                 revision: current_revision,
+                                note: None,
                             });
                         }
                     }
@@ -893,6 +901,7 @@ impl DocxParser {
                             line_break: false,
                             page_break: false,
                             revision: current_revision,
+                            note: None,
                         });
                     }
                     // Soft hyphen handling (optional hyphen, usually invisible)
@@ -911,6 +920,7 @@ impl DocxParser {
                             line_break: false,
                             page_break: false,
                             revision: current_revision,
+                            note: None,
                         });
                     }
                     // Non-breaking space handling
@@ -929,6 +939,7 @@ impl DocxParser {
                             line_break: false,
                             page_break: false,
                             revision: current_revision,
+                            note: None,
                         });
                     }
                     // Footnote reference handling
@@ -938,7 +949,7 @@ impl DocxParser {
                                 let id = attr.value.to_string();
                                 // Only insert marker if this footnote has content
                                 if self.footnotes.contains_key(&id) {
-                                    para.runs.push(TextRun::plain(format!("[^{}]", id)));
+                                    para.runs.push(TextRun::note_reference(id));
                                 }
                             }
                         }
@@ -950,7 +961,7 @@ impl DocxParser {
                                 let id = attr.value.to_string();
                                 // Only insert marker if this endnote has content
                                 if self.endnotes.contains_key(&id) {
-                                    para.runs.push(TextRun::plain(format!("[^e{}]", id)));
+                                    para.runs.push(TextRun::note_reference(format!("e{id}")));
                                 }
                             }
                         }
@@ -982,6 +993,7 @@ impl DocxParser {
                             line_break: false,
                             page_break: false,
                             revision: current_revision,
+                            note: None,
                         };
                         para.runs.push(run);
                     }
@@ -1012,6 +1024,7 @@ impl DocxParser {
                             line_break: false,
                             page_break: false,
                             revision: current_revision,
+                            note: None,
                         };
                         para.runs.push(run);
                     }
@@ -1472,6 +1485,7 @@ impl DocxParser {
                                     line_break: false,
                                     page_break: false,
                                     revision: RevisionType::None,
+                                    note: None,
                                 };
                                 para.runs.push(run);
                             }
@@ -1499,6 +1513,7 @@ impl DocxParser {
                                     line_break: false,
                                     page_break: false,
                                     revision: RevisionType::None,
+                                    note: None,
                                 };
                                 para.runs.push(run);
                             }
@@ -1893,6 +1908,17 @@ fn deduplicate_paragraph_block(paragraphs: Vec<Paragraph>) -> Vec<Paragraph> {
 mod tests {
     use super::*;
 
+    /// A container with no parts, for tests that parse a fragment of document XML. It must
+    /// be a real (empty) ZIP archive: zero bytes are not one, and the tests that built their
+    /// container from them returned early, unchecked, every time.
+    fn empty_container() -> crate::container::OoxmlContainer {
+        let bytes = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()))
+            .finish()
+            .expect("an empty archive")
+            .into_inner();
+        crate::container::OoxmlContainer::from_bytes(bytes).expect("an empty archive opens")
+    }
+
     // =========================================================================
     // Whitespace Preservation Tests (GitHub Issue #2)
     // =========================================================================
@@ -1910,12 +1936,7 @@ mod tests {
         </w:p>"#;
 
         // Create a minimal container just for testing paragraph parsing
-        let container = crate::container::OoxmlContainer::from_bytes(Vec::new());
-        if container.is_err() {
-            // Can't create empty container, skip test
-            return;
-        }
-        let container = container.unwrap();
+        let container = empty_container();
         let mut parser = DocxParser {
             container,
             styles: StyleMap::default(),
@@ -1949,11 +1970,7 @@ mod tests {
             <w:r><w:t xml:space="preserve">  Hello World  </w:t></w:r>
         </w:p>"#;
 
-        let container = crate::container::OoxmlContainer::from_bytes(Vec::new());
-        if container.is_err() {
-            return;
-        }
-        let container = container.unwrap();
+        let container = empty_container();
         let mut parser = DocxParser {
             container,
             styles: StyleMap::default(),
@@ -1989,11 +2006,7 @@ mod tests {
             </w:r>
         </w:p>"#;
 
-        let container = crate::container::OoxmlContainer::from_bytes(Vec::new());
-        if container.is_err() {
-            return;
-        }
-        let container = container.unwrap();
+        let container = empty_container();
         let mut parser = DocxParser {
             container,
             styles: StyleMap::default(),
@@ -2025,11 +2038,7 @@ mod tests {
             <w:r><w:t xml:space="preserve">Word1     Word2</w:t></w:r>
         </w:p>"#;
 
-        let container = crate::container::OoxmlContainer::from_bytes(Vec::new());
-        if container.is_err() {
-            return;
-        }
-        let container = container.unwrap();
+        let container = empty_container();
         let mut parser = DocxParser {
             container,
             styles: StyleMap::default(),
@@ -2061,11 +2070,7 @@ mod tests {
             </w:r>
         </w:p>"#;
 
-        let container = crate::container::OoxmlContainer::from_bytes(Vec::new());
-        if container.is_err() {
-            return;
-        }
-        let container = container.unwrap();
+        let container = empty_container();
         let mut parser = DocxParser {
             container,
             styles: StyleMap::default(),
@@ -2093,11 +2098,7 @@ mod tests {
             </w:r>
         </w:p>"#;
 
-        let container = crate::container::OoxmlContainer::from_bytes(Vec::new());
-        if container.is_err() {
-            return;
-        }
-        let container = container.unwrap();
+        let container = empty_container();
         let mut parser = DocxParser {
             container,
             styles: StyleMap::default(),
@@ -2138,11 +2139,7 @@ mod tests {
             <w:r><w:t>text</w:t></w:r>
         </w:p>"#;
 
-        let container = crate::container::OoxmlContainer::from_bytes(Vec::new());
-        if container.is_err() {
-            return;
-        }
-        let container = container.unwrap();
+        let container = empty_container();
         let mut parser = DocxParser {
             container,
             styles: StyleMap::default(),
@@ -2186,11 +2183,7 @@ mod tests {
             <w:r><w:t>text</w:t></w:r>
         </w:p>"#;
 
-        let container = crate::container::OoxmlContainer::from_bytes(Vec::new());
-        if container.is_err() {
-            return;
-        }
-        let container = container.unwrap();
+        let container = empty_container();
         let mut parser = DocxParser {
             container,
             styles: StyleMap::default(),
@@ -2319,11 +2312,7 @@ mod tests {
             <w:r><w:t> more text</w:t></w:r>
         </w:p>"#;
 
-        let container = crate::container::OoxmlContainer::from_bytes(Vec::new());
-        if container.is_err() {
-            return;
-        }
-        let container = container.unwrap();
+        let container = empty_container();
         let mut footnotes = HashMap::new();
         footnotes.insert("2".to_string(), "Footnote content".to_string());
 
@@ -2359,11 +2348,7 @@ mod tests {
             <w:r><w:endnoteReference w:id="1"/></w:r>
         </w:p>"#;
 
-        let container = crate::container::OoxmlContainer::from_bytes(Vec::new());
-        if container.is_err() {
-            return;
-        }
-        let container = container.unwrap();
+        let container = empty_container();
         let mut endnotes = HashMap::new();
         endnotes.insert("1".to_string(), "Endnote content".to_string());
 
@@ -2394,11 +2379,7 @@ mod tests {
             <w:r><w:footnoteReference w:id="99"/></w:r>
         </w:p>"#;
 
-        let container = crate::container::OoxmlContainer::from_bytes(Vec::new());
-        if container.is_err() {
-            return;
-        }
-        let container = container.unwrap();
+        let container = empty_container();
         let mut parser = DocxParser {
             container,
             styles: StyleMap::default(),

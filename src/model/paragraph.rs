@@ -208,6 +208,12 @@ pub struct TextRun {
     /// Revision type for tracked changes (inserted/deleted)
     #[serde(default, skip_serializing_if = "is_default_revision")]
     pub revision: RevisionType,
+
+    /// The label of the footnote or endnote this run refers to, when it is a note reference.
+    /// A reference carries no text of its own; the note it refers to is the
+    /// [`Block::Note`](crate::model::Block::Note) with the same label.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 fn is_default_style(style: &TextStyle) -> bool {
@@ -228,6 +234,15 @@ impl TextRun {
             line_break: false,
             page_break: false,
             revision: RevisionType::None,
+            note: None,
+        }
+    }
+
+    /// A reference to the footnote or endnote labelled `label`.
+    pub fn note_reference(label: impl Into<String>) -> Self {
+        Self {
+            note: Some(label.into()),
+            ..Self::plain("")
         }
     }
 
@@ -240,6 +255,7 @@ impl TextRun {
             line_break: false,
             page_break: false,
             revision: RevisionType::None,
+            note: None,
         }
     }
 
@@ -252,6 +268,7 @@ impl TextRun {
             line_break: false,
             page_break: false,
             revision: RevisionType::None,
+            note: None,
         }
     }
 
@@ -377,6 +394,9 @@ impl Paragraph {
 
         for run in &self.runs {
             text.push_str(&run.text);
+            if let Some(label) = &run.note {
+                text.push_str(&format!("[^{label}]"));
+            }
             if run.line_break {
                 text.push('\n');
             }
@@ -425,10 +445,15 @@ impl Paragraph {
         for run in self.runs.drain(..) {
             // Check if we can merge with the last run
             let should_merge = merged.last().is_some_and(|last: &TextRun| {
-                // Same style and same hyperlink (both None or both Some with same URL)
+                // Only runs that differ in nothing but their text are one run: same style,
+                // same hyperlink, same tracked change (inserted text joined to plain text
+                // loses its mark), and neither a note reference (its label is not text).
                 // Don't merge if the previous run has a line break (preserve the break)
                 last.style == run.style
                     && last.hyperlink == run.hyperlink
+                    && last.revision == run.revision
+                    && last.note.is_none()
+                    && run.note.is_none()
                     && !last.line_break
                     && !last.page_break
             });
@@ -599,6 +624,36 @@ mod tests {
         // Default values should not be serialized
         assert!(!json.contains("heading"));
         assert!(!json.contains("alignment"));
+    }
+
+    #[test]
+    fn merging_keeps_note_references_and_tracked_changes_apart() {
+        let inserted = TextRun {
+            revision: RevisionType::Inserted,
+            ..TextRun::plain("new")
+        };
+        let mut para = Paragraph::new();
+        para.runs = vec![
+            TextRun::plain("text"),
+            TextRun::note_reference("1"),
+            TextRun::plain(" and "),
+            inserted,
+        ];
+        para.merge_adjacent_runs();
+        let shape: Vec<_> = para
+            .runs
+            .iter()
+            .map(|r| (r.text.as_str(), r.note.as_deref(), r.revision))
+            .collect();
+        assert_eq!(
+            shape,
+            [
+                ("text", None, RevisionType::None),
+                ("", Some("1"), RevisionType::None),
+                (" and ", None, RevisionType::None),
+                ("new", None, RevisionType::Inserted),
+            ]
+        );
     }
 
     #[test]
