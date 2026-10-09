@@ -525,7 +525,8 @@ struct FfiSlideRasterOptions {
 /// `out_info`, when not null, receives `{"width":N,"height":N,"gaps":{"shapes":N,
 /// "images":N,"text_runs":N,"charts":N,"graphic_frames":N,"approximated_fills":N},
 /// "substituted_text_runs":N}` — free it with `undoc_free_string`. `approximated_fills`
-/// counts gradients and patterns painted in one of their colors;
+/// counts fills drawn as a stand-in (a pattern in its foreground color, a rectangular
+/// gradient as a radial one, a tiled picture stretched);
 /// `substituted_text_runs` counts text drawn in a face standing in for the one it asks
 /// for — readable, not the slide's own typeface, and not a gap.
 ///

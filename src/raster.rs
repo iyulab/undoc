@@ -50,7 +50,9 @@ pub struct SlideRasterGaps {
     pub charts: u32,
     /// Tables, diagrams (SmartArt) and other graphic frames not drawn.
     pub graphic_frames: u32,
-    /// Fills drawn as a stand-in: a gradient or pattern painted in one of its colors.
+    /// Fills drawn as a stand-in: a pattern in its foreground color, a rectangular or
+    /// shape-following gradient as a radial one, a tiled picture stretched, a gradient line in
+    /// its first color.
     pub approximated_fills: u32,
 }
 

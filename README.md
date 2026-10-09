@@ -542,9 +542,10 @@ if !slide.gaps.is_empty() {
 
 What the renderer cannot paint yet — charts, tables and other graphic frames, custom geometry,
 pictures other than PNG and JPEG, text in a script that needs shaping — is left out and counted
-in `gaps`; the rest of the slide is painted. Gradients and patterns are painted in one of their
-colors and counted as approximated. No font is bundled. Text is drawn in the faces you pass, then those in the directories you
-name, then the system's. A Linux container without fonts draws no text — install a font
+in `gaps`; the rest of the slide is painted. Fills drawn as a stand-in — a pattern in its
+foreground color, a rectangular or shape-following gradient as a radial one, a tiled picture
+stretched — are counted as approximated. No font is bundled. Text is drawn in the faces you pass,
+then those in the directories you name, then the system's. A Linux container without fonts draws no text — install a font
 package (Noto Sans CJK covers Latin and East Asian text) or pass a font directory — and
 reports the runs as gaps. An index the presentation does not have is
 `ErrorKind::SectionOutOfRange`.

@@ -16,8 +16,8 @@ use std::collections::HashMap;
 
 use roxmltree::Node;
 use tiny_skia::{
-    Color, FillRule, FilterQuality, IntSize, Paint, PathBuilder, Pattern, Pixmap, SpreadMode,
-    Stroke, StrokeDash, Transform,
+    Color, FillRule, FilterQuality, GradientStop, IntSize, LinearGradient, Paint, PathBuilder,
+    Pattern, Pixmap, RadialGradient, Shader, SpreadMode, Stroke, StrokeDash, Transform,
 };
 
 use super::raster_text::{breaks_anywhere, is_east_asian, needs_shaping, FontBook};
@@ -88,6 +88,7 @@ impl PptxParser {
             fonts: FontBook::new(&options.fonts, &options.font_dirs, options.system_fonts),
             layout: parts.layout.as_ref().map(|d| d.root_element()),
             master: parts.master.as_ref().map(|d| d.root_element()),
+            theme: parts.theme.as_ref().map(|d| d.root_element()),
             theme_fonts: ThemeFonts::read(parts.theme.as_ref()),
             substituted: 0,
             container: &self.container,
@@ -96,13 +97,19 @@ impl PptxParser {
         };
 
         // Background: the slide's own, else the layout's, else the master's; white without.
+        let to_pixels = Transform::from_scale(scale, scale);
         let background = parts
             .chain()
-            .find_map(|doc| background(doc.root_element(), &colors, &mut painter.gaps))
-            .unwrap_or(Rgba::WHITE);
-        painter.pixmap.fill(background.to_color());
+            .find_map(|doc| painter.background(doc.root_element()));
+        painter.pixmap.fill(Color::WHITE);
+        if let Some(fill) = background {
+            let slide_box = tiny_skia::Rect::from_xywh(0.0, 0.0, cx as f32, cy as f32);
+            let paint = area_paint(&fill, &painter.images, cx as f64, cy as f64, 0.0);
+            if let (Some(rect), Some(paint)) = (slide_box, paint) {
+                painter.pixmap.fill_rect(rect, &paint, to_pixels, None);
+            }
+        }
 
-        let to_pixels = Transform::from_scale(scale, scale);
         let slide_root = parts.slide.root_element();
         let show_master = |root: Node| root.attribute("showMasterSp") != Some("0");
         if let (Some(master), true) = (&parts.master, show_master(slide_root)) {
@@ -322,12 +329,6 @@ struct Rgba {
 }
 
 impl Rgba {
-    const WHITE: Rgba = Rgba {
-        r: 1.0,
-        g: 1.0,
-        b: 1.0,
-        a: 1.0,
-    };
     const BLACK: Rgba = Rgba {
         r: 0.0,
         g: 0.0,
@@ -482,45 +483,184 @@ fn color_child(node: Node, colors: &Colors, placeholder: Option<Rgba>) -> Option
         .find_map(|c| color(c, colors, placeholder))
 }
 
-/// What a fill element paints: `Some(None)` for `noFill`, `Some(Some(c))` for a color, `None`
-/// for anything that is not a fill. Gradients and patterns are painted in one of their colors
-/// and counted as approximated.
-fn fill(node: Node, colors: &Colors, gaps: &mut SlideRasterGaps) -> Option<Option<Rgba>> {
-    match node.tag_name().name() {
-        "noFill" => Some(None),
-        "solidFill" => Some(color_child(node, colors, None)),
-        "gradFill" => {
-            gaps.approximated_fills += 1;
-            let stop = node
-                .descendants()
-                .find(|n| n.has_tag_name((A, "gs")))
-                .and_then(|gs| color_child(gs, colors, None));
-            Some(stop)
+/// What a fill paints.
+#[derive(Debug, Clone)]
+enum Fill {
+    Solid(Rgba),
+    Gradient(Gradient),
+    /// A decoded picture, by its part's path, stretched over the area it fills.
+    Picture(String),
+}
+
+impl Fill {
+    /// The one color a line draws this fill in: a gradient's first stop, counted as
+    /// approximated; a picture draws no line.
+    fn line_color(&self, gaps: &mut SlideRasterGaps) -> Option<Rgba> {
+        match self {
+            Fill::Solid(c) => Some(*c),
+            Fill::Gradient(g) => {
+                gaps.approximated_fills += 1;
+                g.stops.first().map(|s| s.1)
+            }
+            Fill::Picture(_) => {
+                gaps.approximated_fills += 1;
+                None
+            }
         }
-        "pattFill" => {
-            gaps.approximated_fills += 1;
-            Some(child(node, A, "fgClr").and_then(|c| color_child(c, colors, None)))
-        }
-        "blipFill" => {
-            // A background picture; shapes paint theirs themselves.
-            gaps.images += 1;
-            Some(None)
-        }
-        _ => None,
     }
 }
 
-fn background(root: Node, colors: &Colors, gaps: &mut SlideRasterGaps) -> Option<Rgba> {
-    let bg = child(child(root, P, "cSld")?, P, "bg")?;
-    if let Some(pr) = child(bg, P, "bgPr") {
-        return pr
-            .children()
-            .filter(|n| n.is_element())
-            .find_map(|n| fill(n, colors, gaps))
-            .flatten();
+/// A gradient: its stops (position 0–1, color) in order, and how they lie over the area.
+#[derive(Debug, Clone)]
+struct Gradient {
+    stops: Vec<(f32, Rgba)>,
+    kind: GradientKind,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum GradientKind {
+    /// Along a line at `angle` degrees clockwise from the x axis; `scaled` turns the angle
+    /// with the area's proportions, so a 45° gradient runs corner to corner.
+    Linear { angle: f32, scaled: bool },
+    /// Outward from the focus rectangle (`l`, `t`, `r`, `b` insets as fractions of the area),
+    /// the first stop at the focus and the last at the farthest corner.
+    Radial { focus: [f32; 4] },
+}
+
+/// The gradient an `a:gradFill` describes, and whether drawing it is an approximation (a
+/// rectangular or shape-following path is drawn as a radial one). `placeholder` stands for
+/// `phClr`.
+fn gradient(node: Node, colors: &Colors, placeholder: Option<Rgba>) -> Option<(Gradient, bool)> {
+    let mut stops: Vec<(f32, Rgba)> = child(node, A, "gsLst")?
+        .children()
+        .filter(|n| n.has_tag_name((A, "gs")))
+        .filter_map(|gs| {
+            let pos = (num(gs, "pos").unwrap_or(0.0) / 100_000.0).clamp(0.0, 1.0) as f32;
+            Some((pos, color_child(gs, colors, placeholder)?))
+        })
+        .collect();
+    if stops.is_empty() {
+        return None;
     }
-    // A theme background reference; its own color stands in for the theme fill it names.
-    child(bg, P, "bgRef").and_then(|r| color_child(r, colors, None))
+    stops.sort_by(|a, b| a.0.total_cmp(&b.0));
+    if let Some(path) = child(node, A, "path") {
+        let inset = |name: &str| {
+            child(path, A, "fillToRect")
+                .and_then(|r| num(r, name))
+                .map_or(0.0, |v| (v / 100_000.0) as f32)
+        };
+        let focus = [inset("l"), inset("t"), inset("r"), inset("b")];
+        let approximated = path.attribute("path") != Some("circle");
+        return Some((
+            Gradient {
+                stops,
+                kind: GradientKind::Radial { focus },
+            },
+            approximated,
+        ));
+    }
+    let lin = child(node, A, "lin");
+    let angle = lin
+        .and_then(|l| num(l, "ang"))
+        .map_or(0.0, |a| (a / 60_000.0) as f32);
+    let scaled = lin
+        .and_then(|l| l.attribute("scaled"))
+        .is_some_and(|v| v == "1" || v == "true");
+    Some((
+        Gradient {
+            stops,
+            kind: GradientKind::Linear { angle, scaled },
+        },
+        false,
+    ))
+}
+
+/// A gradient shader over a `w` × `h` area (in its own coordinates), its colors made lighter
+/// (`shade` > 0) or darker.
+fn gradient_shader(g: &Gradient, w: f64, h: f64, shade: f32) -> Option<Shader<'static>> {
+    let stops: Vec<GradientStop> = g
+        .stops
+        .iter()
+        .map(|&(pos, c)| GradientStop::new(pos, shaded(c, shade).to_color()))
+        .collect();
+    let (w, h) = (w as f32, h as f32);
+    match g.kind {
+        GradientKind::Linear { angle, scaled } => {
+            let (sin, cos) = angle.to_radians().sin_cos();
+            // A scaled angle is laid out in a unit square and stretched with the area: the
+            // direction keeps its isolines on the stretched ones.
+            let (dx, dy) = if scaled {
+                (cos * h, sin * w)
+            } else {
+                (cos, sin)
+            };
+            let norm = dx.hypot(dy);
+            if norm == 0.0 {
+                return None;
+            }
+            let (dx, dy) = (dx / norm, dy / norm);
+            let half = (w * dx.abs() + h * dy.abs()) / 2.0;
+            let (cx, cy) = (w / 2.0, h / 2.0);
+            LinearGradient::new(
+                tiny_skia::Point::from_xy(cx - dx * half, cy - dy * half),
+                tiny_skia::Point::from_xy(cx + dx * half, cy + dy * half),
+                stops,
+                SpreadMode::Pad,
+                Transform::identity(),
+            )
+        }
+        GradientKind::Radial {
+            focus: [l, t, r, b],
+        } => {
+            let cx = w * (l + (1.0 - l - r) / 2.0);
+            let cy = h * (t + (1.0 - t - b) / 2.0);
+            let radius = [(0.0, 0.0), (w, 0.0), (0.0, h), (w, h)]
+                .iter()
+                .map(|&(x, y)| (x - cx).hypot(y - cy))
+                .fold(0.0, f32::max);
+            let center = tiny_skia::Point::from_xy(cx, cy);
+            RadialGradient::new(
+                center,
+                0.0,
+                center,
+                radius.max(1.0),
+                stops,
+                SpreadMode::Pad,
+                Transform::identity(),
+            )
+        }
+    }
+}
+
+/// How `fill` paints a `w` × `h` area in its own coordinates, lighter (`shade` > 0) or darker;
+/// `None` when it paints nothing (a picture that did not decode, a degenerate gradient).
+fn area_paint<'p>(
+    fill: &Fill,
+    images: &'p HashMap<String, Option<Pixmap>>,
+    w: f64,
+    h: f64,
+    shade: f32,
+) -> Option<Paint<'p>> {
+    let shader = match fill {
+        Fill::Solid(c) => Shader::SolidColor(shaded(*c, shade).to_color()),
+        Fill::Gradient(g) => gradient_shader(g, w, h, shade)?,
+        Fill::Picture(path) => {
+            let image = images.get(path)?.as_ref()?;
+            let (iw, ih) = (image.width() as f32, image.height() as f32);
+            Pattern::new(
+                image.as_ref(),
+                SpreadMode::Pad,
+                FilterQuality::Bilinear,
+                1.0,
+                Transform::from_scale(w as f32 / iw, h as f32 / ih),
+            )
+        }
+    };
+    Some(Paint {
+        shader,
+        anti_alias: true,
+        ..Paint::default()
+    })
 }
 
 struct Painter<'a> {
@@ -533,6 +673,8 @@ struct Painter<'a> {
     /// The layout's and master's root elements, for what placeholders inherit.
     layout: Option<Node<'a, 'a>>,
     master: Option<Node<'a, 'a>>,
+    /// The theme's root element, for the fill styles shapes and backgrounds name.
+    theme: Option<Node<'a, 'a>>,
     theme_fonts: ThemeFonts,
     /// Text runs drawn in a face standing in for the one they ask for.
     substituted: u32,
@@ -547,7 +689,7 @@ impl<'a> Painter<'a> {
     /// The relationships a reference in `node` resolves against: those of the part `node` is
     /// in. A placeholder's picture fill or a list style's picture bullet can come from the
     /// layout or the master, and its `r:embed` names a relationship of that part.
-    fn rels_of(&self, node: Node) -> &'a HashMap<String, String> {
+    fn rels_of(&self, node: Node) -> Option<&'a HashMap<String, String>> {
         let same = |root: Option<Node>| {
             root.is_some_and(|r| {
                 std::ptr::eq(
@@ -556,13 +698,98 @@ impl<'a> Painter<'a> {
                 )
             })
         };
-        if same(self.master) {
-            &self.rels[2]
+        // A theme's own relationships are not read: a picture in a theme fill style is not
+        // found, and counts as one not painted.
+        if same(self.theme) {
+            None
+        } else if same(self.master) {
+            Some(&self.rels[2])
         } else if same(self.layout) {
-            &self.rels[1]
+            Some(&self.rels[1])
         } else {
-            &self.rels[0]
+            Some(&self.rels[0])
         }
+    }
+
+    /// What the fill element `node` paints: `Some(None)` for `noFill`, `Some(Some(_))` for a
+    /// fill, `None` for anything that is not a fill. `placeholder` stands for `phClr`, the color
+    /// of the style reference that named a theme fill. Patterns are painted in their foreground
+    /// color, rectangular and shape-following gradients as radial ones, and tiled pictures
+    /// stretched, each counted as approximated; a picture that cannot be shown counts as one
+    /// not painted.
+    fn fill(&mut self, node: Node, placeholder: Option<Rgba>) -> Option<Option<Fill>> {
+        match node.tag_name().name() {
+            "noFill" => Some(None),
+            "solidFill" => Some(color_child(node, self.colors, placeholder).map(Fill::Solid)),
+            "gradFill" => Some(gradient(node, self.colors, placeholder).map(
+                |(g, approximated)| {
+                    if approximated {
+                        self.gaps.approximated_fills += 1;
+                    }
+                    Fill::Gradient(g)
+                },
+            )),
+            "pattFill" => {
+                self.gaps.approximated_fills += 1;
+                Some(
+                    child(node, A, "fgClr")
+                        .and_then(|c| color_child(c, self.colors, placeholder))
+                        .map(Fill::Solid),
+                )
+            }
+            "blipFill" => match self.blip_image(node) {
+                Some(path) => {
+                    if child(node, A, "tile").is_some() {
+                        self.gaps.approximated_fills += 1;
+                    }
+                    Some(Some(Fill::Picture(path)))
+                }
+                None => {
+                    self.gaps.images += 1;
+                    Some(None)
+                }
+            },
+            _ => None,
+        }
+    }
+
+    /// The theme fill style a style reference (`a:fillRef`, `p:bgRef`) names: `idx` 1, 2, …
+    /// in the theme's `fillStyleLst`, 1001, 1002, … in its `bgFillStyleLst`, 0 for none. Its
+    /// `phClr` is the reference's own color, which also stands in when the theme has no such
+    /// style.
+    fn style_fill(&mut self, reference: Node) -> Option<Fill> {
+        let idx = num(reference, "idx").unwrap_or(0.0) as usize;
+        if idx == 0 {
+            return None;
+        }
+        let color = color_child(reference, self.colors, None);
+        let (list, i) = if idx >= 1001 {
+            ("bgFillStyleLst", idx - 1001)
+        } else {
+            ("fillStyleLst", idx - 1)
+        };
+        let style = self
+            .theme
+            .and_then(|t| t.descendants().find(|n| n.has_tag_name((A, list))))
+            .and_then(|l| l.children().filter(|n| n.is_element()).nth(i));
+        match style.and_then(|s| self.fill(s, color)) {
+            Some(fill) => fill,
+            None => color.map(Fill::Solid),
+        }
+    }
+
+    /// What a slide, layout or master paints behind its shapes: its `p:bgPr` fill, or the theme
+    /// style its `p:bgRef` names.
+    fn background(&mut self, root: Node) -> Option<Fill> {
+        let bg = child(child(root, P, "cSld")?, P, "bg")?;
+        if let Some(pr) = child(bg, P, "bgPr") {
+            return pr
+                .children()
+                .filter(|n| n.is_element())
+                .find_map(|n| self.fill(n, None))
+                .flatten();
+        }
+        child(bg, P, "bgRef").and_then(|r| self.style_fill(r))
     }
 
     /// The picture a `blip`-holding element (`blipFill`, `buBlip`) names, decoded and cached;
@@ -570,7 +797,7 @@ impl<'a> Painter<'a> {
     fn blip_image(&mut self, holder: Node) -> Option<String> {
         let path = child(holder, A, "blip")
             .and_then(|b| b.attribute((R, "embed")))
-            .and_then(|id| self.rels_of(holder).get(id))
+            .and_then(|id| self.rels_of(holder)?.get(id))
             .cloned()?;
         if !self.images.contains_key(&path) {
             let decoded = self
@@ -680,27 +907,35 @@ impl<'a> Painter<'a> {
         let style = std::iter::once(node)
             .chain(inherited.iter().copied())
             .find_map(|n| child(n, P, "style"));
+        let colors = self.colors;
         let style_color = |name: &str| {
             style
                 .and_then(|s| child(s, A, name))
                 .filter(|r| r.attribute("idx") != Some("0"))
-                .and_then(|r| color_child(r, self.colors, None))
+                .and_then(|r| color_child(r, colors, None))
         };
+        let fill_ref = style
+            .and_then(|s| child(s, A, "fillRef"))
+            .filter(|r| r.attribute("idx") != Some("0"));
         let shape_fill = match picture {
             Some(_) => None,
-            None => fill_node
-                .and_then(|n| fill(n, self.colors, &mut self.gaps))
-                .unwrap_or_else(|| style_color("fillRef")),
+            None => match fill_node.and_then(|n| self.fill(n, None)) {
+                Some(fill) => fill,
+                None => fill_ref.and_then(|r| self.style_fill(r)),
+            },
         };
         let ln = sp_prs.iter().find_map(|s| child(*s, A, "ln"));
+        let ln_fill = ln.and_then(|l| {
+            l.children()
+                .filter(|n| n.is_element())
+                .find_map(|n| self.fill(n, None))
+        });
+        let line_color = match ln_fill {
+            Some(fill) => fill.and_then(|f| f.line_color(&mut self.gaps)),
+            None => style_color("lnRef"),
+        };
         let line = LineStyle {
-            color: ln
-                .and_then(|l| {
-                    l.children()
-                        .filter(|n| n.is_element())
-                        .find_map(|n| fill(n, self.colors, &mut self.gaps))
-                })
-                .unwrap_or_else(|| style_color("lnRef")),
+            color: line_color,
             width: ln.and_then(|l| num(l, "w")).map(|w| w as f32).or_else(|| {
                 style
                     .and_then(|s| child(s, A, "lnRef"))
@@ -727,7 +962,9 @@ impl<'a> Painter<'a> {
         }
         if shape_fill.is_some() || line.color.is_some() {
             match &geometry {
-                Some(geometry) => self.outlines(geometry, shape_fill, &line, transform),
+                Some(geometry) => {
+                    self.outlines(geometry, shape_fill.as_ref(), &line, (w, h), transform)
+                }
                 None => self.gaps.shapes += 1,
             }
         }
@@ -798,8 +1035,9 @@ impl<'a> Painter<'a> {
     fn outlines(
         &mut self,
         geometry: &geometry::Geometry,
-        shape_fill: Option<Rgba>,
+        shape_fill: Option<&Fill>,
         line: &LineStyle,
+        (w, h): (f64, f64),
         transform: Transform,
     ) {
         let width = line.width.unwrap_or(9_525.0).max(1.0);
@@ -812,19 +1050,16 @@ impl<'a> Painter<'a> {
             let ended = (outline.stroke && line.color.is_some())
                 .then(|| arrowheads(&outline.segments, line.ends, width))
                 .flatten();
-            if let Some(color) = shape_fill {
-                let color = match outline.fill {
+            if let Some(fill) = shape_fill {
+                let shade = match outline.fill {
                     PathFill::None => None,
-                    PathFill::Norm => Some(color),
-                    PathFill::Lighten => Some(shaded(color, 0.4)),
-                    PathFill::LightenLess => Some(shaded(color, 0.2)),
-                    PathFill::Darken => Some(shaded(color, -0.4)),
-                    PathFill::DarkenLess => Some(shaded(color, -0.2)),
+                    PathFill::Norm => Some(0.0),
+                    PathFill::Lighten => Some(0.4),
+                    PathFill::LightenLess => Some(0.2),
+                    PathFill::Darken => Some(-0.4),
+                    PathFill::DarkenLess => Some(-0.2),
                 };
-                if let Some(color) = color {
-                    let mut paint = Paint::default();
-                    paint.set_color(color.to_color());
-                    paint.anti_alias = true;
+                if let Some(paint) = shade.and_then(|s| area_paint(fill, &self.images, w, h, s)) {
                     self.pixmap
                         .fill_path(&path, &paint, FillRule::EvenOdd, transform, None);
                 }
@@ -1880,7 +2115,7 @@ fn group_transform(xfrm: Node) -> Transform {
     t.post_translate(ox, oy)
 }
 
-/// Lighter (`amount` > 0) or darker toward white or black.
+/// Lighter (`amount` > 0) or darker toward white or black; unchanged at 0.
 fn shaded(c: Rgba, amount: f32) -> Rgba {
     let mix = |v: f32| {
         if amount > 0.0 {

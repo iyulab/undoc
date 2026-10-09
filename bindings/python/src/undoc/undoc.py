@@ -182,7 +182,8 @@ class RenderedSection:
     ``gaps`` counts, by kind, what the renderer left out — ``shapes`` (custom geometry),
     ``images`` (pictures other than PNG and JPEG), ``text_runs`` (text no face covers, in a
     script that needs shaping, or vertical), ``charts``, ``graphic_frames`` (tables, diagrams)
-    and ``approximated_fills`` (gradients and patterns painted in one of their colors). All
+    and ``approximated_fills`` (fills drawn as a stand-in: a pattern in its foreground color,
+    a rectangular or shape-following gradient as a radial one, a tiled picture stretched). All
     zero means everything was painted; otherwise the rest of the slide still was.
 
     ``substituted_text_runs`` counts text drawn in a face standing in for the one it asks

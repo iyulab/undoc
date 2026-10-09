@@ -51,7 +51,10 @@ public sealed class RenderGaps
     [JsonPropertyName("graphic_frames")]
     public uint GraphicFrames { get; init; }
 
-    /// <summary>Fills drawn as a stand-in: a gradient or pattern painted in one of its colors.</summary>
+    /// <summary>
+    /// Fills drawn as a stand-in: a pattern in its foreground color, a rectangular or
+    /// shape-following gradient as a radial one, a tiled picture stretched.
+    /// </summary>
     [JsonPropertyName("approximated_fills")]
     public uint ApproximatedFills { get; init; }
 

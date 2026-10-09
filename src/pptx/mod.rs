@@ -14,5 +14,5 @@ pub use parser::PptxParser;
 
 /// The slide-raster tests' presentation builders, for tests elsewhere in the crate that need
 /// a presentation (the C ABI's render entry point).
-#[cfg(all(test, feature = "raster"))]
+#[cfg(all(test, feature = "ffi"))]
 pub(crate) use raster::tests as raster_fixtures;

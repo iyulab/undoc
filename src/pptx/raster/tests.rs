@@ -66,6 +66,9 @@ struct DeckParts<'a> {
     slide_rels: &'a [(&'a str, &'a str, &'a str)],
     layout_rels: &'a [(&'a str, &'a str, &'a str)],
     master_rels: &'a [(&'a str, &'a str, &'a str)],
+    /// The theme's `fillStyleLst` and `bgFillStyleLst` contents.
+    fill_styles: &'a str,
+    bg_fill_styles: &'a str,
     extra: &'a [(&'a str, &'a [u8])],
 }
 
@@ -77,6 +80,8 @@ fn deck_parts(shapes: &str, deck: DeckParts) -> Vec<u8> {
         slide_rels,
         layout_rels,
         master_rels,
+        fill_styles,
+        bg_fill_styles,
         extra,
     } = deck;
     let mut slide_rel_list = vec![("rId1", "slideLayout", "../slideLayouts/slideLayout1.xml")];
@@ -137,7 +142,7 @@ fn deck_parts(shapes: &str, deck: DeckParts) -> Vec<u8> {
         (
             "ppt/theme/theme1.xml",
             format!(
-                r#"<?xml version="1.0"?><a:theme {NS} name="T"><a:themeElements><a:clrScheme name="C"><a:dk1><a:sysClr val="windowText" lastClr="000000"/></a:dk1><a:lt1><a:sysClr val="window" lastClr="FFFFFF"/></a:lt1><a:dk2><a:srgbClr val="44546A"/></a:dk2><a:lt2><a:srgbClr val="E7E6E6"/></a:lt2><a:accent1><a:srgbClr val="4472C4"/></a:accent1><a:accent2><a:srgbClr val="ED7D31"/></a:accent2><a:accent3><a:srgbClr val="A5A5A5"/></a:accent3><a:accent4><a:srgbClr val="FFC000"/></a:accent4><a:accent5><a:srgbClr val="5B9BD5"/></a:accent5><a:accent6><a:srgbClr val="70AD47"/></a:accent6><a:hlink><a:srgbClr val="0563C1"/></a:hlink><a:folHlink><a:srgbClr val="954F72"/></a:folHlink></a:clrScheme><a:fmtScheme name="F"><a:fillStyleLst/><a:lnStyleLst><a:ln w="6350"/><a:ln w="38100"/><a:ln w="19050"/></a:lnStyleLst></a:fmtScheme></a:themeElements></a:theme>"#
+                r#"<?xml version="1.0"?><a:theme {NS} name="T"><a:themeElements><a:clrScheme name="C"><a:dk1><a:sysClr val="windowText" lastClr="000000"/></a:dk1><a:lt1><a:sysClr val="window" lastClr="FFFFFF"/></a:lt1><a:dk2><a:srgbClr val="44546A"/></a:dk2><a:lt2><a:srgbClr val="E7E6E6"/></a:lt2><a:accent1><a:srgbClr val="4472C4"/></a:accent1><a:accent2><a:srgbClr val="ED7D31"/></a:accent2><a:accent3><a:srgbClr val="A5A5A5"/></a:accent3><a:accent4><a:srgbClr val="FFC000"/></a:accent4><a:accent5><a:srgbClr val="5B9BD5"/></a:accent5><a:accent6><a:srgbClr val="70AD47"/></a:accent6><a:hlink><a:srgbClr val="0563C1"/></a:hlink><a:folHlink><a:srgbClr val="954F72"/></a:folHlink></a:clrScheme><a:fmtScheme name="F"><a:fillStyleLst>{fill_styles}</a:fillStyleLst><a:lnStyleLst><a:ln w="6350"/><a:ln w="38100"/><a:ln w="19050"/></a:lnStyleLst><a:bgFillStyleLst>{bg_fill_styles}</a:bgFillStyleLst></a:fmtScheme></a:themeElements></a:theme>"#
             ),
         ),
     ];
@@ -372,7 +377,7 @@ fn what_is_not_painted_is_counted() {
     let pic = r#"<p:pic><p:nvPicPr><p:cNvPr id="5" name="P"/><p:cNvPicPr/><p:nvPr/></p:nvPicPr><p:blipFill><a:blip r:embed="rId9"/></p:blipFill><p:spPr/></p:pic>"#;
     let chart = r#"<p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="6" name="Ch"/><p:cNvGraphicFramePr/><p:nvPr/></p:nvGraphicFramePr><p:xfrm/><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/chart"/></a:graphic></p:graphicFrame>"#;
     let custom = r#"<p:sp><p:nvSpPr><p:cNvPr id="7" name="X"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="100" cy="100"/></a:xfrm><a:custGeom/><a:solidFill><a:srgbClr val="000000"/></a:solidFill></p:spPr></p:sp>"#;
-    let gradient = r#"<a:gradFill><a:gsLst><a:gs pos="0"><a:srgbClr val="FF0000"/></a:gs><a:gs pos="100000"><a:srgbClr val="0000FF"/></a:gs></a:gsLst></a:gradFill>"#;
+    let gradient = r#"<a:pattFill prst="pct50"><a:fgClr><a:srgbClr val="FF0000"/></a:fgClr><a:bgClr><a:srgbClr val="0000FF"/></a:bgClr></a:pattFill>"#;
     let shapes = format!(
         "{}{pic}{chart}{custom}{}",
         shape("rect", (0, 0, 10, 10), "", &solid("FF0000"), text),
@@ -393,7 +398,7 @@ fn what_is_not_painted_is_counted() {
     assert_eq!(
         pixel(&slide, 80, 25),
         RED,
-        "a gradient stands in as its first stop"
+        "a pattern stands in as its foreground color"
     );
 }
 
@@ -868,4 +873,185 @@ fn a_picture_bullet_draws_its_picture() {
         dark(&missing, (30, 0, 60, 24)) > 5,
         "the text is still drawn"
     );
+}
+
+// ---------------------------------------------------------------------------------------------
+// Gradients, theme fill styles and backgrounds
+
+/// A red-to-blue gradient fill with `shape` (`<a:lin …/>` or `<a:path …>`) after its stops.
+fn red_to_blue(shape: &str) -> String {
+    format!(
+        r#"<a:gradFill><a:gsLst><a:gs pos="0"><a:srgbClr val="FF0000"/></a:gs><a:gs pos="100000"><a:srgbClr val="0000FF"/></a:gs></a:gsLst>{shape}</a:gradFill><a:ln><a:noFill/></a:ln>"#
+    )
+}
+
+/// Mostly red (r > b by a margin), mostly blue, or a mix.
+fn redness(slide: &crate::raster::RasteredSlide, x: u32, y: u32) -> i32 {
+    let [r, _, b] = pixel(slide, x, y);
+    r as i32 - b as i32
+}
+
+#[test]
+fn a_linear_gradient_runs_from_its_first_stop_to_its_last() {
+    // Angle 0: left to right across the 100 × 50 slide.
+    let slide = render(deck(
+        &shape(
+            "rect",
+            (0, 0, 100, 50),
+            "",
+            &red_to_blue(r#"<a:lin ang="0"/>"#),
+            "",
+        ),
+        "",
+    ));
+    assert!(redness(&slide, 2, 25) > 200, "the start is red");
+    assert!(redness(&slide, 97, 25) < -200, "the end is blue");
+    assert!(redness(&slide, 50, 25).abs() < 30, "the middle is half way");
+    assert!(
+        slide.gaps.is_empty(),
+        "drawn, not approximated: {:?}",
+        slide.gaps
+    );
+
+    // 90°: top to bottom.
+    let slide = render(deck(
+        &shape(
+            "rect",
+            (0, 0, 100, 50),
+            "",
+            &red_to_blue(r#"<a:lin ang="5400000"/>"#),
+            "",
+        ),
+        "",
+    ));
+    assert!(redness(&slide, 50, 1) > 200, "the top is red");
+    assert!(redness(&slide, 50, 48) < -200, "the bottom is blue");
+}
+
+/// A scaled 45° gradient runs corner to corner of a wide area; unscaled, it is a true 45°.
+#[test]
+fn a_scaled_angle_follows_the_area() {
+    let scaled = render(deck(
+        &shape(
+            "rect",
+            (0, 0, 100, 50),
+            "",
+            &red_to_blue(r#"<a:lin ang="2700000" scaled="1"/>"#),
+            "",
+        ),
+        "",
+    ));
+    // Corner to corner: the other diagonal's corners are both half way.
+    assert!(
+        redness(&scaled, 98, 1).abs() < 40,
+        "{}",
+        redness(&scaled, 98, 1)
+    );
+    assert!(
+        redness(&scaled, 1, 48).abs() < 40,
+        "{}",
+        redness(&scaled, 1, 48)
+    );
+    let unscaled = render(deck(
+        &shape(
+            "rect",
+            (0, 0, 100, 50),
+            "",
+            &red_to_blue(r#"<a:lin ang="2700000"/>"#),
+            "",
+        ),
+        "",
+    ));
+    assert!(
+        redness(&unscaled, 98, 1) < redness(&unscaled, 1, 48) - 40,
+        "at a true 45°, the top right is further along than the bottom left"
+    );
+}
+
+#[test]
+fn a_circular_path_gradient_spreads_from_its_focus() {
+    let centre =
+        r#"<a:path path="circle"><a:fillToRect l="50000" t="50000" r="50000" b="50000"/></a:path>"#;
+    let slide = render(deck(
+        &shape("rect", (0, 0, 100, 50), "", &red_to_blue(centre), ""),
+        "",
+    ));
+    assert!(redness(&slide, 50, 25) > 200, "the focus is the first stop");
+    assert!(redness(&slide, 1, 1) < -150, "the corner is the last");
+    assert!(slide.gaps.is_empty(), "{:?}", slide.gaps);
+
+    // A rectangular path is drawn the same way, and counted as approximated.
+    let rect =
+        r#"<a:path path="rect"><a:fillToRect l="50000" t="50000" r="50000" b="50000"/></a:path>"#;
+    let slide = render(deck(
+        &shape("rect", (0, 0, 100, 50), "", &red_to_blue(rect), ""),
+        "",
+    ));
+    assert_eq!(slide.gaps.approximated_fills, 1);
+}
+
+/// A style's `fillRef` names a theme fill style; its `phClr` is the reference's own color.
+#[test]
+fn a_fill_reference_paints_the_theme_style_it_names() {
+    let styles = r#"<a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:gradFill><a:gsLst><a:gs pos="0"><a:schemeClr val="phClr"/></a:gs><a:gs pos="100000"><a:srgbClr val="0000FF"/></a:gs></a:gsLst><a:lin ang="0"/></a:gradFill>"#;
+    let styled = |idx: u32| {
+        let style = format!(
+            r#"<p:style><a:lnRef idx="0"><a:srgbClr val="000000"/></a:lnRef><a:fillRef idx="{idx}"><a:srgbClr val="FF0000"/></a:fillRef><a:effectRef idx="0"><a:srgbClr val="000000"/></a:effectRef><a:fontRef idx="minor"><a:srgbClr val="000000"/></a:fontRef></p:style>"#
+        );
+        render(deck_parts(
+            &shape("rect", (0, 0, 100, 50), "", "", &style),
+            DeckParts {
+                fill_styles: styles,
+                ..DeckParts::default()
+            },
+        ))
+    };
+    let solid = styled(1);
+    assert_eq!(
+        pixel(&solid, 50, 25),
+        RED,
+        "the first style, in the reference's color"
+    );
+    let gradient = styled(2);
+    assert!(
+        redness(&gradient, 2, 25) > 200,
+        "the second: a gradient from phClr"
+    );
+    assert!(redness(&gradient, 97, 25) < -200);
+}
+
+/// A background reference names a theme background style (1001 is the first).
+#[test]
+fn a_background_reference_paints_the_theme_style_it_names() {
+    let bg = r#"<p:bg><p:bgRef idx="1001"><a:srgbClr val="FF0000"/></p:bgRef></p:bg>"#;
+    let slide = render(deck_parts(
+        "",
+        DeckParts {
+            master_bg: bg,
+            bg_fill_styles: r#"<a:gradFill><a:gsLst><a:gs pos="0"><a:schemeClr val="phClr"/></a:gs><a:gs pos="100000"><a:srgbClr val="0000FF"/></a:gs></a:gsLst><a:lin ang="0"/></a:gradFill>"#,
+            ..DeckParts::default()
+        },
+    ));
+    assert!(redness(&slide, 2, 25) > 200, "phClr, the reference's red");
+    assert!(redness(&slide, 97, 25) < -200, "the style's blue");
+}
+
+/// A picture background is stretched over the slide, found through the relationships of the
+/// part that holds it.
+#[test]
+fn a_picture_background_covers_the_slide() {
+    let png = red_blue_png(40, 20);
+    let bg = r#"<p:bg><p:bgPr><a:blipFill><a:blip r:embed="rId4"/><a:stretch><a:fillRect/></a:stretch></a:blipFill><a:effectLst/></p:bgPr></p:bg>"#;
+    let slide = render(deck_parts(
+        "",
+        DeckParts {
+            master_bg: bg,
+            master_rels: &[("rId4", "image", "../media/bg.png")],
+            extra: &[("ppt/media/bg.png", &png)],
+            ..DeckParts::default()
+        },
+    ));
+    assert_eq!(pixel(&slide, 20, 25), RED);
+    assert_eq!(pixel(&slide, 80, 25), BLUE);
+    assert!(slide.gaps.is_empty(), "{:?}", slide.gaps);
 }

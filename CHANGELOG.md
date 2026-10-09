@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Slide gradients are drawn.** A linear gradient follows its angle (`a:lin`, with `scaled`
+  stretching the angle with the shape, so 45° runs corner to corner); a circular path gradient
+  spreads from its focus rectangle (`a:fillToRect`) to the farthest corner. Rectangular and
+  shape-following paths are drawn as circular ones and counted as approximated. Gradients and
+  pictures fill the slide background too (`p:bgPr`), and a gradient line is drawn in its first
+  color, counted as approximated.
+- **Theme fill styles are drawn.** A shape's `a:fillRef` and a background's `p:bgRef` paint the
+  theme style they name (`fillStyleLst`, and `bgFillStyleLst` from 1001), with `phClr` taken from
+  the reference's own color; the color alone stood in for the style before.
+
 ## [0.18.0] - 2026-10-09
 
 ### Added
