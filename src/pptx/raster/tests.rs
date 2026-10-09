@@ -61,6 +61,8 @@ fn deck_full(
 #[derive(Default)]
 struct DeckParts<'a> {
     master_bg: &'a str,
+    /// The layout's background, which covers the master's.
+    layout_bg: &'a str,
     master_shapes: &'a str,
     layout_shapes: &'a str,
     slide_rels: &'a [(&'a str, &'a str, &'a str)],
@@ -77,6 +79,7 @@ struct DeckParts<'a> {
 fn deck_parts(shapes: &str, deck: DeckParts) -> Vec<u8> {
     let DeckParts {
         master_bg,
+        layout_bg,
         master_shapes,
         layout_shapes,
         slide_rels,
@@ -130,7 +133,7 @@ fn deck_parts(shapes: &str, deck: DeckParts) -> Vec<u8> {
         ),
         (
             "ppt/slideLayouts/slideLayout1.xml",
-            format!(r#"<?xml version="1.0"?><p:sldLayout {NS}><p:cSld><p:spTree><p:nvGrpSpPr/><p:grpSpPr/>{layout_shapes}</p:spTree></p:cSld></p:sldLayout>"#),
+            format!(r#"<?xml version="1.0"?><p:sldLayout {NS}><p:cSld>{layout_bg}<p:spTree><p:nvGrpSpPr/><p:grpSpPr/>{layout_shapes}</p:spTree></p:cSld></p:sldLayout>"#),
         ),
         (
             "ppt/slideLayouts/_rels/slideLayout1.xml.rels",
@@ -751,6 +754,38 @@ fn an_inherited_picture_fill_resolves_in_the_part_it_comes_from() {
     }
 }
 
+/// A picture the layout or the master draws as a shape of its own — a template's background
+/// art — is painted under the slide, found through that part's relationships.
+#[test]
+fn a_picture_drawn_by_the_layout_or_master_is_painted() {
+    let png = red_blue_png(40, 20);
+    let art = picture((0, 0, 100, 50), "rId7", "");
+    // The slide has its own rId7, pointing elsewhere: it must not be the one used.
+    let slide_rels = [("rId7", "image", "../media/missing.png")];
+    let image = [("rId7", "image", "../media/image1.png")];
+    let media: [(&str, &[u8]); 1] = [("ppt/media/image1.png", &png)];
+    let from_layout = DeckParts {
+        layout_shapes: &art,
+        slide_rels: &slide_rels,
+        layout_rels: &image,
+        extra: &media,
+        ..DeckParts::default()
+    };
+    let from_master = DeckParts {
+        master_shapes: &art,
+        slide_rels: &slide_rels,
+        master_rels: &image,
+        extra: &media,
+        ..DeckParts::default()
+    };
+    for (part, deck) in [("layout", from_layout), ("master", from_master)] {
+        let slide = render(deck_parts("", deck));
+        assert_eq!(pixel(&slide, 20, 25), RED, "from the {part}");
+        assert_eq!(pixel(&slide, 80, 25), BLUE, "from the {part}");
+        assert!(slide.gaps.is_empty(), "from the {part}: {:?}", slide.gaps);
+    }
+}
+
 #[test]
 fn numbers_are_written_in_their_scheme() {
     use super::autonumber;
@@ -1063,6 +1098,34 @@ fn a_picture_background_covers_the_slide() {
             master_bg: bg,
             master_rels: &[("rId4", "image", "../media/bg.png")],
             extra: &[("ppt/media/bg.png", &png)],
+            ..DeckParts::default()
+        },
+    ));
+    assert_eq!(pixel(&slide, 20, 25), RED);
+    assert_eq!(pixel(&slide, 80, 25), BLUE);
+    assert!(slide.gaps.is_empty(), "{:?}", slide.gaps);
+}
+
+/// A layout's picture background covers the master's, and is found through the layout's own
+/// relationships — the shape of a template whose design is a picture per layout.
+#[test]
+fn a_layout_picture_background_covers_the_masters() {
+    let png = red_blue_png(40, 20);
+    let bg = |id: &str| {
+        format!(
+            r#"<p:bg><p:bgPr><a:blipFill dpi="0" rotWithShape="1"><a:blip r:embed="{id}" cstate="print"><a:lum/></a:blip><a:srcRect/><a:stretch><a:fillRect/></a:stretch></a:blipFill><a:effectLst/></p:bgPr></p:bg>"#
+        )
+    };
+    let (layout_bg, master_bg) = (bg("rId2"), bg("rId9"));
+    let slide = render(deck_parts(
+        "",
+        DeckParts {
+            layout_bg: &layout_bg,
+            master_bg: &master_bg,
+            layout_rels: &[("rId2", "image", "../media/layout.png")],
+            // The master's picture is not there: painting it would be a gap.
+            master_rels: &[("rId9", "image", "../media/missing.png")],
+            extra: &[("ppt/media/layout.png", &png)],
             ..DeckParts::default()
         },
     ));
