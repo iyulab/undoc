@@ -66,6 +66,8 @@ pub mod error;
 #[cfg(feature = "raster")]
 mod geometry;
 pub mod model;
+#[cfg(feature = "raster")]
+pub mod raster;
 #[cfg(any(feature = "xlsx", feature = "xls"))]
 mod sheet;
 pub mod streaming;

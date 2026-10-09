@@ -14,17 +14,17 @@ use std::path::Path;
 
 /// Slide info from presentation.xml.
 #[derive(Debug, Clone)]
-struct SlideInfo {
+pub(super) struct SlideInfo {
     #[allow(dead_code)]
     id: String,
-    rel_id: String,
+    pub(super) rel_id: String,
 }
 
 /// Parser for PPTX (PowerPoint) presentations.
 pub struct PptxParser {
-    container: OoxmlContainer,
-    slides: Vec<SlideInfo>,
-    relationships: HashMap<String, String>,
+    pub(super) container: OoxmlContainer,
+    pub(super) slides: Vec<SlideInfo>,
+    pub(super) relationships: HashMap<String, String>,
 }
 
 impl PptxParser {

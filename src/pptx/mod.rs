@@ -5,5 +5,7 @@
 
 mod bullets;
 mod parser;
+#[cfg(feature = "raster")]
+mod raster;
 
 pub use parser::PptxParser;

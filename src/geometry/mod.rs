@@ -10,9 +10,6 @@
 //!
 //! Angles are in 60,000ths of a degree, as everywhere in DrawingML.
 
-// TODO: consumed by the slide rasterizer, which lands next; until then only the tests read it.
-#![allow(dead_code)]
-
 // Generated: rustfmt would rewrap the one-line definitions and the file would stop matching
 // what `scripts/gen_preset_geometry.py` writes.
 #[rustfmt::skip]

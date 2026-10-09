@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Slide rasterization, first stage (feature `raster`, off by default).**
+  `PptxParser::render_slide(index, &SlideRasterOptions { dpi })` paints a slide to a
+  `RasteredSlide` (RGBA, `to_png()`): the background, the master's and layout's own shapes and
+  the slide's shape tree, with every DrawingML preset shape drawn from the ECMA-376 definitions,
+  groups, rotation and flips, solid fills and lines through the theme and color map (with
+  `lumMod`/`lumOff`/`tint`/`shade`/`alpha`), and style references. What is not painted yet —
+  text, pictures, charts, tables and other graphic frames, custom geometry — is counted in
+  `SlideRasterGaps`; a gradient or pattern fill is painted in one of its colors and counted as
+  approximated.
+
 ### Fixed
 
 - **Link and image destinations read back as written.** A target with a parenthesis that does
