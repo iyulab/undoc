@@ -231,6 +231,17 @@ fn decode_utf16_be(bytes: &[u8]) -> Result<String> {
         .map_err(|e| Error::Encoding(format!("UTF-16 big-endian XML is malformed: {e}")))
 }
 
+/// The names of an archive's entries.
+///
+/// `zip` reports each name as a result because it decodes it: as UTF-8, and otherwise as
+/// CP437. CP437 maps every byte, so decoding cannot fail — a name it could not decode would
+/// not be one a part could be read by either.
+fn entry_names<R: Read + Seek>(
+    archive: &zip::ZipArchive<R>,
+) -> impl Iterator<Item = std::borrow::Cow<'_, str>> {
+    archive.file_names().filter_map(|name| name.ok())
+}
+
 impl OoxmlContainer {
     fn rels_path_for_part(part_path: &str) -> String {
         if part_path.is_empty() || part_path == "/" {
@@ -324,21 +335,20 @@ impl OoxmlContainer {
     /// Check if a file exists in the archive.
     pub fn exists(&self, path: &str) -> bool {
         let archive = self.archive.borrow();
-        let result = archive.file_names().any(|n| n == path);
+        let result = entry_names(&archive).any(|n| n == path);
         result
     }
 
     /// List all files in the archive.
     pub fn list_files(&self) -> Vec<String> {
         let archive = self.archive.borrow();
-        archive.file_names().map(String::from).collect()
+        entry_names(&archive).map(String::from).collect()
     }
 
     /// List files matching a prefix.
     pub fn list_files_with_prefix(&self, prefix: &str) -> Vec<String> {
         let archive = self.archive.borrow();
-        archive
-            .file_names()
+        entry_names(&archive)
             .filter(|n| n.starts_with(prefix))
             .map(String::from)
             .collect()

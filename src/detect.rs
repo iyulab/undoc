@@ -293,7 +293,10 @@ pub fn detect_format_from_reader<R: Read + Seek>(reader: R) -> Result<FormatType
 fn detect_by_folder_structure<R: Read + Seek>(
     archive: &mut zip::ZipArchive<R>,
 ) -> Result<FormatType> {
-    let names: Vec<String> = archive.file_names().map(String::from).collect();
+    let names = archive
+        .file_names()
+        .map(|name| name.map(String::from))
+        .collect::<zip::result::ZipResult<Vec<String>>>()?;
 
     // Check for format-specific paths
     let has_word = names.iter().any(|n| n.starts_with("word/"));

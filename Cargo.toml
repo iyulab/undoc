@@ -58,7 +58,7 @@ skrifa = { version = "0.48", optional = true }
 zune-jpeg = { version = "0.5", optional = true }
 # ZIP handling — default-features disabled: lzma/bzip2/xz/zstd require C toolchain
 # OOXML files exclusively use Deflate; dropping other compression codecs is safe.
-zip = { version = "8.6", default-features = false, features = ["deflate"] }
+zip = { version = "9.0", default-features = false, features = ["deflate"] }
 
 # OLE/CFB container inspection. Only used by format detection, to tell an ECMA-376
 # encrypted OOXML package (a CFB holding `EncryptedPackage`) apart from a legacy binary
