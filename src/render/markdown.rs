@@ -753,13 +753,10 @@ fn render_run(
         text = format!("<u>{}</u>", text);
     }
 
-    // Handle hyperlinks
+    // Handle hyperlinks. The link keeps its brackets whatever `escape_special_chars` says:
+    // that option is about how text looks, not about where the link ends.
     if let Some(ref url) = run.hyperlink {
-        text = format!(
-            "[{}]({})",
-            text,
-            markdown::link_destination(url, ctx.in_table_cell)
-        );
+        text = markdown::link(&text, url, None, ctx.in_table_cell);
     }
 
     // Apply revision markup for ShowMarkup mode
@@ -1371,6 +1368,26 @@ mod tests {
             md.contains("[doc](<a\\<b\\>c d>)"),
             "angle brackets not backslash-escaped: {md:?}"
         );
+    }
+
+    /// A `]` in the link text ends the link early unless it is escaped — and that holds with
+    /// `escape_special_chars` off, which is about how text looks, not where a link ends.
+    #[test]
+    fn test_hyperlink_text_with_brackets_stays_one_link() {
+        let mut para = Paragraph::new();
+        para.runs
+            .push(TextRun::link("see [3] or ]", "https://example.com"));
+        for escape_special_chars in [true, false] {
+            let options = RenderOptions {
+                escape_special_chars,
+                ..RenderOptions::default()
+            };
+            let md = render_paragraph(&para, &options, None, &empty_resource_map());
+            assert!(
+                md.contains(r"[see \[3\] or \]](https://example.com)"),
+                "escape_special_chars={escape_special_chars}: {md:?}"
+            );
+        }
     }
 
     /// `RenderOptions::default()` leaves `refine` off — the last line of

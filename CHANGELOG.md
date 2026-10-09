@@ -45,6 +45,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   inside a table cell no longer ends the cell. Image alt text additionally escapes `<` and a
   character reference. The writers now come from `unparser-shared` 0.4, shared with the other
   parsers of the family.
+- **A `]` in a hyperlink's text no longer ends the link.** Link text was written with the display
+  escaping only, which leaves brackets alone — so `see [3]` linked `see [3` and printed the rest —
+  and with `escape_special_chars` off nothing was escaped at all. Brackets in link text, a line
+  break, and a trailing backslash are now written so the link stays whole whatever that option
+  says (`unparser-shared` 0.5).
 
 ## [0.17.0] - 2026-10-09
 
