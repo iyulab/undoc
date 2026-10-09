@@ -47,11 +47,9 @@ impl PptxParser {
         index: usize,
         options: &SlideRasterOptions,
     ) -> Result<RasteredSlide> {
-        let info = self.slides.get(index).ok_or_else(|| {
-            Error::InvalidData(format!(
-                "slide index {index} is out of range: the presentation has {} slides",
-                self.slides.len()
-            ))
+        let info = self.slides.get(index).ok_or(Error::SectionOutOfRange {
+            index,
+            count: self.slides.len(),
         })?;
         let target = self.relationships.get(&info.rel_id).ok_or_else(|| {
             Error::MissingComponent(format!("slide relationship {}", info.rel_id))
@@ -1620,4 +1618,4 @@ fn to_path(segments: &[Segment]) -> Option<tiny_skia::Path> {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

@@ -16,9 +16,10 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// reason takes the next free number instead. Treat an unrecognised value as a
 /// generic failure rather than as an error.
 ///
-/// Values `100` and above are reserved for FFI-boundary reasons that have no core
-/// `Error` counterpart (null arguments, caught panics, output that cannot cross the
-/// ABI); see the `UNDOC_ERROR_*` constants in the `ffi` module.
+/// Values `100..=199` are reserved for FFI-boundary reasons that have no core `Error`
+/// counterpart (null arguments, caught panics, output that cannot cross the ABI); see the
+/// `UNDOC_ERROR_*` constants in the `ffi` module. Reasons added after `13` come from
+/// undoc's own band, `300..=399`.
 ///
 /// This enum is `#[non_exhaustive]`: match it with a `_ =>` arm and treat an unfamiliar
 /// reason as a generic failure. That is the same contract the C, C# and Python surfaces
@@ -60,6 +61,9 @@ pub enum ErrorKind {
     Encrypted = 12,
     /// [`Error::Render`]
     Render = 13,
+    /// [`Error::SectionOutOfRange`] — undoc's own band
+    /// ([`unparser_shared::kind::library_band`]`(1)`).
+    SectionOutOfRange = 300,
 }
 
 /// Errors that can occur during document processing.
@@ -121,6 +125,15 @@ pub enum Error {
     /// Error during rendering.
     #[error("Render error: {0}")]
     Render(String),
+
+    /// A section was asked for by an index the document does not have.
+    #[error("section {index} is out of range: the document has {count} sections")]
+    SectionOutOfRange {
+        /// The index asked for (0-based).
+        index: usize,
+        /// How many sections the document has.
+        count: usize,
+    },
 }
 
 impl From<zip::result::ZipError> for Error {
@@ -212,6 +225,7 @@ impl Error {
             Error::ResourceNotFound(_) => ErrorKind::ResourceNotFound,
             Error::Encrypted => ErrorKind::Encrypted,
             Error::Render(_) => ErrorKind::Render,
+            Error::SectionOutOfRange { .. } => ErrorKind::SectionOutOfRange,
         }
     }
 }
@@ -271,6 +285,10 @@ mod tests {
         );
         assert_eq!(Error::Encrypted.kind(), ErrorKind::Encrypted);
         assert_eq!(Error::Render("bad table".into()).kind(), ErrorKind::Render);
+        assert_eq!(
+            Error::SectionOutOfRange { index: 3, count: 2 }.kind(),
+            ErrorKind::SectionOutOfRange
+        );
     }
 
     /// Both XML variants are the same failure reason, so they must share one number —
@@ -371,5 +389,6 @@ mod tests {
         ResourceNotFound = 11,
         Encrypted = 12,
         Render = 13,
+        SectionOutOfRange = 300,
     }
 }

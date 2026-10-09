@@ -2,7 +2,7 @@
  * undoc - Microsoft Office Document Extraction Library
  *
  * High-performance library for extracting content from DOCX, XLSX, and PPTX files.
- * Converts documents to Markdown, plain text, or JSON.
+ * Converts documents to Markdown, plain text, or JSON, and renders slides to PNG.
  *
  * Copyright (c) 2024 iyulab
  * MIT License
@@ -34,8 +34,8 @@ typedef struct UndocDocument UndocDocument;
 /**
  * Why the last call failed, as returned by undoc_last_error_kind().
  *
- * Values 1..=13 mirror the library's own failure reasons; values 100+ are raised at
- * the FFI boundary and have no library-side counterpart. These numbers are a stable
+ * Values 1..=13 and 300..=399 mirror the library's own failure reasons; values
+ * 100..=199 are raised at the FFI boundary and have no library-side counterpart. These numbers are a stable
  * ABI contract: a new reason takes the next free number and existing ones are never
  * reused or renumbered. Treat an unrecognised value as a generic failure rather than
  * as an error, so that a newer library stays usable by older callers.
@@ -57,7 +57,8 @@ typedef enum UndocErrorKind {
     UNDOC_ERROR_RENDER             = 13,  /* Rendering the output failed */
     UNDOC_ERROR_INVALID_ARGUMENT   = 100, /* An argument was NULL or not valid UTF-8 */
     UNDOC_ERROR_PANIC              = 101, /* A panic was caught at the boundary */
-    UNDOC_ERROR_INVALID_OUTPUT     = 102  /* Output holds a NUL byte, cannot cross ABI */
+    UNDOC_ERROR_INVALID_OUTPUT     = 102, /* Output holds a NUL byte, cannot cross ABI */
+    UNDOC_ERROR_SECTION_OUT_OF_RANGE = 300 /* A section index the document does not have */
 } UndocErrorKind;
 
 /**
@@ -225,6 +226,35 @@ char* undoc_get_resource_info(const UndocDocument* doc, const char* resource_id)
 uint8_t* undoc_get_resource_data(const UndocDocument* doc, const char* resource_id, size_t* out_len);
 
 /**
+ * Render a section to a PNG. A section of a .pptx presentation is a slide; it is painted
+ * by the parser the handle keeps, with no second read of the file.
+ *
+ * Anything the renderer cannot paint yet (charts, tables and other graphic frames, custom
+ * geometry, pictures other than PNG and JPEG, text no face covers) is left out and counted
+ * in out_info; the rest of the slide is painted. No font is bundled: on a host without
+ * fonts, pass font_dirs, or text is counted as a gap.
+ *
+ * @param doc Document handle
+ * @param index 0-based section index, in presentation order.
+ * @param options_json NULL, or {"dpi": 150, "font_dirs": ["..."], "system_fonts": true}:
+ *        resolution, directories searched (with subdirectories) for font files, and
+ *        whether the system's font directories are searched too.
+ * @param out_len Receives the PNG length in bytes (0 on error). Left untouched when doc or
+ *                out_len is NULL.
+ * @param out_info NULL, or receives {"width":N,"height":N,"gaps":{"shapes":N,"images":N,
+ *        "text_runs":N,"charts":N,"graphic_frames":N,"approximated_fills":N},
+ *        "substituted_text_runs":N} (must be freed with undoc_free_string).
+ * @return PNG bytes (must be freed with undoc_free_bytes() together with *out_len), or
+ *         NULL on error (UNDOC_ERROR_SECTION_OUT_OF_RANGE, UNDOC_ERROR_UNSUPPORTED_FORMAT
+ *         for a document that is not a .pptx presentation, UNDOC_ERROR_INVALID_ARGUMENT).
+ */
+uint8_t* undoc_render_section(const UndocDocument* doc,
+                              int index,
+                              const char* options_json,
+                              size_t* out_len,
+                              char** out_info);
+
+/**
  * Free a string allocated by this library.
  *
  * @param str String pointer (may be NULL)
@@ -232,10 +262,10 @@ uint8_t* undoc_get_resource_data(const UndocDocument* doc, const char* resource_
 void undoc_free_string(char* str);
 
 /**
- * Free a buffer returned by undoc_get_resource_data().
+ * Free a buffer returned by undoc_get_resource_data() or undoc_render_section().
  *
  * @param data Buffer pointer (may be NULL)
- * @param len The length undoc_get_resource_data() wrote to out_len
+ * @param len The length the call wrote to out_len
  */
 void undoc_free_bytes(uint8_t* data, size_t len);
 

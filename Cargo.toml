@@ -38,7 +38,9 @@ async = ["tokio"]
 # Slide rasterization (in progress): DrawingML geometry drawn from the ECMA-376 preset shape
 # definitions. Off by default.
 raster = ["pptx", "dep:tiny-skia", "dep:roxmltree", "dep:skrifa", "dep:zune-jpeg"]
-ffi = []
+# The C ABI includes slide rasterization (`undoc_render_section`), as unpdf's includes page
+# rasterization: the bindings built on it are the consumer path for a rendered slide.
+ffi = ["raster"]
 # Shape-refinement pass (RenderOptions.refine). Enables unparser-shared's
 # `refine` module, and with it a fresh pulldown-cmark + pulldown-cmark-to-cmark (undoc has no other use
 # for a CommonMark parser) -- measured +21.5% wasm bundle size. On by default

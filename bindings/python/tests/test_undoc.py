@@ -658,6 +658,7 @@ class TestErrorKind:
         assert (kinds.STYLE_NOT_FOUND, kinds.RESOURCE_NOT_FOUND) == (10, 11)
         assert (kinds.ENCRYPTED, kinds.RENDER) == (12, 13)
         assert (kinds.INVALID_ARGUMENT, kinds.PANIC, kinds.INVALID_OUTPUT) == (100, 101, 102)
+        assert kinds.SECTION_OUT_OF_RANGE == 300
 
 
 def test_a_library_path_naming_no_file_is_an_error(tmp_path):

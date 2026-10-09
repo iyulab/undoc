@@ -44,6 +44,7 @@ class ErrorKind(IntEnum):
     INVALID_ARGUMENT = 100
     PANIC = 101
     INVALID_OUTPUT = 102
+    SECTION_OUT_OF_RANGE = 300
 
 
 class UndocError(Exception):

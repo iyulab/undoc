@@ -6,7 +6,8 @@
 //! # Memory Management
 //!
 //! All strings returned by this library must be freed using `undoc_free_string`.
-//! All document handles must be freed using `undoc_free_document`.
+//! Byte buffers (`undoc_get_resource_data`, `undoc_render_section`) are freed with
+//! `undoc_free_bytes`. All document handles must be freed using `undoc_free_document`.
 //!
 //! # Error Handling
 //!
@@ -65,13 +66,14 @@
 //! }
 //! ```
 
-use std::ffi::{c_char, c_int};
+use std::ffi::{c_char, c_int, CString};
 use std::ptr;
 
 use unparser_shared::ffi::{self, invalid_argument, FfiError, LastErrorSlot};
 
 use crate::error::ErrorKind;
 use crate::model::Document;
+use crate::pptx::PptxParser;
 use crate::render::{JsonFormat, RenderOptions};
 
 // Thread-local storage for the last error message and its classification. Declared
@@ -86,8 +88,8 @@ unparser_shared::export_last_error_abi!(LAST_ERROR, undoc_last_error, undoc_last
 /// `undoc_last_error_kind` value when no error is recorded on this thread.
 pub const UNDOC_ERROR_NONE: c_int = unparser_shared::kind::NONE;
 
-// Values 1..=13 are [`ErrorKind`] discriminants — core failure reasons.
-// Values 100+ are FFI-boundary reasons with no core `Error` counterpart.
+// Values 1..=13 and 300..=399 are [`ErrorKind`] discriminants — core failure reasons.
+// Values 100..=199 are FFI-boundary reasons with no core `Error` counterpart.
 
 /// An argument was null or not valid UTF-8.
 pub const UNDOC_ERROR_INVALID_ARGUMENT: c_int = unparser_shared::kind::INVALID_ARGUMENT;
@@ -106,9 +108,66 @@ fn json_err(e: serde_json::Error) -> FfiError {
     (ErrorKind::Render as c_int, e.to_string())
 }
 
+/// A parsed document, and — for a presentation — the parser that read it, kept so a
+/// slide can be painted ([`undoc_render_section`]) without reading the file again. The
+/// parser holds the package in memory, as it did while parsing. Reads as the [`Document`].
+pub struct HeldDocument {
+    document: Document,
+    presentation: Option<PptxParser>,
+}
+
+impl HeldDocument {
+    fn parse_file(path: &str) -> crate::Result<Self> {
+        if crate::detect_format_from_path(path)? == crate::FormatType::Pptx {
+            return Self::presentation(PptxParser::open(path)?);
+        }
+        crate::parse_file(path).map(Self::from)
+    }
+
+    fn parse_bytes(data: &[u8]) -> crate::Result<Self> {
+        if crate::detect_format_from_bytes(data)? == crate::FormatType::Pptx {
+            return Self::presentation(PptxParser::from_bytes(data.to_vec())?);
+        }
+        crate::parse_bytes(data).map(Self::from)
+    }
+
+    fn presentation(mut parser: PptxParser) -> crate::Result<Self> {
+        let document = parser.parse()?;
+        Ok(Self {
+            document,
+            presentation: Some(parser),
+        })
+    }
+}
+
+// Every entry point runs inside `catch_unwind`, which asks whether a handle observed after
+// a caught panic could be in a broken state. The document is read-only. The presentation
+// parser is only read after parsing: its slide list and relationships do not change, and
+// its archive sits behind a `RefCell` whose borrow is released as a panic unwinds — a
+// later read seeks to the entry it wants, whatever the last read left behind.
+impl std::panic::RefUnwindSafe for HeldDocument {}
+impl std::panic::UnwindSafe for HeldDocument {}
+
+impl From<Document> for HeldDocument {
+    fn from(document: Document) -> Self {
+        Self {
+            document,
+            presentation: None,
+        }
+    }
+}
+
+impl std::ops::Deref for HeldDocument {
+    type Target = Document;
+
+    fn deref(&self) -> &Document {
+        &self.document
+    }
+}
+
 unparser_shared::export_handle! {
     /// Opaque handle to a parsed document.
-    handle UndocDocument { inner: Document },
+    handle UndocDocument { inner: HeldDocument },
 
     /// Free a document handle.
     ///
@@ -153,8 +212,8 @@ pub unsafe extern "C" fn undoc_parse_file(path: *const c_char) -> *mut UndocDocu
     let result: Result<*mut UndocDocument, FfiError> = ffi::catch(|| {
         let path_str = unparser_shared::with_c_str!(path)?;
 
-        crate::parse_file(path_str)
-            .map(|doc| Box::into_raw(Box::new(UndocDocument { inner: doc })))
+        HeldDocument::parse_file(path_str)
+            .map(|inner| Box::into_raw(Box::new(UndocDocument { inner })))
             .map_err(ffi_err)
     });
 
@@ -186,8 +245,8 @@ pub unsafe extern "C" fn undoc_parse_bytes(data: *const u8, len: usize) -> *mut 
     let result: Result<*mut UndocDocument, FfiError> = ffi::catch(|| {
         let bytes = std::slice::from_raw_parts(data, len);
 
-        crate::parse_bytes(bytes)
-            .map(|doc| Box::into_raw(Box::new(UndocDocument { inner: doc })))
+        HeldDocument::parse_bytes(bytes)
+            .map(|inner| Box::into_raw(Box::new(UndocDocument { inner })))
             .map_err(ffi_err)
     });
 
@@ -437,6 +496,128 @@ unparser_shared::export_string_getter!(
     }
 );
 
+/// Deserializable mirror of [`SlideRasterOptions`](crate::raster::SlideRasterOptions) for
+/// `undoc_render_section`: `{"dpi": 150, "font_dirs": ["..."], "system_fonts": true}`.
+/// Every field is optional.
+#[derive(serde::Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+struct FfiSlideRasterOptions {
+    dpi: Option<f32>,
+    font_dirs: Vec<String>,
+    system_fonts: Option<bool>,
+}
+
+/// Rasterize a section to a PNG. A section of a presentation is a slide.
+///
+/// The slide is painted by the parser the handle keeps — the same package, and no second
+/// read of the file. What the rasterizer cannot paint yet (charts, tables and other
+/// graphic frames, custom geometry, pictures in formats other than PNG and JPEG, text no
+/// face covers) is left out and counted in `out_info`; the rest of the slide is painted.
+///
+/// `index` is 0-based, in presentation order.
+///
+/// `options_json`: null, or `{"dpi": 150, "font_dirs": ["..."], "system_fonts": true}` —
+/// resolution in dots per inch (default 150), directories searched with their
+/// subdirectories for font files, and whether the system's font directories are searched
+/// too (default true). No face is bundled: on a host without fonts, pass `font_dirs`, or
+/// text is reported as a gap.
+///
+/// `out_info`, when not null, receives `{"width":N,"height":N,"gaps":{"shapes":N,
+/// "images":N,"text_runs":N,"charts":N,"graphic_frames":N,"approximated_fills":N},
+/// "substituted_text_runs":N}` — free it with `undoc_free_string`. `approximated_fills`
+/// counts gradients and patterns painted in one of their colors;
+/// `substituted_text_runs` counts text drawn in a face standing in for the one it asks
+/// for — readable, not the slide's own typeface, and not a gap.
+///
+/// # Safety
+///
+/// - `doc` must be a valid document handle from `undoc_parse_file` or `undoc_parse_bytes`.
+/// - `options_json` must be null or a valid null-terminated UTF-8 string.
+/// - `out_len` must be a valid pointer; `out_info` must be null or a valid pointer.
+/// - Returns null on error (`SECTION_OUT_OF_RANGE` for an index the presentation does not
+///   have, `UNSUPPORTED_FORMAT` for a document that is not a `.pptx` presentation,
+///   `INVALID_ARGUMENT` for bad options); see `undoc_last_error`.
+/// - The returned PNG must be freed with `undoc_free_bytes`.
+#[no_mangle]
+pub unsafe extern "C" fn undoc_render_section(
+    doc: *const UndocDocument,
+    index: c_int,
+    options_json: *const c_char,
+    out_len: *mut usize,
+    out_info: *mut *mut c_char,
+) -> *mut u8 {
+    LAST_ERROR.with(|slot| slot.clear());
+    if doc.is_null() || out_len.is_null() {
+        LAST_ERROR
+            .with(|slot| slot.set_error(&invalid_argument("doc and out_len must not be null")));
+        return ptr::null_mut();
+    }
+    *out_len = 0;
+    if !out_info.is_null() {
+        *out_info = ptr::null_mut();
+    }
+
+    let result: Result<(Vec<u8>, String), FfiError> = ffi::catch(|| {
+        let options: FfiSlideRasterOptions = if options_json.is_null() {
+            FfiSlideRasterOptions::default()
+        } else {
+            let json = unparser_shared::ffi::c_str_utf8(options_json)?;
+            serde_json::from_str(json).map_err(|e| invalid_argument(e.to_string()))?
+        };
+        let dpi = options.dpi.unwrap_or(150.0);
+        if !(dpi.is_finite() && dpi > 0.0) {
+            return Err(invalid_argument(format!(
+                "dpi must be a positive number, got {dpi}"
+            )));
+        }
+        let index = usize::try_from(index)
+            .map_err(|_| invalid_argument(format!("index must not be negative, got {index}")))?;
+        let presentation = (*doc).inner.presentation.as_ref().ok_or_else(|| {
+            ffi_err(crate::Error::UnsupportedFormat(
+                "rendering a section is supported for .pptx presentations".to_string(),
+            ))
+        })?;
+        let raster_options = crate::raster::SlideRasterOptions {
+            dpi,
+            font_dirs: options.font_dirs.into_iter().map(Into::into).collect(),
+            system_fonts: options.system_fonts.unwrap_or(true),
+            ..Default::default()
+        };
+        let slide = presentation
+            .render_slide(index, &raster_options)
+            .map_err(ffi_err)?;
+        let g = slide.gaps;
+        let info = serde_json::json!({
+            "width": slide.width,
+            "height": slide.height,
+            "gaps": {
+                "shapes": g.shapes,
+                "images": g.images,
+                "text_runs": g.text_runs,
+                "charts": g.charts,
+                "graphic_frames": g.graphic_frames,
+                "approximated_fills": g.approximated_fills,
+            },
+            "substituted_text_runs": slide.substituted_text_runs,
+        });
+        Ok((slide.to_png(), info.to_string()))
+    });
+
+    match result {
+        Ok((png, info)) => {
+            if !out_info.is_null() {
+                *out_info = CString::new(info).map_or(ptr::null_mut(), CString::into_raw);
+            }
+            *out_len = png.len();
+            Box::into_raw(png.into_boxed_slice()) as *mut u8
+        }
+        Err(error) => {
+            LAST_ERROR.with(|slot| slot.set_error(&error));
+            ptr::null_mut()
+        }
+    }
+}
+
 unparser_shared::export_bytes_getter!(
     /// Get resource binary data.
     ///
@@ -598,7 +779,7 @@ mod tests {
     #[test]
     fn test_plain_text_empty_document_returns_non_null_empty_string() {
         let doc = Box::into_raw(Box::new(UndocDocument {
-            inner: Document::new(),
+            inner: Document::new().into(),
         }));
 
         let text = unsafe { undoc_plain_text(doc) };
@@ -615,7 +796,7 @@ mod tests {
     #[test]
     fn test_last_error_kind_is_none_after_success() {
         let doc = Box::into_raw(Box::new(UndocDocument {
-            inner: Document::new(),
+            inner: Document::new().into(),
         }));
 
         let text = unsafe { undoc_plain_text(doc) };
@@ -676,7 +857,7 @@ mod tests {
     #[test]
     fn test_resource_not_found_kind() {
         let doc = Box::into_raw(Box::new(UndocDocument {
-            inner: Document::new(),
+            inner: Document::new().into(),
         }));
         let id = CString::new("rIdMissing").unwrap();
 
@@ -701,7 +882,7 @@ mod tests {
         assert_ne!(undoc_last_error_kind(), UNDOC_ERROR_NONE);
 
         let doc = Box::into_raw(Box::new(UndocDocument {
-            inner: Document::new(),
+            inner: Document::new().into(),
         }));
 
         assert_eq!(unsafe { undoc_section_count(doc) }, 0);
@@ -722,7 +903,7 @@ mod tests {
     #[test]
     fn test_absent_metadata_is_not_reported_as_a_failure() {
         let doc = Box::into_raw(Box::new(UndocDocument {
-            inner: Document::new(),
+            inner: Document::new().into(),
         }));
 
         assert!(unsafe { undoc_get_title(doc) }.is_null());
@@ -743,7 +924,9 @@ mod tests {
         let mut document = Document::new();
         document.metadata.title = Some("has\0interior nul".to_string());
         document.metadata.author = Some("also\0bad".to_string());
-        let doc = Box::into_raw(Box::new(UndocDocument { inner: document }));
+        let doc = Box::into_raw(Box::new(UndocDocument {
+            inner: document.into(),
+        }));
 
         assert!(unsafe { undoc_get_title(doc) }.is_null());
         assert_eq!(undoc_last_error_kind(), UNDOC_ERROR_INVALID_OUTPUT);
@@ -764,7 +947,7 @@ mod tests {
         assert_ne!(undoc_last_error_kind(), UNDOC_ERROR_NONE);
 
         let doc = Box::into_raw(Box::new(UndocDocument {
-            inner: Document::new(),
+            inner: Document::new().into(),
         }));
         let text = unsafe { undoc_plain_text(doc) };
         assert!(!text.is_null());
@@ -779,7 +962,7 @@ mod tests {
     #[test]
     fn test_get_resource_ids_empty_document_returns_non_null_empty_json() {
         let doc = Box::into_raw(Box::new(UndocDocument {
-            inner: Document::new(),
+            inner: Document::new().into(),
         }));
 
         let ids = unsafe { undoc_get_resource_ids(doc) };
@@ -799,7 +982,7 @@ mod tests {
     #[test]
     fn test_rejected_arguments_leave_out_len_untouched() {
         let doc = Box::into_raw(Box::new(UndocDocument {
-            inner: Document::new(),
+            inner: Document::new().into(),
         }));
         let id = CString::new("rId1").unwrap();
         const SEEDED: usize = 0xDEAD;
@@ -831,5 +1014,161 @@ mod tests {
             undoc_free_document(ptr::null_mut());
             undoc_free_string(ptr::null_mut());
         }
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // undoc_render_section
+
+    use crate::pptx::raster_fixtures::{deck, shape, solid};
+
+    /// Parses `data`, panicking with the recorded error if that fails.
+    fn parse(data: &[u8]) -> *mut UndocDocument {
+        let doc = unsafe { undoc_parse_bytes(data.as_ptr(), data.len()) };
+        assert!(
+            !doc.is_null(),
+            "parse failed: kind {}",
+            undoc_last_error_kind()
+        );
+        doc
+    }
+
+    /// A 100 × 50 pt slide with a red rectangle in its left half.
+    fn red_deck() -> Vec<u8> {
+        deck(&shape("rect", (0, 0, 50, 50), "", &solid("FF0000"), ""), "")
+    }
+
+    #[test]
+    fn test_render_section_paints_a_slide_to_png_with_its_report() {
+        let doc = parse(&red_deck());
+        let options = CString::new(r#"{"dpi": 72, "system_fonts": false}"#).unwrap();
+        let mut len = 0usize;
+        let mut info: *mut c_char = ptr::null_mut();
+        let png = unsafe { undoc_render_section(doc, 0, options.as_ptr(), &mut len, &mut info) };
+        assert!(!png.is_null(), "kind {}", undoc_last_error_kind());
+        assert_eq!(undoc_last_error_kind(), UNDOC_ERROR_NONE);
+
+        let bytes = unsafe { std::slice::from_raw_parts(png, len) }.to_vec();
+        unsafe { undoc_free_bytes(png, len) };
+        assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
+        // The IHDR chunk: 100 × 50 pixels at 72 dpi, where a point is a pixel.
+        assert_eq!(u32::from_be_bytes(bytes[16..20].try_into().unwrap()), 100);
+        assert_eq!(u32::from_be_bytes(bytes[20..24].try_into().unwrap()), 50);
+
+        let info: serde_json::Value = serde_json::from_str(&take_string(info)).unwrap();
+        assert_eq!(info["width"], 100);
+        assert_eq!(info["height"], 50);
+        for gap in [
+            "shapes",
+            "images",
+            "text_runs",
+            "charts",
+            "graphic_frames",
+            "approximated_fills",
+        ] {
+            assert_eq!(info["gaps"][gap], 0, "{gap}: {info}");
+        }
+        assert_eq!(info["substituted_text_runs"], 0);
+
+        unsafe { undoc_free_document(doc) };
+    }
+
+    /// The default resolution is 150 dpi, and `out_info` may be null.
+    #[test]
+    fn test_render_section_defaults_and_optional_report() {
+        let doc = parse(&red_deck());
+        let mut len = 0usize;
+        let png = unsafe { undoc_render_section(doc, 0, ptr::null(), &mut len, ptr::null_mut()) };
+        assert!(!png.is_null(), "kind {}", undoc_last_error_kind());
+        let bytes = unsafe { std::slice::from_raw_parts(png, len) };
+        // 100 pt at 150 dpi.
+        assert_eq!(u32::from_be_bytes(bytes[16..20].try_into().unwrap()), 208);
+        unsafe { undoc_free_bytes(png, len) };
+        unsafe { undoc_free_document(doc) };
+    }
+
+    #[test]
+    fn test_render_section_reports_an_index_the_presentation_does_not_have() {
+        let doc = parse(&red_deck());
+        let mut len = 7usize;
+        let mut info: *mut c_char = ptr::null_mut();
+        let png = unsafe { undoc_render_section(doc, 1, ptr::null(), &mut len, &mut info) };
+        assert!(png.is_null());
+        assert_eq!(len, 0);
+        assert!(info.is_null());
+        assert_eq!(
+            undoc_last_error_kind(),
+            ErrorKind::SectionOutOfRange as c_int
+        );
+        assert_eq!(undoc_last_error_kind(), 300);
+        let message = unsafe { CStr::from_ptr(undoc_last_error()) }
+            .to_str()
+            .unwrap();
+        assert!(message.contains("section 1"), "{message}");
+
+        let png = unsafe { undoc_render_section(doc, -1, ptr::null(), &mut len, &mut info) };
+        assert!(png.is_null());
+        assert_eq!(undoc_last_error_kind(), UNDOC_ERROR_INVALID_ARGUMENT);
+        unsafe { undoc_free_document(doc) };
+    }
+
+    #[test]
+    fn test_render_section_of_a_document_that_is_not_a_presentation() {
+        let doc = parse(&hello_docx());
+        let mut len = 0usize;
+        let png = unsafe { undoc_render_section(doc, 0, ptr::null(), &mut len, ptr::null_mut()) };
+        assert!(png.is_null());
+        assert_eq!(
+            undoc_last_error_kind(),
+            ErrorKind::UnsupportedFormat as c_int
+        );
+        unsafe { undoc_free_document(doc) };
+    }
+
+    #[test]
+    fn test_render_section_rejects_bad_options_and_null_arguments() {
+        let doc = parse(&red_deck());
+        let mut len = 0usize;
+        for json in [
+            r#"{"dpi": 0}"#,
+            r#"{"dpi": -3}"#,
+            r#"{"fonts": []}"#,
+            "not json",
+        ] {
+            let options = CString::new(json).unwrap();
+            let png = unsafe {
+                undoc_render_section(doc, 0, options.as_ptr(), &mut len, ptr::null_mut())
+            };
+            assert!(png.is_null(), "{json}");
+            assert_eq!(
+                undoc_last_error_kind(),
+                UNDOC_ERROR_INVALID_ARGUMENT,
+                "{json}"
+            );
+        }
+        let png =
+            unsafe { undoc_render_section(doc, 0, ptr::null(), ptr::null_mut(), ptr::null_mut()) };
+        assert!(png.is_null());
+        assert_eq!(undoc_last_error_kind(), UNDOC_ERROR_INVALID_ARGUMENT);
+        let png =
+            unsafe { undoc_render_section(ptr::null(), 0, ptr::null(), &mut len, ptr::null_mut()) };
+        assert!(png.is_null());
+        assert_eq!(undoc_last_error_kind(), UNDOC_ERROR_INVALID_ARGUMENT);
+        unsafe { undoc_free_document(doc) };
+    }
+
+    /// The file-path entry point keeps the presentation too.
+    #[test]
+    fn test_render_section_after_parsing_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("deck.pptx");
+        std::fs::write(&path, red_deck()).unwrap();
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+        let doc = unsafe { undoc_parse_file(c_path.as_ptr()) };
+        assert!(!doc.is_null());
+        let mut len = 0usize;
+        let png = unsafe { undoc_render_section(doc, 0, ptr::null(), &mut len, ptr::null_mut()) };
+        assert!(!png.is_null(), "kind {}", undoc_last_error_kind());
+        unsafe { undoc_free_bytes(png, len) };
+        unsafe { undoc_free_document(doc) };
     }
 }

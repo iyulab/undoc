@@ -27,7 +27,7 @@ fn rels(items: &[(&str, &str, &str)]) -> String {
 
 /// A presentation of one 100 × 50 pt slide whose shape tree is `shapes`, with a layout, a
 /// master (background `master_bg`, which may be empty) and a theme (`accent1` 4472C4).
-fn deck(shapes: &str, master_bg: &str) -> Vec<u8> {
+pub(crate) fn deck(shapes: &str, master_bg: &str) -> Vec<u8> {
     deck_with(shapes, master_bg, "")
 }
 
@@ -118,7 +118,7 @@ fn deck_full(
 
 /// A preset shape at `(x, y)` points, `w × h` points, with `props` inside its `spPr` after
 /// the geometry, and `extra` after the `spPr` (a style, a text body).
-fn shape(
+pub(crate) fn shape(
     prst: &str,
     (x, y, w, h): (u32, u32, u32, u32),
     xfrm_attrs: &str,
@@ -134,7 +134,7 @@ fn shape(
     )
 }
 
-fn solid(hex: &str) -> String {
+pub(crate) fn solid(hex: &str) -> String {
     format!(r#"<a:solidFill><a:srgbClr val="{hex}"/></a:solidFill><a:ln><a:noFill/></a:ln>"#)
 }
 
@@ -290,9 +290,13 @@ fn what_is_not_painted_is_counted() {
 #[test]
 fn a_slide_index_out_of_range_is_an_error() {
     let parser = PptxParser::from_bytes(deck("", "")).unwrap();
-    assert!(parser
+    let err = parser
         .render_slide(1, &SlideRasterOptions::default())
-        .is_err());
+        .unwrap_err();
+    assert!(
+        matches!(err, crate::Error::SectionOutOfRange { index: 1, count: 1 }),
+        "{err:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------------------------

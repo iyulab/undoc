@@ -186,6 +186,7 @@ public class ErrorKindTests
         Assert.Equal(100, (int)UndocErrorKind.InvalidArgument);
         Assert.Equal(101, (int)UndocErrorKind.Panic);
         Assert.Equal(102, (int)UndocErrorKind.InvalidOutput);
+        Assert.Equal(300, (int)UndocErrorKind.SectionOutOfRange);
     }
 }
 

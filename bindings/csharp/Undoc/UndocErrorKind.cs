@@ -64,4 +64,7 @@ public enum UndocErrorKind
 
     /// <summary>The produced output holds an interior NUL byte and cannot cross the ABI.</summary>
     InvalidOutput = 102,
+
+    /// <summary>A section was asked for by an index the document does not have.</summary>
+    SectionOutOfRange = 300,
 }

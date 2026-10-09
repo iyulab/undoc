@@ -35,6 +35,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   outline with the image — PNG or JPEG — cropped by `srcRect` and stretched over the shape. A
   picture in another format (EMF, WMF, TIFF, …) or one with no place on the slide counts in
   `SlideRasterGaps::images`.
+- **Slides render through the C ABI.** `undoc_render_section(doc, index, options_json, out_len,
+  out_info)` paints a slide of a parsed `.pptx` to PNG (free with `undoc_free_bytes`), with
+  `{"dpi", "font_dirs", "system_fonts"}` options and an `out_info` JSON of the size, the gaps by
+  kind and `substituted_text_runs`. A handle parsed from a presentation keeps its parser, so a
+  slide is rendered without reading the file again. The `ffi` feature now enables `raster`.
+- **`ErrorKind::SectionOutOfRange` (300)**, from undoc's own band: an index the document does
+  not have. `PptxParser::render_slide` returns it (`Error::SectionOutOfRange { index, count }`)
+  where it returned `InvalidData`; a document that is not a presentation is
+  `UnsupportedFormat` at the C ABI. Exposed as `UndocErrorKind.SectionOutOfRange` in C# and
+  `ErrorKind.SECTION_OUT_OF_RANGE` in Python.
 
 ### Fixed
 
