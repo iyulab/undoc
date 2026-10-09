@@ -7,13 +7,18 @@
 //! Text is laid out in each shape's text rectangle with the fonts [`super::raster_text`] finds;
 //! placeholders take their position, body and list styles from the layout and master.
 //!
-//! Not painted yet, and counted in the gaps instead: pictures, charts, tables and other graphic
-//! frames, custom geometry, vertical text and scripts that need shaping.
+//! Pictures (PNG, JPEG) fill their shape's outline, cropped by `srcRect` and stretched.
+//!
+//! Not painted yet, and counted in the gaps instead: pictures in other formats, charts, tables
+//! and other graphic frames, custom geometry, vertical text and scripts that need shaping.
 
 use std::collections::HashMap;
 
 use roxmltree::Node;
-use tiny_skia::{Color, FillRule, Paint, PathBuilder, Pixmap, Stroke, StrokeDash, Transform};
+use tiny_skia::{
+    Color, FillRule, FilterQuality, IntSize, Paint, PathBuilder, Pattern, Pixmap, SpreadMode,
+    Stroke, StrokeDash, Transform,
+};
 
 use super::raster_text::{breaks_anywhere, is_east_asian, needs_shaping, FontBook};
 use super::PptxParser;
@@ -24,6 +29,7 @@ use crate::raster::{RasteredSlide, SlideRasterGaps, SlideRasterOptions};
 
 const A: &str = "http://schemas.openxmlformats.org/drawingml/2006/main";
 const P: &str = "http://schemas.openxmlformats.org/presentationml/2006/main";
+const R: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
 
 const REL_LAYOUT: &str = "/slideLayout";
 const REL_MASTER: &str = "/slideMaster";
@@ -77,6 +83,9 @@ impl PptxParser {
             master: parts.master.as_ref().map(|d| d.root_element()),
             theme_fonts: ThemeFonts::read(parts.theme.as_ref()),
             substituted: 0,
+            container: &self.container,
+            rels: &texts.rels[0],
+            images: HashMap::new(),
         };
 
         // Background: the slide's own, else the layout's, else the master's; white without.
@@ -95,12 +104,15 @@ impl PptxParser {
                 .as_ref()
                 .is_none_or(|l| show_master(l.root_element()))
             {
+                painter.rels = &texts.rels[2];
                 painter.tree(master.root_element(), to_pixels, false);
             }
         }
         if let (Some(layout), true) = (&parts.layout, show_master(slide_root)) {
+            painter.rels = &texts.rels[1];
             painter.tree(layout.root_element(), to_pixels, false);
         }
+        painter.rels = &texts.rels[0];
         painter.tree(slide_root, to_pixels, true);
 
         let (gaps, substituted_text_runs) = (painter.gaps, painter.substituted);
@@ -145,6 +157,8 @@ struct PartTexts {
     layout: Option<String>,
     master: Option<String>,
     theme: Option<String>,
+    /// Each part's internal relationships (id -> part path): slide, layout, master.
+    rels: [HashMap<String, String>; 3],
 }
 
 impl PartTexts {
@@ -173,11 +187,29 @@ impl PartTexts {
             Some(p) => related(p, REL_THEME)?,
             None => None,
         };
+        let targets = |part: &Option<String>| -> Result<HashMap<String, String>> {
+            let Some(part) = part else {
+                return Ok(HashMap::new());
+            };
+            Ok(container
+                .read_optional_relationships_for_part(part)?
+                .by_id
+                .into_values()
+                .filter(|r| !r.external)
+                .map(|r| (r.id, OoxmlContainer::resolve_path(part, &r.target)))
+                .collect())
+        };
+        let rels = [
+            targets(&Some(slide_path.to_string()))?,
+            targets(&layout_path)?,
+            targets(&master_path)?,
+        ];
         Ok(Self {
             slide,
             layout: read(&layout_path)?,
             master: read(&master_path)?,
             theme: read(&theme_path)?,
+            rels,
         })
     }
 
@@ -466,6 +498,7 @@ fn fill(node: Node, colors: &Colors, gaps: &mut SlideRasterGaps) -> Option<Optio
             Some(child(node, A, "fgClr").and_then(|c| color_child(c, colors, None)))
         }
         "blipFill" => {
+            // A background picture; shapes paint theirs themselves.
             gaps.images += 1;
             Some(None)
         }
@@ -499,6 +532,11 @@ struct Painter<'a> {
     theme_fonts: ThemeFonts,
     /// Text runs drawn in a face standing in for the one they ask for.
     substituted: u32,
+    container: &'a OoxmlContainer,
+    /// The relationships of the part whose shapes are being painted.
+    rels: &'a HashMap<String, String>,
+    /// Decoded pictures by part path; `None` for one that did not decode.
+    images: HashMap<String, Option<Pixmap>>,
 }
 
 impl<'a> Painter<'a> {
@@ -524,7 +562,7 @@ impl<'a> Painter<'a> {
                         .map_or(parent, |x| group_transform(x).post_concat(parent));
                     self.children(node, transform, placeholders);
                 }
-                "pic" => self.gaps.images += 1,
+                "pic" => self.shape(node, parent),
                 "graphicFrame" => {
                     let uri = node
                         .descendants()
@@ -571,7 +609,11 @@ impl<'a> Painter<'a> {
             ))
         });
         let Some((xfrm, x, y, w, h)) = place else {
+            // Nowhere to draw it: whatever it holds is missing.
             self.gaps.text_runs += count_runs(node);
+            if child(node, P, "blipFill").is_some() {
+                self.gaps.images += 1;
+            }
             return;
         };
         let transform = shape_transform(xfrm, x, y, w, h).post_concat(parent);
@@ -587,7 +629,10 @@ impl<'a> Painter<'a> {
             // No geometry anywhere: the rectangle a shape's box is.
             None => geometry::preset("rect").map(|def| geometry::evaluate(def, w, h, &[])),
         };
-        let fill_node = sp_prs.iter().find_map(|s| fill_element(*s));
+        // A picture's fill is its own `blipFill`; a shape's is in its properties.
+        let fill_node =
+            child(node, P, "blipFill").or_else(|| sp_prs.iter().find_map(|s| fill_element(*s)));
+        let picture = fill_node.filter(|n| n.tag_name().name() == "blipFill");
 
         let style = std::iter::once(node)
             .chain(inherited.iter().copied())
@@ -598,9 +643,12 @@ impl<'a> Painter<'a> {
                 .filter(|r| r.attribute("idx") != Some("0"))
                 .and_then(|r| color_child(r, self.colors, None))
         };
-        let shape_fill = fill_node
-            .and_then(|n| fill(n, self.colors, &mut self.gaps))
-            .unwrap_or_else(|| style_color("fillRef"));
+        let shape_fill = match picture {
+            Some(_) => None,
+            None => fill_node
+                .and_then(|n| fill(n, self.colors, &mut self.gaps))
+                .unwrap_or_else(|| style_color("fillRef")),
+        };
         let ln = sp_prs.iter().find_map(|s| child(*s, A, "ln"));
         let line_fill = ln
             .and_then(|l| {
@@ -620,6 +668,14 @@ impl<'a> Painter<'a> {
             .and_then(|d| d.attribute("val"))
             .is_some_and(|v| v != "solid");
 
+        if let Some(blip_fill) = picture {
+            let painted = geometry
+                .as_ref()
+                .is_some_and(|g| self.picture(blip_fill, g, w, h, transform));
+            if !painted {
+                self.gaps.images += 1;
+            }
+        }
         if shape_fill.is_some() || line_fill.is_some() {
             match &geometry {
                 Some(geometry) => self.outlines(
@@ -634,6 +690,74 @@ impl<'a> Painter<'a> {
             let font_color = style_color("fontRef");
             self.text(body, ph.as_ref(), &inherited, rect, font_color, transform);
         }
+    }
+
+    /// Fill `geometry` with the picture `blip_fill` names, cropped by its `srcRect` and stretched
+    /// over the shape's `w` × `h`. False when the picture is missing or not PNG or JPEG.
+    fn picture(
+        &mut self,
+        blip_fill: Node,
+        geometry: &geometry::Geometry,
+        w: f64,
+        h: f64,
+        transform: Transform,
+    ) -> bool {
+        let Some(path) = child(blip_fill, A, "blip")
+            .and_then(|b| b.attribute((R, "embed")))
+            .and_then(|id| self.rels.get(id))
+            .cloned()
+        else {
+            return false;
+        };
+        if !self.images.contains_key(&path) {
+            let decoded = self
+                .container
+                .read_binary(&path)
+                .ok()
+                .and_then(|b| decode_image(&b));
+            self.images.insert(path.clone(), decoded);
+        }
+        let Some(Some(image)) = self.images.get(&path) else {
+            return false;
+        };
+        let (iw, ih) = (image.width() as f32, image.height() as f32);
+        let crop = |name: &str| {
+            child(blip_fill, A, "srcRect")
+                .and_then(|r| num(r, name))
+                .map_or(0.0, |v| v as f32 / 100_000.0)
+        };
+        let (x0, y0) = (crop("l") * iw, crop("t") * ih);
+        let (cw, ch) = (
+            iw * (1.0 - crop("l") - crop("r")),
+            ih * (1.0 - crop("t") - crop("b")),
+        );
+        if cw <= 0.0 || ch <= 0.0 {
+            return false;
+        }
+        let to_box = Transform::from_translate(-x0, -y0).post_scale(w as f32 / cw, h as f32 / ch);
+        let pattern = Pattern::new(
+            image.as_ref(),
+            SpreadMode::Pad,
+            FilterQuality::Bilinear,
+            1.0,
+            to_box,
+        );
+        let paint = Paint {
+            shader: pattern,
+            anti_alias: true,
+            ..Paint::default()
+        };
+        for outline in geometry
+            .outlines
+            .iter()
+            .filter(|o| o.fill != PathFill::None)
+        {
+            if let Some(path) = to_path(&outline.segments) {
+                self.pixmap
+                    .fill_path(&path, &paint, FillRule::EvenOdd, transform, None);
+            }
+        }
+        true
     }
 
     fn outlines(
@@ -882,6 +1006,61 @@ impl<'a> Painter<'a> {
                     }));
                 }
                 run_index += 1;
+            }
+            // A character bullet hangs in the first line's indent, sized and colored after
+            // the paragraph's first run unless the list says otherwise.
+            let first_glyph = items.iter().find_map(|i| match i {
+                Item::Glyph(g) => Some(g.clone()),
+                Item::Break => None,
+            });
+            if let (Some(bullet), Some(first_glyph)) = (bullet_char(&levels), first_glyph) {
+                let size_pct = levels
+                    .iter()
+                    .rev()
+                    .find_map(|n| child(*n, A, "buSzPct"))
+                    .and_then(|n| num(n, "val"))
+                    .map_or(1.0, |v| v / 100_000.0) as f32;
+                let size = first_glyph.size * size_pct;
+                let color = levels
+                    .iter()
+                    .rev()
+                    .find_map(|n| child(*n, A, "buClr"))
+                    .and_then(|c| color_child(c, self.colors, None))
+                    .or(first_glyph.color);
+                let font = levels
+                    .iter()
+                    .rev()
+                    .find_map(|n| child(*n, A, "buFont"))
+                    .and_then(|f| f.attribute("typeface"))
+                    .map(str::to_string);
+                // A symbol face's private-use codes mean nothing in another face: a bullet the
+                // named face cannot draw is drawn as a plain one.
+                let wanted: Vec<&str> = font.iter().map(String::as_str).collect();
+                let (ch, face) = match self.fonts.pick(&wanted, false, false, bullet) {
+                    Some((face, substituted)) if !substituted || wanted.is_empty() => {
+                        (bullet, Some(face))
+                    }
+                    _ => (
+                        '\u{2022}',
+                        self.fonts.pick(&[], false, false, '\u{2022}').map(|p| p.0),
+                    ),
+                };
+                let own = face.map_or(size * 0.5, |f| self.fonts.advance(f, ch, size));
+                let advance = if indent < 0.0 {
+                    -indent
+                } else {
+                    own + size * 0.25
+                };
+                items.insert(
+                    0,
+                    Item::Glyph(Glyph {
+                        ch,
+                        face,
+                        size,
+                        advance: advance.max(own),
+                        color,
+                    }),
+                );
             }
             let first = box_width - mar_l - indent;
             let rest = box_width - mar_l;
@@ -1256,6 +1435,49 @@ fn break_lines(items: &[Item], widths: Option<(f32, f32)>, lines: &mut Vec<Line>
     if !line.is_empty() {
         push(lines, line);
     }
+}
+
+/// The character a paragraph's bullet draws, from its list levels (nearest last): `None` with
+/// no bullet, or a numbered or picture bullet, which are not drawn yet.
+fn bullet_char(levels: &[Node]) -> Option<char> {
+    for n in levels.iter().rev() {
+        for c in n.children().filter(|c| c.is_element()) {
+            match c.tag_name().name() {
+                "buNone" | "buAutoNum" | "buBlip" => return None,
+                "buChar" => return c.attribute("char")?.chars().next(),
+                _ => {}
+            }
+        }
+    }
+    None
+}
+
+/// A picture as pixels: PNG and JPEG; anything else (EMF, WMF, TIFF, …) is not decoded.
+fn decode_image(bytes: &[u8]) -> Option<Pixmap> {
+    if bytes.starts_with(b"\x89PNG") {
+        return Pixmap::decode_png(bytes).ok();
+    }
+    if bytes.starts_with(&[0xFF, 0xD8]) {
+        use zune_jpeg::zune_core::bytestream::ZCursor;
+        use zune_jpeg::zune_core::colorspace::ColorSpace;
+        use zune_jpeg::zune_core::options::DecoderOptions;
+        let options = DecoderOptions::default().jpeg_set_out_colorspace(ColorSpace::RGB);
+        let mut decoder = zune_jpeg::JpegDecoder::new_with_options(ZCursor::new(bytes), options);
+        let rgb = decoder.decode().ok()?;
+        let info = decoder.info()?;
+        let (w, h) = (u32::from(info.width), u32::from(info.height));
+        if rgb.len() != w as usize * h as usize * 3 {
+            return None;
+        }
+        let rgba: Vec<u8> = rgb
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .flat_map(|p| [p[0], p[1], p[2], 255])
+            .collect();
+        return Pixmap::from_vec(rgba, IntSize::from_wh(w, h)?);
+    }
+    None
 }
 
 fn is_placeholder(node: Node) -> bool {

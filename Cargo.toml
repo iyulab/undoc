@@ -37,7 +37,7 @@ codepages = ["dep:encoding_rs"]
 async = ["tokio"]
 # Slide rasterization (in progress): DrawingML geometry drawn from the ECMA-376 preset shape
 # definitions. Off by default.
-raster = ["pptx", "dep:tiny-skia", "dep:roxmltree", "dep:skrifa"]
+raster = ["pptx", "dep:tiny-skia", "dep:roxmltree", "dep:skrifa", "dep:zune-jpeg"]
 ffi = []
 # Shape-refinement pass (RenderOptions.refine). Enables unparser-shared's
 # `refine` module, and with it a fresh pulldown-cmark + pulldown-cmark-to-cmark (undoc has no other use
@@ -52,6 +52,8 @@ tiny-skia = { version = "0.12", default-features = false, features = ["std", "si
 roxmltree = { version = "0.21", optional = true }
 # Glyph outlines and metrics for slide text (feature `raster`).
 skrifa = { version = "0.48", optional = true }
+# JPEG pictures on slides (feature `raster`); PNG goes through tiny-skia.
+zune-jpeg = { version = "0.5", optional = true }
 # ZIP handling — default-features disabled: lzma/bzip2/xz/zstd require C toolchain
 # OOXML files exclusively use Deflate; dropping other compression codecs is safe.
 zip = { version = "8.6", default-features = false, features = ["deflate"] }

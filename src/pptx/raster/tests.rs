@@ -33,6 +33,19 @@ fn deck(shapes: &str, master_bg: &str) -> Vec<u8> {
 
 /// [`deck`], with `layout_shapes` in the layout's shape tree.
 fn deck_with(shapes: &str, master_bg: &str, layout_shapes: &str) -> Vec<u8> {
+    deck_full(shapes, master_bg, layout_shapes, &[], &[])
+}
+
+/// [`deck_with`], with more slide relationships `(id, type, target)` and more parts.
+fn deck_full(
+    shapes: &str,
+    master_bg: &str,
+    layout_shapes: &str,
+    slide_rels: &[(&str, &str, &str)],
+    extra: &[(&str, &[u8])],
+) -> Vec<u8> {
+    let mut slide_rel_list = vec![("rId1", "slideLayout", "../slideLayouts/slideLayout1.xml")];
+    slide_rel_list.extend_from_slice(slide_rels);
     let parts: Vec<(&str, String)> = vec![
         (
             "[Content_Types].xml",
@@ -62,7 +75,7 @@ fn deck_with(shapes: &str, master_bg: &str, layout_shapes: &str) -> Vec<u8> {
         ),
         (
             "ppt/slides/_rels/slide1.xml.rels",
-            rels(&[("rId1", "slideLayout", "../slideLayouts/slideLayout1.xml")]),
+            rels(&slide_rel_list),
         ),
         (
             "ppt/slideLayouts/slideLayout1.xml",
@@ -94,6 +107,11 @@ fn deck_with(shapes: &str, master_bg: &str, layout_shapes: &str) -> Vec<u8> {
         zip.start_file(name, zip::write::SimpleFileOptions::default())
             .unwrap();
         zip.write_all(body.as_bytes()).unwrap();
+    }
+    for (name, body) in extra {
+        zip.start_file(*name, zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(body).unwrap();
     }
     zip.finish().unwrap().into_inner()
 }
@@ -422,4 +440,119 @@ fn a_placeholder_takes_its_geometry_and_fill_from_the_layout() {
         "outside the ellipse, inside its box"
     );
     assert!(slide.gaps.is_empty(), "{:?}", slide.gaps);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Pictures
+
+/// A PNG of `w × h` pixels, the left half red and the right half blue.
+fn red_blue_png(w: u32, h: u32) -> Vec<u8> {
+    let mut pixmap = tiny_skia::Pixmap::new(w, h).unwrap();
+    pixmap.fill(tiny_skia::Color::from_rgba8(0, 0, 255, 255));
+    let mut paint = tiny_skia::Paint::default();
+    paint.set_color_rgba8(255, 0, 0, 255);
+    pixmap.fill_rect(
+        tiny_skia::Rect::from_xywh(0.0, 0.0, (w / 2) as f32, h as f32).unwrap(),
+        &paint,
+        tiny_skia::Transform::identity(),
+        None,
+    );
+    pixmap.encode_png().unwrap()
+}
+
+fn picture((x, y, w, h): (u32, u32, u32, u32), embed: &str, src_rect: &str) -> String {
+    format!(
+        r#"<p:pic><p:nvPicPr><p:cNvPr id="9" name="Pic"/><p:cNvPicPr/><p:nvPr/></p:nvPicPr><p:blipFill><a:blip r:embed="{embed}"/>{src_rect}<a:stretch><a:fillRect/></a:stretch></p:blipFill><p:spPr><a:xfrm><a:off x="{}" y="{}"/><a:ext cx="{}" cy="{}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr></p:pic>"#,
+        emu(x),
+        emu(y),
+        emu(w),
+        emu(h)
+    )
+}
+
+const BLUE: [u8; 3] = [0, 0, 255];
+
+#[test]
+fn a_picture_is_stretched_over_its_box() {
+    let png = red_blue_png(40, 20);
+    let pptx = deck_full(
+        &picture((0, 0, 100, 50), "rId5", ""),
+        "",
+        "",
+        &[("rId5", "image", "../media/image1.png")],
+        &[("ppt/media/image1.png", &png)],
+    );
+    let slide = render(pptx);
+    assert_eq!(pixel(&slide, 20, 25), RED);
+    assert_eq!(pixel(&slide, 80, 25), BLUE);
+    assert!(slide.gaps.is_empty(), "{:?}", slide.gaps);
+}
+
+#[test]
+fn a_picture_is_cropped_by_its_source_rectangle() {
+    // Keep only the right half of the picture: all blue.
+    let png = red_blue_png(40, 20);
+    let pptx = deck_full(
+        &picture((0, 0, 100, 50), "rId5", r#"<a:srcRect l="50000"/>"#),
+        "",
+        "",
+        &[("rId5", "image", "../media/image1.png")],
+        &[("ppt/media/image1.png", &png)],
+    );
+    let slide = render(pptx);
+    assert_eq!(pixel(&slide, 10, 25), BLUE);
+    assert_eq!(pixel(&slide, 90, 25), BLUE);
+}
+
+/// A shape filled with a picture clips the picture to its outline.
+#[test]
+fn a_picture_fill_takes_the_shape_of_its_geometry() {
+    let png = red_blue_png(40, 20);
+    let shape = format!(
+        r#"<p:sp><p:nvSpPr><p:cNvPr id="2" name="S"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="{}" cy="{}"/></a:xfrm><a:prstGeom prst="ellipse"><a:avLst/></a:prstGeom><a:blipFill><a:blip r:embed="rId5"/><a:stretch><a:fillRect/></a:stretch></a:blipFill><a:ln><a:noFill/></a:ln></p:spPr></p:sp>"#,
+        emu(100),
+        emu(50)
+    );
+    let pptx = deck_full(
+        &shape,
+        "",
+        "",
+        &[("rId5", "image", "../media/image1.png")],
+        &[("ppt/media/image1.png", &png)],
+    );
+    let slide = render(pptx);
+    assert_eq!(pixel(&slide, 25, 25), RED);
+    assert_eq!(pixel(&slide, 2, 2), WHITE, "outside the ellipse");
+    assert!(slide.gaps.is_empty(), "{:?}", slide.gaps);
+}
+
+#[test]
+fn a_picture_in_a_format_not_decoded_is_a_gap() {
+    let pptx = deck_full(
+        &picture((0, 0, 100, 50), "rId5", ""),
+        "",
+        "",
+        &[("rId5", "image", "../media/image1.emf")],
+        &[("ppt/media/image1.emf", b"    not a raster")],
+    );
+    let slide = render(pptx);
+    assert_eq!(slide.gaps.images, 1);
+    assert_eq!(pixel(&slide, 50, 25), WHITE);
+}
+
+#[test]
+fn a_character_bullet_hangs_in_the_indent() {
+    let para = format!(
+        r#"<a:p><a:pPr marL="{}" indent="-{}"><a:buChar char="-"/></a:pPr>{}</a:p>"#,
+        emu(20),
+        emu(20),
+        run("AB", "")
+    );
+    let slide = render_text(deck(&text_box((0, 0, 100, 30), "", &para), ""));
+    assert!(
+        dark(&slide, (0, 0, 15, 30)) > 0,
+        "the bullet, at the left edge"
+    );
+    assert!(dark(&slide, (20, 0, 50, 30)) > 5, "the text, at the margin");
+    assert_eq!(dark(&slide, (15, 0, 20, 30)), 0, "the gap between them");
 }

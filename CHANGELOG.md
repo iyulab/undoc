@@ -27,8 +27,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   them from its layout, then its master. Faces come from `SlideRasterOptions::fonts`, then
   `font_dirs`, then the system's font directories (`system_fonts`); no face is bundled. A run drawn
   in a stand-in face counts in `RasteredSlide::substituted_text_runs`; a run no face covers, in a
-  script that needs shaping, or in vertical text counts in `SlideRasterGaps::text_runs`. Bullets
-  are not drawn yet.
+  script that needs shaping, or in vertical text counts in `SlideRasterGaps::text_runs`.
+  Character bullets (`buChar`, with `buFont`, `buClr`, `buSzPct`) hang in the first line's indent;
+  a bullet the named symbol face cannot draw is drawn as `•`. Numbered and picture bullets are not
+  drawn yet.
+- **Slide pictures are drawn.** A picture (`p:pic`) or a shape filled with a picture fills its
+  outline with the image — PNG or JPEG — cropped by `srcRect` and stretched over the shape. A
+  picture in another format (EMF, WMF, TIFF, …) or one with no place on the slide counts in
+  `SlideRasterGaps::images`.
 
 ### Fixed
 
