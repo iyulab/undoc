@@ -1458,3 +1458,41 @@ fn smartart_is_drawn_from_its_drawing() {
     ));
     assert_eq!(slide.gaps.graphic_frames, 1);
 }
+
+/// A run's fill colors its text: a gradient is drawn in its first color and counted as
+/// approximated; a run with no fill is not seen.
+#[test]
+fn a_run_fill_colors_its_text() {
+    let fill_run = |fill: &str| {
+        format!(
+            r#"<a:p><a:r><a:rPr lang="en-US" sz="2000">{fill}<a:latin typeface="Undoc Test Sans"/></a:rPr><a:t>AB</a:t></a:r></a:p>"#
+        )
+    };
+    let redish = |slide: &crate::raster::RasteredSlide| {
+        (0..30)
+            .flat_map(|y| (0..50).map(move |x| (x, y)))
+            .filter(|&(x, y)| {
+                let [r, g, b] = pixel(slide, x, y);
+                r > 150 && g < 100 && b < 100
+            })
+            .count()
+    };
+    let gradient = r#"<a:gradFill><a:gsLst><a:gs pos="0"><a:srgbClr val="FF0000"/></a:gs><a:gs pos="100000"><a:srgbClr val="0000FF"/></a:gs></a:gsLst><a:lin ang="0"/></a:gradFill>"#;
+    let slide = render_text(deck(
+        &text_box((0, 0, 100, 30), "", &fill_run(gradient)),
+        "",
+    ));
+    assert!(redish(&slide) > 5, "the text, in the first stop's red");
+    assert_eq!(slide.gaps.approximated_fills, 1);
+
+    let hidden = render_text(deck(
+        &text_box((0, 0, 100, 30), "", &fill_run("<a:noFill/>")),
+        "",
+    ));
+    assert_eq!(
+        dark(&hidden, (0, 0, 100, 30)),
+        0,
+        "a run with no fill is not drawn"
+    );
+    assert!(hidden.gaps.is_empty(), "{:?}", hidden.gaps);
+}

@@ -33,6 +33,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   theme style they name (`fillStyleLst`, and `bgFillStyleLst` from 1001), with `phClr` taken from
   the reference's own color; the color alone stood in for the style before.
 
+### Fixed
+
+- **A slide run's fill colors its text.** Only a solid fill was read: text filled with a
+  gradient or pattern was drawn in the color it inherited, and text with no fill — not seen in
+  PowerPoint — was drawn anyway. A gradient now draws the text in its first color and a pattern
+  in its foreground color, each counted as approximated, and text with no fill is not drawn.
+
 ## [0.18.0] - 2026-10-09
 
 ### Added

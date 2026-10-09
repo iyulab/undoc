@@ -1626,6 +1626,9 @@ impl<'a> Painter<'a> {
                 if let Some(rpr) = child(run, A, "rPr") {
                     style.apply(rpr, self.colors);
                 }
+                if style.approximated_fill && child(run, A, "t").and_then(|t| t.text()).is_some() {
+                    self.gaps.approximated_fills += 1;
+                }
                 let text: String = child(run, A, "t")
                     .and_then(|t| t.text())
                     .unwrap_or("")
@@ -2077,6 +2080,9 @@ struct RunStyle {
     bold: bool,
     italic: bool,
     color: Option<Rgba>,
+    /// The text's fill is drawn as a stand-in: a gradient in its first color, a pattern in its
+    /// foreground color.
+    approximated_fill: bool,
     latin: Option<String>,
     ea: Option<String>,
 }
@@ -2088,6 +2094,7 @@ impl RunStyle {
             bold: false,
             italic: false,
             color,
+            approximated_fill: false,
             latin: None,
             ea: None,
         }
@@ -2104,8 +2111,33 @@ impl RunStyle {
         if let Some(i) = rpr.attribute("i") {
             self.italic = i == "1" || i == "true";
         }
-        if let Some(c) = child(rpr, A, "solidFill").and_then(|f| color_child(f, colors, None)) {
-            self.color = Some(c);
+        // The text's fill: a color, none (the text is not seen), or a gradient or pattern
+        // drawn in one of its colors.
+        for fill in rpr.children().filter(|n| n.is_element()) {
+            let (color, approximated) = match fill.tag_name().name() {
+                "solidFill" => (color_child(fill, colors, None), false),
+                "noFill" => (
+                    Some(Rgba {
+                        a: 0.0,
+                        ..Rgba::BLACK
+                    }),
+                    false,
+                ),
+                "gradFill" => (
+                    gradient(fill, colors, None).and_then(|(g, _)| g.stops.first().map(|s| s.1)),
+                    true,
+                ),
+                "pattFill" => (
+                    child(fill, A, "fgClr").and_then(|c| color_child(c, colors, None)),
+                    true,
+                ),
+                _ => continue,
+            };
+            if let Some(color) = color {
+                self.color = Some(color);
+                self.approximated_fill = approximated;
+            }
+            break;
         }
         if let Some(f) = child(rpr, A, "latin").and_then(|n| n.attribute("typeface")) {
             self.latin = Some(f.to_string());
