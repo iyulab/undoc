@@ -9,12 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Escaping can be turned off from C, C# and Python.** Escaping special Markdown characters
+  is the default, and `UNDOC_FLAG_ESCAPE_SPECIAL` only ever asked for what was already on —
+  so C#'s `EscapeSpecialChars = false` (its default) changed nothing. A new
+  `UNDOC_FLAG_NO_ESCAPE` (16) turns escaping off; no flags means the library's defaults.
+  `UNDOC_FLAG_ESCAPE_SPECIAL` is accepted and has no effect, and its bit is not reused.
+  C#'s `EscapeSpecialChars` now defaults to `true`, as does Python's `to_markdown(escape_special=...)`; setting it to `false` sends the new flag.
+
 - **Footnotes and endnotes are structure in the model.** A reference is a `TextRun` with its
   note's label in the new `note` field (and no text), and the note is a new `Block::Note`
   (`label`, `content`) where the section closes; both used to be plain text spelling out
   `[^1]` and `[^1]: …`. Markdown still writes GFM footnotes (`[^1]`, `[^e1]` for endnotes, with
   each later paragraph of a note indented under it), and plain text still writes `[^1]`.
   JSON consumers read the reference from `note` and the note from a `Note` block.
+
+- Requires `unparser-shared` 0.6.
 
 ### Fixed
 
@@ -31,10 +40,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `C:\dir` read back as `C:\\dir`, and a backtick in the code ended the span. The span is now
   fenced with enough backticks instead (`markdown::code_span` from `unparser-shared` 0.6), and a
   code run that is only punctuation, such as `()`, keeps its code formatting.
-
-### Changed
-
-- Requires `unparser-shared` 0.6.
 
 ## [0.19.0] - 2026-10-09
 

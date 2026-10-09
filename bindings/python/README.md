@@ -171,7 +171,7 @@ itself, and never `ErrorKind.NONE` (which means success).
 
 #### Conversion Methods
 
-- `to_markdown(frontmatter=False, escape_special=False, paragraph_spacing=False)` - Convert to Markdown
+- `to_markdown(frontmatter=False, escape_special=True, paragraph_spacing=False, refine=False)` - Convert to Markdown (`escape_special=False` writes text without escaping Markdown special characters)
 - `to_text()` - Convert to plain text
 - `to_json(compact=False)` - Convert to JSON
 - `plain_text()` - Get plain text (fast extraction)

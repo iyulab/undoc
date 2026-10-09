@@ -10,7 +10,7 @@ from typing import Dict, List, Optional, Sequence, Union
 from ._native import (
     get_library,
     UNDOC_FLAG_FRONTMATTER,
-    UNDOC_FLAG_ESCAPE_SPECIAL,
+    UNDOC_FLAG_NO_ESCAPE,
     UNDOC_FLAG_PARAGRAPH_SPACING,
     UNDOC_FLAG_REFINE,
     UNDOC_JSON_PRETTY,
@@ -230,7 +230,7 @@ class Undoc:
     def to_markdown(
         self,
         frontmatter: bool = False,
-        escape_special: bool = False,
+        escape_special: bool = True,
         paragraph_spacing: bool = False,
         refine: bool = False,
     ) -> str:
@@ -238,7 +238,8 @@ class Undoc:
 
         Args:
             frontmatter: Include YAML frontmatter with metadata
-            escape_special: Escape special Markdown characters
+            escape_special: Escape special Markdown characters, so text that
+                reads as Markdown syntax stays text (default, as in Rust)
             paragraph_spacing: Add extra spacing between paragraphs
             refine: Apply the lossless, idempotent markdown shape-refinement
                 pass (table shape, ordered-list numbering, link/image paths,
@@ -253,8 +254,8 @@ class Undoc:
         flags = 0
         if frontmatter:
             flags |= UNDOC_FLAG_FRONTMATTER
-        if escape_special:
-            flags |= UNDOC_FLAG_ESCAPE_SPECIAL
+        if not escape_special:
+            flags |= UNDOC_FLAG_NO_ESCAPE
         if paragraph_spacing:
             flags |= UNDOC_FLAG_PARAGRAPH_SPACING
         if refine:

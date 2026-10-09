@@ -23,9 +23,10 @@ typedef struct UndocDocument UndocDocument;
 
 /* Flags for markdown rendering */
 #define UNDOC_FLAG_FRONTMATTER      1  /* Include YAML frontmatter */
-#define UNDOC_FLAG_ESCAPE_SPECIAL   2  /* Escape special Markdown characters */
+#define UNDOC_FLAG_ESCAPE_SPECIAL   2  /* Accepted, no effect: escaping is the default (see NO_ESCAPE) */
 #define UNDOC_FLAG_PARAGRAPH_SPACING 4 /* Add blank lines between paragraphs */
 #define UNDOC_FLAG_REFINE            8 /* Apply the shape-refinement pass to the Markdown */
+#define UNDOC_FLAG_NO_ESCAPE        16 /* Do not escape special Markdown characters */
 
 /* JSON format options */
 #define UNDOC_JSON_PRETTY   0  /* Pretty-printed JSON with indentation */

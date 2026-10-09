@@ -180,9 +180,14 @@ unparser_shared::export_handle! {
 
 /// Flags for markdown rendering.
 pub const UNDOC_FLAG_FRONTMATTER: u32 = 1;
+/// Accepted and without effect: escaping special Markdown characters is the default, as it
+/// is for the Rust API. Turn it off with `UNDOC_FLAG_NO_ESCAPE`. The bit is not reused.
 pub const UNDOC_FLAG_ESCAPE_SPECIAL: u32 = 2;
 pub const UNDOC_FLAG_PARAGRAPH_SPACING: u32 = 4;
 pub const UNDOC_FLAG_REFINE: u32 = 8;
+/// Write text without escaping special Markdown characters. No flags means the library's
+/// defaults, and escaping is one of them.
+pub const UNDOC_FLAG_NO_ESCAPE: u32 = 16;
 
 /// JSON format options.
 pub const UNDOC_JSON_PRETTY: c_int = 0;
@@ -278,8 +283,8 @@ unparser_shared::export_string_getter!(
         if flags & UNDOC_FLAG_FRONTMATTER != 0 {
             options.include_frontmatter = true;
         }
-        if flags & UNDOC_FLAG_ESCAPE_SPECIAL != 0 {
-            options.escape_special_chars = true;
+        if flags & UNDOC_FLAG_NO_ESCAPE != 0 {
+            options.escape_special_chars = false;
         }
         if flags & UNDOC_FLAG_PARAGRAPH_SPACING != 0 {
             options.paragraph_spacing = true;
@@ -687,6 +692,11 @@ mod tests {
 
     /// A one-paragraph DOCX, assembled in memory.
     fn hello_docx() -> Vec<u8> {
+        docx_with(HELLO)
+    }
+
+    /// A one-paragraph DOCX holding `text`, assembled in memory.
+    fn docx_with(text: &str) -> Vec<u8> {
         use std::io::Write;
         let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
         let options = zip::write::SimpleFileOptions::default()
@@ -708,7 +718,7 @@ mod tests {
             zip,
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
-  <w:body><w:p><w:r><w:t>{HELLO}</w:t></w:r></w:p></w:body>
+  <w:body><w:p><w:r><w:t>{text}</w:t></w:r></w:p></w:body>
 </w:document>"#
         )
         .unwrap();
@@ -721,6 +731,29 @@ mod tests {
         let owned = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap().to_owned();
         unsafe { undoc_free_string(ptr) };
         owned
+    }
+
+    /// No flags means the library's defaults, and escaping is one of them; only
+    /// `UNDOC_FLAG_NO_ESCAPE` turns it off. The old escape bit is accepted and changes nothing —
+    /// it used to be the only knob, and it could not turn escaping off.
+    #[test]
+    fn escaping_is_the_default_and_no_escape_turns_it_off() {
+        let data = docx_with("see [x](y) and a*b*c");
+        let doc = unsafe { undoc_parse_bytes(data.as_ptr(), data.len()) };
+        assert!(!doc.is_null());
+        let render = |flags| take_string(unsafe { undoc_to_markdown(doc, flags) });
+
+        let default = render(0);
+        assert!(default.contains(r"see \[x\](y) and a\*b\*c"), "{default}");
+        assert_eq!(render(UNDOC_FLAG_ESCAPE_SPECIAL), default);
+        let plain = render(UNDOC_FLAG_NO_ESCAPE);
+        assert!(plain.contains("see [x](y) and a*b*c"), "{plain}");
+        assert_eq!(
+            UNDOC_FLAG_NO_ESCAPE, 16,
+            "flag values are part of the C ABI"
+        );
+
+        unsafe { undoc_free_document(doc) };
     }
 
     #[test]
