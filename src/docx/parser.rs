@@ -621,6 +621,8 @@ impl DocxParser {
         let mut in_del = false; // Track w:del elements (tracked changes - deletions)
         let mut txbx_content_depth: u32 = 0; // Track w:txbxContent nesting (suppress text capture)
         let mut mc_fallback_depth: u32 = 0; // Track mc:Fallback nesting (skip entirely)
+                                            // What each run starts from: the paragraph style's run properties, once `w:pStyle` is read.
+        let mut run_base = TextStyle::default();
         let mut current_style = TextStyle::default();
         let mut current_hyperlink: Option<String> = None;
         let mut current_image_alt: Option<String> = None;
@@ -642,7 +644,7 @@ impl DocxParser {
                     "w:rPr" => in_rpr = true,
                     "w:r" => {
                         in_run = true;
-                        current_style = TextStyle::default();
+                        current_style = run_base.clone();
                     }
                     "w:t" => in_text = true,
                     "w:instrText" => in_instr_text = true,
@@ -686,6 +688,7 @@ impl DocxParser {
                                 let style_id = attr.value.as_ref();
                                 para.style_id = Some(style_id.to_string());
                                 para.heading = self.styles.get_heading_level(style_id);
+                                run_base = paragraph_run_base(&self.styles, style_id);
                                 // Also get style name from StyleMap
                                 if let Some(style) = self.styles.styles.get(style_id) {
                                     if !style.name.is_empty() {
@@ -1274,6 +1277,8 @@ impl DocxParser {
         let mut cell_paragraphs: Vec<Paragraph> = Vec::new();
         let mut cell_nested_tables: Vec<Table> = Vec::new();
         let mut current_paragraph: Option<Paragraph> = None;
+        // What each run of the current cell paragraph starts from (its `w:pStyle`'s run properties).
+        let mut run_base = TextStyle::default();
         let mut current_style = TextStyle::default();
         let mut is_header_row = false;
         let mut col_span = 1u32;
@@ -1344,10 +1349,11 @@ impl DocxParser {
                         "w:p" if in_cell => {
                             in_paragraph = true;
                             current_paragraph = Some(Paragraph::new());
+                            run_base = TextStyle::default();
                         }
                         "w:r" if in_paragraph => {
                             in_run = true;
-                            current_style = TextStyle::default();
+                            current_style = run_base.clone();
                         }
                         "w:rPr" if in_run => in_rpr = true,
                         "w:t" => in_text = true,
@@ -1423,6 +1429,12 @@ impl DocxParser {
                                         _ => CellAlignment::Left,
                                     };
                                 }
+                            }
+                        }
+                        // A cell paragraph's style: its run properties are what its runs start from.
+                        "w:pStyle" if in_paragraph && !in_run => {
+                            if let Some(id) = get_attr(e, "w:val") {
+                                run_base = paragraph_run_base(&self.styles, &id);
                             }
                         }
                         // Handle formatting in run properties
@@ -1715,7 +1727,32 @@ fn apply_character_style(styles: &StyleMap, id: &str, style: &mut TextStyle) {
     let Some(resolved) = styles.get_resolved(id) else {
         return;
     };
-    let props = &resolved.run_props;
+    apply_run_props(&resolved.run_props, style);
+    let mut chain = Some(id.to_string());
+    let mut depth = 0;
+    while let (Some(current), true) = (chain, depth <= 10) {
+        if CODE_CHARACTER_STYLES.contains(&current.as_str()) {
+            style.code = true;
+            break;
+        }
+        chain = styles.styles.get(&current).and_then(|s| s.based_on.clone());
+        depth += 1;
+    }
+}
+
+/// The formatting every run of a paragraph starts from: the run properties of the paragraph's
+/// style (`w:pStyle`), inheritance resolved. A run's character style and its own properties
+/// are applied over it — the order Word resolves them in.
+fn paragraph_run_base(styles: &StyleMap, id: &str) -> TextStyle {
+    let mut style = TextStyle::default();
+    if let Some(resolved) = styles.get_resolved(id) {
+        apply_run_props(&resolved.run_props, &mut style);
+    }
+    style
+}
+
+/// Set every property `props` states on `style`, leaving the rest as they are.
+fn apply_run_props(props: &crate::docx::styles::RunProps, style: &mut TextStyle) {
     if let Some(bold) = props.bold {
         style.bold = bold;
     }
@@ -1739,16 +1776,6 @@ fn apply_character_style(styles: &StyleMap, id: &str, style: &mut TextStyle) {
     }
     if props.highlight.is_some() {
         style.highlight = props.highlight.clone();
-    }
-    let mut chain = Some(id.to_string());
-    let mut depth = 0;
-    while let (Some(current), true) = (chain, depth <= 10) {
-        if CODE_CHARACTER_STYLES.contains(&current.as_str()) {
-            style.code = true;
-            break;
-        }
-        chain = styles.styles.get(&current).and_then(|s| s.based_on.clone());
-        depth += 1;
     }
 }
 

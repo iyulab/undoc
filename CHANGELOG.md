@@ -33,6 +33,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   own, which still win. A code character style (pandoc's `VerbatimChar`, Word's `HTML Code`,
   `HTML Keyboard`, `HTML Sample`, `HTML Typewriter`, or a style based on one) marks the run as
   code, written as a code span.
+- **Paragraph styles format their runs.** The run properties of a paragraph's `w:pStyle` were
+  ignored, so a Quote style in italic, or any paragraph style that sets bold, italic,
+  underline, strikethrough, font, size or color, left its text plain. They now apply under the
+  run's character style and its own properties — the order Word resolves them in — in body
+  text and in table cells. A heading's uniform bold is still dropped from the heading text.
 - **Brackets in the text stay text.** `[` and `]` are escaped like the other Markdown
   characters (with `escape_special_chars`, on by default): text reading `[x](y)` became a link
   and lost `(y)`, and a paragraph opening `[x]: y` became a link reference definition, which is
