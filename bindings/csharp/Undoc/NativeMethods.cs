@@ -331,6 +331,19 @@ internal static class NativeMethods
         out UIntPtr outLen);
 
     /// <summary>
+    /// Render a section (a slide) to a PNG. <paramref name="outInfo"/> receives a JSON report
+    /// (free with <see cref="undoc_free_string"/>); the PNG is freed with
+    /// <see cref="undoc_free_bytes"/>.
+    /// </summary>
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+    public static extern IntPtr undoc_render_section(
+        IntPtr doc,
+        int index,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string? optionsJson,
+        out UIntPtr outLen,
+        out IntPtr outInfo);
+
+    /// <summary>
     /// Free binary data allocated by the library.
     /// </summary>
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]

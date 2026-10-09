@@ -102,6 +102,29 @@ Console.WriteLine($"Resources: {doc.ResourceCount}");
 Console.WriteLine($"Library Version: {UndocDocument.Version}");
 ```
 
+### Render a Slide
+
+A slide of a `.pptx` renders to PNG from the parsed document, without reading the file again:
+
+```csharp
+using Undoc;
+
+using var doc = UndocDocument.ParseFile("deck.pptx");
+var slide = doc.RenderSection(0, new RenderSectionOptions { Dpi = 150 });
+File.WriteAllBytes("slide1.png", slide.Png);
+
+if (!slide.Gaps.IsEmpty)
+    Console.WriteLine($"{slide.Gaps.Charts} charts and {slide.Gaps.GraphicFrames} tables or diagrams not painted");
+```
+
+What the renderer cannot paint yet — charts, tables and other graphic frames, custom geometry,
+pictures other than PNG and JPEG, text in a script that needs shaping — is left out and counted
+in `Gaps`; the rest of the slide is painted. No font is bundled. Text is drawn in the directories you name
+(`FontDirectories`), then the system's. A Linux container without fonts draws no text — install a font
+package (Noto Sans CJK covers Latin and East Asian text) or pass a font directory — and
+reports the runs as gaps. A section the document does not have throws `UndocErrorKind.SectionOutOfRange`; a
+document that is not a presentation throws `UnsupportedFormat`.
+
 ### Handling Failures
 
 `UndocException.Kind` says *why* a call failed, so you can react to the reason instead of
@@ -174,6 +197,7 @@ unrecognised value degrades to a generic failure rather than going unhandled. `K
 - `GetResourceIds()` - List of resource IDs
 - `GetResourceInfo(string id)` - Resource metadata as JsonDocument
 - `GetResourceData(string id)` - Resource binary data
+- `RenderSection(int index, RenderSectionOptions? options)` - A slide as PNG, its size, and what was not painted (`RenderedSection`)
 
 #### Properties
 

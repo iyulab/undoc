@@ -92,6 +92,30 @@ print(f"Sections: {doc.section_count}")
 print(f"Resources: {doc.resource_count}")
 ```
 
+### Render a Slide
+
+A slide of a `.pptx` renders to PNG from the parsed document, without reading the file again:
+
+```python
+from undoc import parse_file
+
+with parse_file("deck.pptx") as doc:
+    slide = doc.render_section(0, dpi=150)
+    with open("slide1.png", "wb") as f:
+        f.write(slide.png)
+    if any(slide.gaps.values()):
+        print("not painted:", slide.gaps)
+```
+
+What the renderer cannot paint yet — charts, tables and other graphic frames, custom geometry,
+pictures other than PNG and JPEG, text in a script that needs shaping — is left out and counted
+in `gaps`; the rest of the slide is painted. No font is bundled. Text is drawn in the directories you name
+(`font_dirs`), then the system's. A Linux container without fonts draws no text — install a font
+package (Noto Sans CJK covers Latin and East Asian text) or pass a font directory — and
+reports the runs as gaps. A section the document does not have raises `UndocError` with
+`kind == ErrorKind.SECTION_OUT_OF_RANGE`; a document that is not a presentation,
+`UNSUPPORTED_FORMAT`.
+
 ### Handling Failures
 
 `UndocError.kind` says *why* a call failed, so you can react to the reason instead of
@@ -164,6 +188,10 @@ itself, and never `ErrorKind.NONE` (which means success).
 - `get_resource_ids()` - List of resource IDs
 - `get_resource_info(id)` - Resource metadata
 - `get_resource_data(id)` - Resource binary data
+
+#### Rendering
+
+- `render_section(index, dpi=150, font_dirs=(), system_fonts=True)` - A slide as PNG, its size, and what was not painted (`RenderedSection`)
 
 ## Native library
 

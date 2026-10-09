@@ -1,9 +1,11 @@
 """Main undoc API for Python."""
 
 import json
+import os
+from dataclasses import dataclass
 from enum import IntEnum
 from pathlib import Path
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Sequence, Union
 
 from ._native import (
     get_library,
@@ -171,6 +173,27 @@ def parse_bytes(data: bytes) -> "Undoc":
         raise _native_failure("Failed to parse bytes")
 
     return Undoc(handle)
+
+
+@dataclass(frozen=True)
+class RenderedSection:
+    """A rendered section: a PNG, its size in pixels, and what it could not show.
+
+    ``gaps`` counts, by kind, what the renderer left out — ``shapes`` (custom geometry),
+    ``images`` (pictures other than PNG and JPEG), ``text_runs`` (text no face covers, in a
+    script that needs shaping, or vertical), ``charts``, ``graphic_frames`` (tables, diagrams)
+    and ``approximated_fills`` (gradients and patterns painted in one of their colors). All
+    zero means everything was painted; otherwise the rest of the slide still was.
+
+    ``substituted_text_runs`` counts text drawn in a face standing in for the one it asks
+    for — readable, but not the slide's own typeface. It is not a gap.
+    """
+
+    png: bytes
+    width: int
+    height: int
+    gaps: "dict[str, int]"
+    substituted_text_runs: int = 0
 
 
 class Undoc:
@@ -372,3 +395,59 @@ class Undoc:
         self._lib.undoc_free_bytes(data_ptr, length.value)
 
         return data
+
+    def render_section(
+        self,
+        index: int,
+        dpi: float = 150.0,
+        font_dirs: Sequence[Union[str, "os.PathLike[str]"]] = (),
+        system_fonts: bool = True,
+    ) -> RenderedSection:
+        """Render a section to a PNG. A section of a presentation is a slide; it is painted
+        from the package this document was parsed from, without reading the file again.
+
+        Anything the renderer cannot paint yet (charts, tables and other graphic frames,
+        custom geometry, pictures other than PNG and JPEG, text no face covers) is left out
+        and counted in :attr:`RenderedSection.gaps`; the rest of the slide is painted.
+
+        No font is bundled. Text is drawn in faces found in ``font_dirs`` (searched with
+        their subdirectories), then — with ``system_fonts`` — in the system's font
+        directories; on a host without fonts, pass a directory of font files.
+
+        Args:
+            index: Section index (0-based), in presentation order.
+            dpi: Resolution; a slide point is ``dpi / 72`` pixels.
+            font_dirs: Directories searched for font files.
+            system_fonts: Whether the system's font directories are searched too.
+
+        Raises:
+            UndocError: ``kind == ErrorKind.SECTION_OUT_OF_RANGE`` for a section the
+                document does not have; ``UNSUPPORTED_FORMAT`` for a document that is not
+                a .pptx presentation; ``RENDER`` for a resolution it cannot draw.
+        """
+        options = json.dumps(
+            {
+                "dpi": dpi,
+                "font_dirs": [os.fspath(d) for d in font_dirs],
+                "system_fonts": system_fonts,
+            }
+        ).encode("utf-8")
+        out_len = ctypes.c_size_t(0)
+        info = ctypes.c_void_p(None)
+        result = self._lib.undoc_render_section(
+            self._handle, index, options, ctypes.byref(out_len), ctypes.byref(info)
+        )
+        if not result:
+            raise _native_failure(f"Failed to render section {index}", self._lib)
+        try:
+            png = ctypes.string_at(result, out_len.value)
+        finally:
+            self._lib.undoc_free_bytes(result, out_len.value)
+        report = json.loads(_copy_and_free_utf8_ptr(self._lib, info.value)) if info.value else {}
+        return RenderedSection(
+            png=png,
+            width=int(report.get("width", 0)),
+            height=int(report.get("height", 0)),
+            gaps=dict(report.get("gaps", {})),
+            substituted_text_runs=int(report.get("substituted_text_runs", 0)),
+        )

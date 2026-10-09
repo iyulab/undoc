@@ -677,3 +677,40 @@ def test_a_library_path_naming_no_file_is_an_error(tmp_path):
     )
     assert result.returncode != 0
     assert "UNDOC_LIB_PATH" in result.stderr and missing.name in result.stderr
+
+
+class TestRenderSection:
+    """A slide rendered through the C ABI: PNG, size, gaps and the error kinds."""
+
+    def test_renders_a_slide_to_png_with_its_size_and_gaps(self):
+        with parse_bytes(create_minimal_pptx_bytes("Slide text")) as doc:
+            section = doc.render_section(0, dpi=72, system_fonts=False)
+        assert section.png[:8] == b"\x89PNG\r\n\x1a\n"
+        # No slide size named: the format's default 10 x 7.5 inches, a point a pixel at 72 dpi.
+        assert (section.width, section.height) == (720, 540)
+        # System fonts off and none passed: the one run has no face to draw in.
+        assert section.gaps["text_runs"] == 1
+        assert section.gaps["shapes"] == 0
+        assert section.substituted_text_runs == 0
+
+    def test_defaults_to_150_dpi(self):
+        with parse_bytes(create_minimal_pptx_bytes("Slide text")) as doc:
+            assert doc.render_section(0).width == 1500
+
+    def test_an_index_the_document_does_not_have(self):
+        with parse_bytes(create_minimal_pptx_bytes("Slide text")) as doc:
+            with pytest.raises(UndocError) as err:
+                doc.render_section(1, dpi=72, system_fonts=False)
+        assert err.value.kind == undoc_module.ErrorKind.SECTION_OUT_OF_RANGE
+
+    def test_a_document_that_is_not_a_presentation(self):
+        with parse_bytes(create_minimal_docx_bytes("hello")) as doc:
+            with pytest.raises(UndocError) as err:
+                doc.render_section(0)
+        assert err.value.kind == undoc_module.ErrorKind.UNSUPPORTED_FORMAT
+
+    def test_a_resolution_it_cannot_draw(self):
+        with parse_bytes(create_minimal_pptx_bytes("Slide text")) as doc:
+            with pytest.raises(UndocError) as err:
+                doc.render_section(0, dpi=0)
+        assert err.value.kind == undoc_module.ErrorKind.RENDER

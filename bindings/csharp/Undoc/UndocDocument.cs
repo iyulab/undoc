@@ -335,6 +335,64 @@ public class UndocDocument : IDisposable
         }
     }
 
+    /// <summary>
+    /// Render a section to a PNG. A section of a presentation is a slide; it is painted from
+    /// the package this document was parsed from, without reading the file again.
+    /// </summary>
+    /// <remarks>
+    /// Anything the renderer cannot paint yet (charts, tables and other graphic frames, custom
+    /// geometry, pictures other than PNG and JPEG, text no face covers) is left out and
+    /// counted in <see cref="RenderedSection.Gaps"/>; the rest of the slide is painted.
+    /// </remarks>
+    /// <param name="index">Section index (0-based), in presentation order.</param>
+    /// <param name="options">Resolution and fonts; <c>null</c> for 150 dpi with the system's fonts.</param>
+    /// <exception cref="UndocException">
+    /// <see cref="UndocErrorKind.SectionOutOfRange"/> for a section the document does not have;
+    /// <see cref="UndocErrorKind.UnsupportedFormat"/> for a document that is not a .pptx
+    /// presentation; <see cref="UndocErrorKind.Render"/> for a resolution it cannot draw.
+    /// </exception>
+    public RenderedSection RenderSection(int index, RenderSectionOptions? options = null)
+    {
+        ThrowIfDisposed();
+        options ??= new RenderSectionOptions();
+        var json = JsonSerializer.Serialize(
+            new RenderOptionsPayload
+            {
+                Dpi = options.Dpi,
+                FontDirs = options.FontDirectories,
+                SystemFonts = options.SystemFonts,
+            },
+            UndocJsonContext.Default.RenderOptionsPayload);
+        var ptr = NativeMethods.undoc_render_section(_handle, index, json, out var length, out var info);
+        if (ptr == IntPtr.Zero)
+            throw NativeFailure($"Failed to render section {index}");
+
+        try
+        {
+            var png = new byte[(int)length];
+            Marshal.Copy(ptr, png, 0, png.Length);
+            var report = info == IntPtr.Zero
+                ? null
+                : JsonSerializer.Deserialize(PtrToStringUtf8(info), UndocJsonContext.Default.RenderInfoPayload);
+            if (report is null)
+                throw new UndocException("Failed to read the render report");
+            return new RenderedSection
+            {
+                Png = png,
+                Width = report.Width,
+                Height = report.Height,
+                Gaps = report.Gaps,
+                SubstitutedTextRuns = report.SubstitutedTextRuns,
+            };
+        }
+        finally
+        {
+            NativeMethods.undoc_free_bytes(ptr, length);
+            if (info != IntPtr.Zero)
+                NativeMethods.undoc_free_string(info);
+        }
+    }
+
     private static string GetLastError()
     {
         var ptr = NativeMethods.undoc_last_error();

@@ -374,6 +374,74 @@ public class NativeLibraryResolverTests
     }
 }
 
+public class RenderSectionTests
+{
+    /// <summary>72 dpi: a slide point is a pixel, and the default slide is 10 × 7.5 inches.</summary>
+    private static readonly RenderSectionOptions At72Dpi = new() { Dpi = 72, SystemFonts = false };
+
+    [Fact]
+    public void RenderSection_PaintsASlideToPng_WithItsSizeAndGaps()
+    {
+        NativeTestSupport.EnsureNativeLibraryPrepared();
+        using var doc = UndocDocument.ParseBytes(NativeTestSupport.CreateMinimalPptxBytes("Slide text"));
+
+        var section = doc.RenderSection(0, At72Dpi);
+
+        Assert.Equal(new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A }, section.Png[..8]);
+        Assert.Equal(720, section.Width);
+        Assert.Equal(540, section.Height);
+        // System fonts off and none passed: the slide's one run has no face to draw in.
+        Assert.Equal(1u, section.Gaps.TextRuns);
+        Assert.False(section.Gaps.IsEmpty);
+        Assert.Equal(0u, section.Gaps.Shapes);
+        Assert.Equal(0u, section.SubstitutedTextRuns);
+    }
+
+    [Fact]
+    public void RenderSection_DefaultsTo150Dpi()
+    {
+        NativeTestSupport.EnsureNativeLibraryPrepared();
+        using var doc = UndocDocument.ParseBytes(NativeTestSupport.CreateMinimalPptxBytes("Slide text"));
+
+        var section = doc.RenderSection(0);
+
+        Assert.Equal(1500, section.Width);
+    }
+
+    [Fact]
+    public void RenderSection_IndexTheDocumentDoesNotHave_ReportsSectionOutOfRange()
+    {
+        NativeTestSupport.EnsureNativeLibraryPrepared();
+        using var doc = UndocDocument.ParseBytes(NativeTestSupport.CreateMinimalPptxBytes("Slide text"));
+
+        var ex = Assert.Throws<UndocException>(() => doc.RenderSection(1, At72Dpi));
+
+        Assert.Equal(UndocErrorKind.SectionOutOfRange, ex.Kind);
+    }
+
+    [Fact]
+    public void RenderSection_OfADocumentThatIsNotAPresentation_ReportsUnsupportedFormat()
+    {
+        NativeTestSupport.EnsureNativeLibraryPrepared();
+        using var doc = UndocDocument.ParseBytes(NativeTestSupport.CreateMinimalDocxBytes("hello"));
+
+        var ex = Assert.Throws<UndocException>(() => doc.RenderSection(0, At72Dpi));
+
+        Assert.Equal(UndocErrorKind.UnsupportedFormat, ex.Kind);
+    }
+
+    [Fact]
+    public void RenderSection_AResolutionItCannotDraw_ReportsRender()
+    {
+        NativeTestSupport.EnsureNativeLibraryPrepared();
+        using var doc = UndocDocument.ParseBytes(NativeTestSupport.CreateMinimalPptxBytes("Slide text"));
+
+        var ex = Assert.Throws<UndocException>(() => doc.RenderSection(0, new RenderSectionOptions { Dpi = 0 }));
+
+        Assert.Equal(UndocErrorKind.Render, ex.Kind);
+    }
+}
+
 internal static class NativeTestSupport
 {
     private static readonly object Sync = new();
@@ -426,6 +494,76 @@ internal static class NativeTestSupport
 
     public static byte[] CreateMinimalDocxBytes(string text) =>
         CreateDocxBytes($"<w:p><w:r><w:t>{text}</w:t></w:r></w:p>", relationships: "");
+
+    /// <summary>
+    /// A one-slide PPTX whose slide holds <paramref name="text"/> in one text box. It names no
+    /// slide size, so the slide is the format's default 10 × 7.5 inches.
+    /// </summary>
+    public static byte[] CreateMinimalPptxBytes(string text)
+    {
+        using var stream = new MemoryStream();
+        using (var zip = new ZipArchive(stream, ZipArchiveMode.Create, leaveOpen: true))
+        {
+            WriteEntry(
+                zip,
+                "[Content_Types].xml",
+                """
+                <?xml version="1.0" encoding="UTF-8"?>
+                <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+                  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+                  <Default Extension="xml" ContentType="application/xml"/>
+                  <Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>
+                  <Override PartName="/ppt/slides/slide1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>
+                </Types>
+                """);
+            WriteEntry(
+                zip,
+                "_rels/.rels",
+                """
+                <?xml version="1.0" encoding="UTF-8"?>
+                <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+                  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="ppt/presentation.xml"/>
+                </Relationships>
+                """);
+            WriteEntry(
+                zip,
+                "ppt/presentation.xml",
+                """
+                <?xml version="1.0" encoding="UTF-8"?>
+                <p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
+                                xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+                  <p:sldIdLst><p:sldId id="256" r:id="rId1"/></p:sldIdLst>
+                </p:presentation>
+                """);
+            WriteEntry(
+                zip,
+                "ppt/_rels/presentation.xml.rels",
+                """
+                <?xml version="1.0" encoding="UTF-8"?>
+                <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+                  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide1.xml"/>
+                </Relationships>
+                """);
+            WriteEntry(
+                zip,
+                "ppt/slides/slide1.xml",
+                $$"""
+                <?xml version="1.0" encoding="UTF-8"?>
+                <p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+                       xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
+                  <p:cSld><p:spTree>
+                    <p:sp>
+                      <p:nvSpPr><p:cNvPr id="2" name="Text"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr>
+                      <p:spPr><a:xfrm><a:off x="914400" y="914400"/><a:ext cx="3657600" cy="914400"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr>
+                      <p:txBody><a:bodyPr/><a:p><a:r><a:t>{{text}}</a:t></a:r></a:p></p:txBody>
+                    </p:sp>
+                  </p:spTree></p:cSld>
+                </p:sld>
+                """);
+        }
+
+        return stream.ToArray();
+    }
 
     /// <summary>
     /// A DOCX whose body is <paramref name="bodyXml"/>, whose document relationships are

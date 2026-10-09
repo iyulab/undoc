@@ -183,6 +183,15 @@ _lib.undoc_get_resource_data.restype = ctypes.POINTER(ctypes.c_uint8)
 _lib.undoc_free_bytes.argtypes = [ctypes.POINTER(ctypes.c_uint8), ctypes.c_size_t]
 _lib.undoc_free_bytes.restype = None
 
+_lib.undoc_render_section.argtypes = [
+    ctypes.c_void_p,
+    ctypes.c_int,
+    ctypes.c_char_p,
+    ctypes.POINTER(ctypes.c_size_t),
+    ctypes.POINTER(ctypes.c_void_p),
+]
+_lib.undoc_render_section.restype = ctypes.POINTER(ctypes.c_uint8)
+
 # Export constants
 UNDOC_FLAG_FRONTMATTER = 1
 UNDOC_FLAG_ESCAPE_SPECIAL = 2

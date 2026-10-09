@@ -31,6 +31,9 @@ A high-performance Rust library for extracting content from Microsoft Office doc
 - **Section markers**: `<!-- slide N: Name -->` / `<!-- sheet N: Name -->` boundary markers for PPTX/XLSX
 - **Text cleanup**: Multiple presets for LLM training data preparation
 - **Self-update**: Built-in update mechanism via GitHub releases
+- **Slide rendering** (feature `raster`): a PPTX slide painted to PNG — shapes from the
+  ECMA-376 preset definitions, connectors, fills and lines in the theme's colors, pictures and
+  text — with a count, by kind, of what it could not paint
 - **C-ABI FFI**: Native library for C#, Python, and other languages
 - **Parallel processing**: Uses Rayon for multi-section documents
 - **Streaming pipeline** (0.3.0+): `parse_file_streaming` yields sections as they parse; peak memory bounded regardless of document size
@@ -518,6 +521,34 @@ use undoc::ResourceRole;
 let shown = doc.resources.iter().filter(|(_, r)| r.role == ResourceRole::Primary);
 ```
 
+### Rendering Slides
+
+With the `raster` feature, a slide can be painted to an image — for a reader that needs what a
+slide *looks like*: the boxes, connectors and fills that carry a diagram slide's structure have
+no text of their own.
+
+```rust
+use undoc::pptx::PptxParser;
+use undoc::raster::SlideRasterOptions;
+
+let parser = PptxParser::open("deck.pptx")?;
+let slide = parser.render_slide(0, &SlideRasterOptions::default())?; // 150 dpi
+std::fs::write("slide1.png", slide.to_png())?;
+if !slide.gaps.is_empty() {
+    eprintln!("not painted: {:?}", slide.gaps); // charts, tables, custom geometry, …
+}
+# Ok::<(), undoc::Error>(())
+```
+
+What the renderer cannot paint yet — charts, tables and other graphic frames, custom geometry,
+pictures other than PNG and JPEG, text in a script that needs shaping — is left out and counted
+in `gaps`; the rest of the slide is painted. Gradients and patterns are painted in one of their
+colors and counted as approximated. No font is bundled. Text is drawn in the faces you pass, then those in the directories you
+name, then the system's. A Linux container without fonts draws no text — install a font
+package (Noto Sans CJK covers Latin and East Asian text) or pass a font directory — and
+reports the runs as gaps. An index the presentation does not have is
+`ErrorKind::SectionOutOfRange`.
+
 ### Streaming Pipeline
 
 Supported for PPTX (per slide) and XLSX (per sheet). DOCX is not yet supported.
@@ -595,6 +626,24 @@ byte[]? imageData = doc.GetResourceData("rId1");
 ```
 
 `UndocDocument.ParseBytes(byte[])` parses content already in memory.
+
+### Rendering a slide
+
+A slide of a `.pptx` renders to PNG from the parsed document, without reading the file again:
+
+```csharp
+using var doc = UndocDocument.ParseFile("deck.pptx");
+for (var i = 0; i < doc.SectionCount; i++)
+{
+    var slide = doc.RenderSection(i, new RenderSectionOptions { Dpi = 150 });
+    File.WriteAllBytes($"slide{i + 1}.png", slide.Png);
+    if (!slide.Gaps.IsEmpty)
+        Console.WriteLine($"slide {i + 1}: {slide.Gaps.Charts} charts, {slide.Gaps.TextRuns} text runs not painted");
+}
+```
+
+`RenderSectionOptions.FontDirectories` names directories of font files; `SystemFonts = false`
+leaves the system's out. A document that is not a presentation throws `UnsupportedFormat`.
 
 ### Classifying failures
 
@@ -724,7 +773,8 @@ Complete document structure with metadata:
 | `ppt` | PowerPoint 97-2003 presentation support | Yes |
 | `codepages` | Decode legacy text in any Windows code page (East Asian, Cyrillic, …); without it, only Windows-1252, UTF-8/16 and ASCII | Yes |
 | `refine` | Markdown shape-refinement pass (`RenderOptions::refine`) | Yes |
-| `ffi` | C-ABI foreign function interface | No |
+| `raster` | Slide rendering to PNG (`PptxParser::render_slide`) — pure Rust (tiny-skia, skrifa); no bundled fonts | No |
+| `ffi` | C-ABI foreign function interface (includes `raster`: `undoc_render_section`) | No |
 | `async` | Async I/O with Tokio | No |
 
 ```bash

@@ -4,7 +4,23 @@ This package provides Python bindings for the undoc library, which extracts
 DOCX, XLSX, and PPTX documents into structured Markdown with assets.
 """
 
-from .undoc import ErrorKind, Undoc, UndocError, parse_file, parse_bytes, version
+from .undoc import (
+    ErrorKind,
+    RenderedSection,
+    Undoc,
+    UndocError,
+    parse_file,
+    parse_bytes,
+    version,
+)
 
-__all__ = ["ErrorKind", "Undoc", "UndocError", "parse_file", "parse_bytes", "version"]
+__all__ = [
+    "ErrorKind",
+    "RenderedSection",
+    "Undoc",
+    "UndocError",
+    "parse_file",
+    "parse_bytes",
+    "version",
+]
 __version__ = "0.17.0"

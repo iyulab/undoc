@@ -40,6 +40,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `{"dpi", "font_dirs", "system_fonts"}` options and an `out_info` JSON of the size, the gaps by
   kind and `substituted_text_runs`. A handle parsed from a presentation keeps its parser, so a
   slide is rendered without reading the file again. The `ffi` feature now enables `raster`.
+- **Slides render from .NET and Python.** `UndocDocument.RenderSection(index,
+  RenderSectionOptions)` returns a `RenderedSection` — the PNG, its size, `Gaps` by kind
+  (`IsEmpty` when nothing was left out) and `SubstitutedTextRuns`; options are `Dpi`,
+  `FontDirectories` and `SystemFonts`. Python's `Undoc.render_section(index, dpi=150,
+  font_dirs=(), system_fonts=True)` returns a `RenderedSection` dataclass with the same fields.
+  The same shape as unpdf's `RenderPage` and `render_page`.
 - **`ErrorKind::SectionOutOfRange` (300)**, from undoc's own band: an index the document does
   not have. `PptxParser::render_slide` returns it (`Error::SectionOutOfRange { index, count }`)
   where it returned `InvalidData`; a document that is not a presentation is
