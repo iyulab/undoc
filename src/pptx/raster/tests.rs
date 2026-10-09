@@ -299,6 +299,25 @@ fn a_slide_index_out_of_range_is_an_error() {
     );
 }
 
+/// A resolution that is not a positive number, or one that would make the slide too large to
+/// allocate, is refused as a rendering failure rather than drawn as a 1 × 1 image.
+#[test]
+fn a_resolution_that_cannot_be_drawn_is_an_error() {
+    let parser = PptxParser::from_bytes(deck("", "")).unwrap();
+    for dpi in [0.0, -72.0, f32::NAN, f32::INFINITY, 1.0e9] {
+        let err = parser
+            .render_slide(
+                0,
+                &SlideRasterOptions {
+                    dpi,
+                    ..Default::default()
+                },
+            )
+            .unwrap_err();
+        assert_eq!(err.kind(), crate::ErrorKind::Render, "{dpi}: {err:?}");
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
 // Text, drawn in the test font (a subset of Noto Sans KR, see tests/fixtures/fonts/README.md)
 

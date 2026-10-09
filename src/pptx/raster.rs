@@ -55,14 +55,23 @@ impl PptxParser {
             Error::MissingComponent(format!("slide relationship {}", info.rel_id))
         })?;
         let slide_path = OoxmlContainer::resolve_path("ppt/presentation.xml", target);
+        // The resolution is a rendering request, so a bad one is a rendering failure — the
+        // classification unpdf's page renderer gives the same two cases.
+        if !(options.dpi.is_finite() && options.dpi > 0.0) {
+            return Err(Error::Render(format!(
+                "dpi must be positive, got {}",
+                options.dpi
+            )));
+        }
 
         let (cx, cy) = slide_size(&self.container)?;
         let scale = options.dpi / 72.0 / EMU_PER_PT;
         let width = (cx as f32 * scale).round().max(1.0) as u32;
         let height = (cy as f32 * scale).round().max(1.0) as u32;
         if u64::from(width) * u64::from(height) > MAX_PIXELS {
-            return Err(Error::InvalidData(format!(
-                "a slide of {width} x {height} pixels is too large to rasterize"
+            return Err(Error::Render(format!(
+                "slide {index} at {} dpi would be {width} x {height} pixels",
+                options.dpi
             )));
         }
         let mut pixmap = Pixmap::new(width, height)

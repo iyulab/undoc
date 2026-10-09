@@ -535,8 +535,9 @@ struct FfiSlideRasterOptions {
 /// - `options_json` must be null or a valid null-terminated UTF-8 string.
 /// - `out_len` must be a valid pointer; `out_info` must be null or a valid pointer.
 /// - Returns null on error (`SECTION_OUT_OF_RANGE` for an index the presentation does not
-///   have, `UNSUPPORTED_FORMAT` for a document that is not a `.pptx` presentation,
-///   `INVALID_ARGUMENT` for bad options); see `undoc_last_error`.
+///   have, `UNSUPPORTED_FORMAT` for a document that is not a `.pptx` presentation, `RENDER`
+///   for a resolution that is not positive or would make the slide too large,
+///   `INVALID_ARGUMENT` for options that do not parse); see `undoc_last_error`.
 /// - The returned PNG must be freed with `undoc_free_bytes`.
 #[no_mangle]
 pub unsafe extern "C" fn undoc_render_section(
@@ -565,11 +566,6 @@ pub unsafe extern "C" fn undoc_render_section(
             serde_json::from_str(json).map_err(|e| invalid_argument(e.to_string()))?
         };
         let dpi = options.dpi.unwrap_or(150.0);
-        if !(dpi.is_finite() && dpi > 0.0) {
-            return Err(invalid_argument(format!(
-                "dpi must be a positive number, got {dpi}"
-            )));
-        }
         let index = usize::try_from(index)
             .map_err(|_| invalid_argument(format!("index must not be negative, got {index}")))?;
         let presentation = (*doc).inner.presentation.as_ref().ok_or_else(|| {
@@ -1128,22 +1124,20 @@ mod tests {
     fn test_render_section_rejects_bad_options_and_null_arguments() {
         let doc = parse(&red_deck());
         let mut len = 0usize;
-        for json in [
-            r#"{"dpi": 0}"#,
-            r#"{"dpi": -3}"#,
-            r#"{"fonts": []}"#,
-            "not json",
+        // A resolution the library cannot draw is a rendering failure, as in unpdf; options
+        // that do not parse are the caller's argument.
+        for (json, kind) in [
+            (r#"{"dpi": 0}"#, ErrorKind::Render as c_int),
+            (r#"{"dpi": -3}"#, ErrorKind::Render as c_int),
+            (r#"{"fonts": []}"#, UNDOC_ERROR_INVALID_ARGUMENT),
+            ("not json", UNDOC_ERROR_INVALID_ARGUMENT),
         ] {
             let options = CString::new(json).unwrap();
             let png = unsafe {
                 undoc_render_section(doc, 0, options.as_ptr(), &mut len, ptr::null_mut())
             };
             assert!(png.is_null(), "{json}");
-            assert_eq!(
-                undoc_last_error_kind(),
-                UNDOC_ERROR_INVALID_ARGUMENT,
-                "{json}"
-            );
+            assert_eq!(undoc_last_error_kind(), kind, "{json}");
         }
         let png =
             unsafe { undoc_render_section(doc, 0, ptr::null(), ptr::null_mut(), ptr::null_mut()) };

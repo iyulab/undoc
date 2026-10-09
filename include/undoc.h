@@ -246,7 +246,9 @@ uint8_t* undoc_get_resource_data(const UndocDocument* doc, const char* resource_
  *        "substituted_text_runs":N} (must be freed with undoc_free_string).
  * @return PNG bytes (must be freed with undoc_free_bytes() together with *out_len), or
  *         NULL on error (UNDOC_ERROR_SECTION_OUT_OF_RANGE, UNDOC_ERROR_UNSUPPORTED_FORMAT
- *         for a document that is not a .pptx presentation, UNDOC_ERROR_INVALID_ARGUMENT).
+ *         for a document that is not a .pptx presentation, UNDOC_ERROR_RENDER for a dpi
+ *         that is not positive or would make the slide too large,
+ *         UNDOC_ERROR_INVALID_ARGUMENT for options that do not parse).
  */
 uint8_t* undoc_render_section(const UndocDocument* doc,
                               int index,

@@ -44,7 +44,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   not have. `PptxParser::render_slide` returns it (`Error::SectionOutOfRange { index, count }`)
   where it returned `InvalidData`; a document that is not a presentation is
   `UnsupportedFormat` at the C ABI. Exposed as `UndocErrorKind.SectionOutOfRange` in C# and
-  `ErrorKind.SECTION_OUT_OF_RANGE` in Python.
+  `ErrorKind.SECTION_OUT_OF_RANGE` in Python. A resolution that is not a positive number is now
+  refused (`Render`) instead of drawing a 1 × 1 image, and a slide too large to allocate is
+  `Render` rather than `InvalidData` — as unpdf's page renderer classifies both.
 
 ### Fixed
 
