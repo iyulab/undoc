@@ -535,12 +535,12 @@ let parser = PptxParser::open("deck.pptx")?;
 let slide = parser.render_slide(0, &SlideRasterOptions::default())?; // 150 dpi
 std::fs::write("slide1.png", slide.to_png())?;
 if !slide.gaps.is_empty() {
-    eprintln!("not painted: {:?}", slide.gaps); // charts, tables, custom geometry, …
+    eprintln!("not painted: {:?}", slide.gaps); // charts, SmartArt, custom geometry, …
 }
 # Ok::<(), undoc::Error>(())
 ```
 
-What the renderer cannot paint yet — charts, tables and other graphic frames, custom geometry,
+What the renderer cannot paint yet — charts, SmartArt and other graphic frames, custom geometry,
 pictures other than PNG and JPEG, text in a script that needs shaping — is left out and counted
 in `gaps`; the rest of the slide is painted. Fills drawn as a stand-in — a pattern in its
 foreground color, a rectangular or shape-following gradient as a radial one, a tiled picture

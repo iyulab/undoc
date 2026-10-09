@@ -15,6 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shape-following paths are drawn as circular ones and counted as approximated. Gradients and
   pictures fill the slide background too (`p:bgPr`), and a gradient line is drawn in its first
   color, counted as approximated.
+- **Slide tables are drawn.** A table (`a:tbl` in a graphic frame) is laid out on its grid —
+  column widths and row heights, cells spanning columns (`gridSpan`) and rows (`rowSpan`), the
+  cells they cover left to them — with each cell's fill, borders (`lnL`, `lnR`, `lnT`, `lnB` and
+  the diagonals) and text, inset by the cell margins and anchored top, middle or bottom. It no
+  longer counts in `graphic_frames`. The table style (`tableStyleId`) is not applied yet: a styled
+  table counts as an approximated fill.
 - **Theme fill styles are drawn.** A shape's `a:fillRef` and a background's `p:bgRef` paint the
   theme style they name (`fillStyleLst`, and `bgFillStyleLst` from 1001), with `phClr` taken from
   the reference's own color; the color alone stood in for the style before.

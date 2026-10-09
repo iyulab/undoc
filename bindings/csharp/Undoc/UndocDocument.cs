@@ -340,7 +340,7 @@ public class UndocDocument : IDisposable
     /// the package this document was parsed from, without reading the file again.
     /// </summary>
     /// <remarks>
-    /// Anything the renderer cannot paint yet (charts, tables and other graphic frames, custom
+    /// Anything the renderer cannot paint yet (charts, SmartArt and other graphic frames, custom
     /// geometry, pictures other than PNG and JPEG, text no face covers) is left out and
     /// counted in <see cref="RenderedSection.Gaps"/>; the rest of the slide is painted.
     /// </remarks>

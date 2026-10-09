@@ -1055,3 +1055,190 @@ fn a_picture_background_covers_the_slide() {
     assert_eq!(pixel(&slide, 80, 25), BLUE);
     assert!(slide.gaps.is_empty(), "{:?}", slide.gaps);
 }
+
+// ---------------------------------------------------------------------------------------------
+// Tables
+
+/// A table covering the 100 × 50 slide: columns `cols` points wide, rows 25 points tall, each
+/// row's cells given as `a:tc` elements; `tbl_pr` inside `a:tblPr`.
+fn table(cols: &[u32], rows: &[&str], tbl_pr: &str) -> String {
+    let grid: String = cols
+        .iter()
+        .map(|w| format!(r#"<a:gridCol w="{}"/>"#, emu(*w)))
+        .collect();
+    let trs: String = rows
+        .iter()
+        .map(|cells| format!(r#"<a:tr h="{}">{cells}</a:tr>"#, emu(25)))
+        .collect();
+    format!(
+        r#"<p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="4" name="Table"/><p:cNvGraphicFramePr/><p:nvPr/></p:nvGraphicFramePr><p:xfrm><a:off x="0" y="0"/><a:ext cx="{}" cy="{}"/></p:xfrm><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/table"><a:tbl><a:tblPr>{tbl_pr}</a:tblPr><a:tblGrid>{grid}</a:tblGrid>{trs}</a:tbl></a:graphicData></a:graphic></p:graphicFrame>"#,
+        emu(cols.iter().sum()),
+        emu(25 * rows.len() as u32)
+    )
+}
+
+/// A cell with `attrs` on `a:tc`, `body` paragraphs, and `pr_attrs` and `props` on and inside
+/// its `a:tcPr`.
+fn cell(attrs: &str, body: &str, pr_attrs: &str, props: &str) -> String {
+    format!(
+        r#"<a:tc{attrs}><a:txBody><a:bodyPr/><a:lstStyle/>{body}</a:txBody><a:tcPr{pr_attrs}>{props}</a:tcPr></a:tc>"#
+    )
+}
+
+fn filled(hex: &str) -> String {
+    format!(r#"<a:solidFill><a:srgbClr val="{hex}"/></a:solidFill>"#)
+}
+
+#[test]
+fn a_table_paints_its_cells_in_their_places() {
+    let row1 = format!(
+        "{}{}",
+        cell("", "<a:p/>", "", &filled("FF0000")),
+        cell("", "<a:p/>", "", &filled("0000FF"))
+    );
+    let row2 = format!(
+        "{}{}",
+        cell("", "<a:p/>", "", &filled("0000FF")),
+        cell("", "<a:p/>", "", &filled("FF0000"))
+    );
+    let slide = render(deck(&table(&[30, 70], &[&row1, &row2], ""), ""));
+    assert_eq!(pixel(&slide, 15, 12), RED, "row 1, column 1");
+    assert_eq!(pixel(&slide, 60, 12), BLUE, "row 1, column 2 starts at 30");
+    assert_eq!(pixel(&slide, 15, 37), BLUE, "row 2, column 1");
+    assert_eq!(pixel(&slide, 60, 37), RED);
+    assert!(
+        slide.gaps.is_empty(),
+        "a table is drawn, not a gap: {:?}",
+        slide.gaps
+    );
+}
+
+/// A cell spanning columns or rows covers them; the cells it covers draw nothing.
+#[test]
+fn a_spanning_cell_covers_the_cells_it_merges() {
+    let across = format!(
+        "{}{}",
+        cell(r#" gridSpan="2""#, "<a:p/>", "", &filled("FF0000")),
+        cell(r#" hMerge="1""#, "<a:p/>", "", &filled("00FF00"))
+    );
+    let plain = format!(
+        "{}{}",
+        cell("", "<a:p/>", "", ""),
+        cell("", "<a:p/>", "", "")
+    );
+    let slide = render(deck(&table(&[50, 50], &[&across, &plain], ""), ""));
+    assert_eq!(
+        pixel(&slide, 75, 12),
+        RED,
+        "the span reaches the second column"
+    );
+
+    let down = format!(
+        "{}{}",
+        cell(r#" rowSpan="2""#, "<a:p/>", "", &filled("0000FF")),
+        cell("", "<a:p/>", "", "")
+    );
+    let covered = format!(
+        "{}{}",
+        cell(r#" vMerge="1""#, "<a:p/>", "", &filled("00FF00")),
+        cell("", "<a:p/>", "", "")
+    );
+    let slide = render(deck(&table(&[50, 50], &[&down, &covered], ""), ""));
+    assert_eq!(
+        pixel(&slide, 25, 37),
+        BLUE,
+        "the span reaches the second row"
+    );
+}
+
+#[test]
+fn cell_borders_are_drawn_on_their_edges() {
+    let ln = r#"<a:lnB w="25400"><a:solidFill><a:srgbClr val="000000"/></a:solidFill></a:lnB><a:lnR w="25400"><a:noFill/></a:lnR>"#;
+    let row1 = format!(
+        "{}{}",
+        cell("", "<a:p/>", "", ln),
+        cell("", "<a:p/>", "", "")
+    );
+    let row2 = format!(
+        "{}{}",
+        cell("", "<a:p/>", "", ""),
+        cell("", "<a:p/>", "", "")
+    );
+    let slide = render(deck(&table(&[50, 50], &[&row1, &row2], ""), ""));
+    assert_eq!(
+        pixel(&slide, 25, 25),
+        [0, 0, 0],
+        "the bottom border, on the row edge"
+    );
+    assert_eq!(pixel(&slide, 75, 25), WHITE, "not under the next cell");
+    assert_eq!(
+        pixel(&slide, 50, 12),
+        WHITE,
+        "a border with no fill draws nothing"
+    );
+}
+
+/// A cell's text is laid out in it, anchored where its properties say.
+#[test]
+fn cell_text_is_drawn_in_its_cell() {
+    let text = format!("<a:p>{}</a:p>", run("AB", ""));
+    let row = |anchor: &str| {
+        format!(
+            "{}{}",
+            cell("", &text, anchor, ""),
+            cell("", "<a:p/>", "", "")
+        )
+    };
+    let top = render_text(deck(&table(&[50, 50], &[&row(""), &row("")], ""), ""));
+    assert!(
+        dark(&top, (0, 0, 50, 25)) > 5,
+        "the text, in the first cell"
+    );
+    assert_eq!(
+        dark(&top, (50, 0, 100, 50)),
+        0,
+        "nothing in the empty column"
+    );
+
+    // In a 50 pt row, a bottom-anchored line sits lower than a top-anchored one.
+    let tall = |anchor: &str| {
+        let row = format!(
+            "{}{}",
+            cell("", &text, anchor, ""),
+            cell("", "<a:p/>", "", "")
+        );
+        let mut frame = table(&[50, 50], &[&row], "");
+        frame = frame.replace(
+            &format!(r#"h="{}""#, emu(25)),
+            &format!(r#"h="{}""#, emu(50)),
+        );
+        frame.replace(
+            &format!(r#"cy="{}""#, emu(25)),
+            &format!(r#"cy="{}""#, emu(50)),
+        )
+    };
+    let at_top = render_text(deck(&tall(""), ""));
+    let at_bottom = render_text(deck(&tall(r#" anchor="b""#), ""));
+    assert!(dark(&at_top, (0, 0, 50, 25)) > dark(&at_top, (0, 25, 50, 50)));
+    assert!(dark(&at_bottom, (0, 25, 50, 50)) > dark(&at_bottom, (0, 0, 50, 25)));
+}
+
+/// A table style is not applied yet: the table is drawn without it, and counts as approximated.
+#[test]
+fn a_table_style_not_applied_is_counted() {
+    let row = format!(
+        "{}{}",
+        cell("", "<a:p/>", "", ""),
+        cell("", "<a:p/>", "", "")
+    );
+    let slide = render(deck(
+        &table(
+            &[50, 50],
+            &[&row],
+            "<a:tableStyleId>{5C22544A-7EE6-4342-B048-85BDC9FD1C3A}</a:tableStyleId>",
+        ),
+        "",
+    ));
+    assert_eq!(slide.gaps.approximated_fills, 1);
+    assert_eq!(slide.gaps.graphic_frames, 0);
+}

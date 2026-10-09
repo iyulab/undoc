@@ -9,8 +9,11 @@
 //!
 //! Pictures (PNG, JPEG) fill their shape's outline, cropped by `srcRect` and stretched.
 //!
-//! Not painted yet, and counted in the gaps instead: pictures in other formats, charts, tables
-//! and other graphic frames, custom geometry, vertical text and scripts that need shaping.
+//! Tables are drawn cell by cell — fills, borders and text — without their table style.
+//!
+//! Not painted yet, and counted in the gaps instead: pictures in other formats, charts,
+//! SmartArt and other graphic frames, custom geometry, vertical text and scripts that need
+//! shaping.
 
 use std::collections::HashMap;
 
@@ -841,6 +844,8 @@ impl<'a> Painter<'a> {
                         .unwrap_or("");
                     if uri.ends_with("/chart") {
                         self.gaps.charts += 1;
+                    } else if uri.ends_with("/table") {
+                        self.table(node, parent);
                     } else {
                         self.gaps.graphic_frames += 1;
                     }
@@ -972,7 +977,8 @@ impl<'a> Painter<'a> {
         if let Some(body) = child(node, P, "txBody") {
             let rect = geometry.as_ref().map_or((0.0, 0.0, w, h), |g| g.text_rect);
             let font_color = style_color("fontRef");
-            self.text(body, ph.as_ref(), &inherited, rect, font_color, transform);
+            let frame = TextFrame { rect, anchor: None };
+            self.text(body, ph.as_ref(), &inherited, frame, font_color, transform);
         }
     }
 
@@ -1104,6 +1110,159 @@ impl<'a> Painter<'a> {
         }
     }
 
+    /// Draw a table (`a:tbl` in a graphic frame): its grid of columns and rows, each cell's
+    /// fill, borders and text. A cell that spans columns or rows covers them; the cells it
+    /// covers (`hMerge`, `vMerge`) draw nothing of their own. The table's style
+    /// (`tableStyleId`) is not applied — its fills and borders are missing, and the table counts
+    /// as an approximated fill.
+    fn table(&mut self, frame: Node, parent: Transform) {
+        let tbl = frame.descendants().find(|n| n.has_tag_name((A, "tbl")));
+        let place = child(frame, P, "xfrm").and_then(|x| {
+            let (off, ext) = (child(x, A, "off")?, child(x, A, "ext")?);
+            Some((
+                x,
+                num(off, "x").unwrap_or(0.0),
+                num(off, "y").unwrap_or(0.0),
+                num(ext, "cx").unwrap_or(0.0),
+                num(ext, "cy").unwrap_or(0.0),
+            ))
+        });
+        let (Some(tbl), Some((xfrm, x, y, w, h))) = (tbl, place) else {
+            self.gaps.graphic_frames += 1;
+            return;
+        };
+        let transform = shape_transform(xfrm, x, y, w, h).post_concat(parent);
+        let edges = |widths: Vec<f64>| {
+            std::iter::once(0.0)
+                .chain(widths.iter().scan(0.0, |at, w| {
+                    *at += w;
+                    Some(*at)
+                }))
+                .collect::<Vec<f64>>()
+        };
+        let cols = edges(
+            child(tbl, A, "tblGrid")
+                .into_iter()
+                .flat_map(|g| g.children().filter(|n| n.has_tag_name((A, "gridCol"))))
+                .map(|c| num(c, "w").unwrap_or(0.0))
+                .collect(),
+        );
+        let rows: Vec<Node> = tbl
+            .children()
+            .filter(|n| n.has_tag_name((A, "tr")))
+            .collect();
+        let row_edges = edges(rows.iter().map(|r| num(*r, "h").unwrap_or(0.0)).collect());
+        if cols.len() < 2 || rows.is_empty() {
+            self.gaps.graphic_frames += 1;
+            return;
+        }
+        if child(tbl, A, "tblPr")
+            .and_then(|p| child(p, A, "tableStyleId"))
+            .is_some()
+        {
+            self.gaps.approximated_fills += 1;
+        }
+
+        // Each drawn cell with the rectangle it covers.
+        let mut cells: Vec<(Node, (f64, f64, f64, f64))> = Vec::new();
+        for (ri, row) in rows.iter().enumerate() {
+            let tcs = row.children().filter(|n| n.has_tag_name((A, "tc")));
+            for (ci, tc) in tcs.enumerate() {
+                let merged = ["hMerge", "vMerge"]
+                    .iter()
+                    .any(|a| matches!(tc.attribute(*a), Some("1" | "true")));
+                if merged || ci + 1 >= cols.len() {
+                    continue;
+                }
+                let span = |attr: &str| num(tc, attr).map_or(1, |v| v.max(1.0) as usize);
+                let c1 = (ci + span("gridSpan")).min(cols.len() - 1);
+                let r1 = (ri + span("rowSpan")).min(row_edges.len() - 1);
+                cells.push((tc, (cols[ci], row_edges[ri], cols[c1], row_edges[r1])));
+            }
+        }
+
+        // Fills, then borders over them, then text over both.
+        for &(tc, (x0, y0, x1, y1)) in &cells {
+            let fill = child(tc, A, "tcPr").and_then(|pr| {
+                pr.children()
+                    .filter(|n| n.is_element())
+                    .find_map(|n| self.fill(n, None))
+                    .flatten()
+            });
+            let (Some(fill), Some(rect)) = (
+                fill,
+                tiny_skia::Rect::from_xywh(0.0, 0.0, (x1 - x0) as f32, (y1 - y0) as f32),
+            ) else {
+                continue;
+            };
+            let at = Transform::from_translate(x0 as f32, y0 as f32).post_concat(transform);
+            if let Some(paint) = area_paint(&fill, &self.images, x1 - x0, y1 - y0, 0.0) {
+                self.pixmap.fill_rect(rect, &paint, at, None);
+            }
+        }
+        for &(tc, (x0, y0, x1, y1)) in &cells {
+            let Some(pr) = child(tc, A, "tcPr") else {
+                continue;
+            };
+            for (name, from, to) in [
+                ("lnL", (x0, y0), (x0, y1)),
+                ("lnR", (x1, y0), (x1, y1)),
+                ("lnT", (x0, y0), (x1, y0)),
+                ("lnB", (x0, y1), (x1, y1)),
+                ("lnTlToBr", (x0, y0), (x1, y1)),
+                ("lnBlToTr", (x0, y1), (x1, y0)),
+            ] {
+                let Some(ln) = child(pr, A, name) else {
+                    continue;
+                };
+                let color = ln
+                    .children()
+                    .filter(|n| n.is_element())
+                    .find_map(|n| self.fill(n, None))
+                    .flatten()
+                    .and_then(|f| f.line_color(&mut self.gaps));
+                let Some(color) = color else {
+                    continue;
+                };
+                let mut pb = PathBuilder::new();
+                pb.move_to(from.0 as f32, from.1 as f32);
+                pb.line_to(to.0 as f32, to.1 as f32);
+                let Some(path) = pb.finish() else {
+                    continue;
+                };
+                let mut paint = Paint::default();
+                paint.set_color(color.to_color());
+                paint.anti_alias = true;
+                let stroke = Stroke {
+                    width: num(ln, "w").map_or(12_700.0, |w| w as f32).max(1.0),
+                    ..Stroke::default()
+                };
+                self.pixmap
+                    .stroke_path(&path, &paint, &stroke, transform, None);
+            }
+        }
+        for &(tc, (x0, y0, x1, y1)) in &cells {
+            let Some(body) = child(tc, A, "txBody") else {
+                continue;
+            };
+            // Cell margins stand where a text box's insets would; the defaults are the same.
+            let pr = child(tc, A, "tcPr");
+            let margin = |name: &str, default: f64| {
+                pr.and_then(|p| num(p, name)).unwrap_or(default) - default
+            };
+            let frame = TextFrame {
+                rect: (
+                    x0 + margin("marL", 91_440.0),
+                    y0 + margin("marT", 45_720.0),
+                    x1 - margin("marR", 91_440.0),
+                    y1 - margin("marB", 45_720.0),
+                ),
+                anchor: pr.and_then(|p| p.attribute("anchor")),
+            };
+            self.text(body, None, &[], frame, None, transform);
+        }
+    }
+
     /// The layout's and the master's counterparts of a placeholder, nearest first.
     fn inherited(&self, ph: Option<&Placeholder>) -> Vec<Node<'a, 'a>> {
         let Some(ph) = ph else {
@@ -1135,10 +1294,11 @@ impl<'a> Painter<'a> {
         body: Node,
         ph: Option<&Placeholder>,
         inherited: &[Node<'a, 'a>],
-        rect: (f64, f64, f64, f64),
+        frame: TextFrame,
         font_color: Option<Rgba>,
         transform: Transform,
     ) {
+        let rect = frame.rect;
         // Body properties: the master's, overridden by the layout's, then the shape's own.
         let body_prs: Vec<Node> = inherited
             .iter()
@@ -1162,7 +1322,7 @@ impl<'a> Painter<'a> {
             rect.3 - inset("bIns", 45_720.0),
         );
         let wrap = attr("wrap") != Some("none");
-        let anchor = attr("anchor").unwrap_or("t");
+        let anchor = frame.anchor.or_else(|| attr("anchor")).unwrap_or("t");
         let font_scale = child(body, A, "bodyPr")
             .and_then(|b| child(b, A, "normAutofit"))
             .and_then(|a| num(a, "fontScale"))
@@ -1502,6 +1662,14 @@ impl<'a> Painter<'a> {
         out.dedup();
         out
     }
+}
+
+/// Where a text body is laid out: its rectangle (before the body's insets) and, for a table
+/// cell, the vertical anchor its cell properties give.
+#[derive(Debug, Clone, Copy)]
+struct TextFrame<'s> {
+    rect: (f64, f64, f64, f64),
+    anchor: Option<&'s str>,
 }
 
 /// A placeholder's type and index.

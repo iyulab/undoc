@@ -229,7 +229,7 @@ uint8_t* undoc_get_resource_data(const UndocDocument* doc, const char* resource_
  * Render a section to a PNG. A section of a .pptx presentation is a slide; it is painted
  * by the parser the handle keeps, with no second read of the file.
  *
- * Anything the renderer cannot paint yet (charts, tables and other graphic frames, custom
+ * Anything the renderer cannot paint yet (charts, SmartArt and other graphic frames, custom
  * geometry, pictures other than PNG and JPEG, text no face covers) is left out and counted
  * in out_info; the rest of the slide is painted. No font is bundled: on a host without
  * fonts, pass font_dirs, or text is counted as a gap.

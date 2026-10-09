@@ -107,7 +107,7 @@ with parse_file("deck.pptx") as doc:
         print("not painted:", slide.gaps)
 ```
 
-What the renderer cannot paint yet — charts, tables and other graphic frames, custom geometry,
+What the renderer cannot paint yet — charts, SmartArt and other graphic frames, custom geometry,
 pictures other than PNG and JPEG, text in a script that needs shaping — is left out and counted
 in `gaps`; the rest of the slide is painted. No font is bundled. Text is drawn in the directories you name
 (`font_dirs`), then the system's. A Linux container without fonts draws no text — install a font
