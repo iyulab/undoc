@@ -26,7 +26,7 @@ xlsx = []
 pptx = []
 # Word 97-2003 binary documents (.doc), read through the CFB container `cfb` already opens.
 doc = []
-# Excel 97-2003 binary workbooks (.xls, BIFF8).
+# Excel binary workbooks (.xls): Excel 97-2003 (BIFF8), Excel 5.0/95 and Excel 2.x-4.0.
 xls = []
 # PowerPoint 97-2003 binary presentations (.ppt).
 ppt = []
@@ -35,6 +35,9 @@ ppt = []
 # UTF-8, Windows-1252 and plain ASCII are decoded either way.
 codepages = ["dep:encoding_rs"]
 async = ["tokio"]
+# Slide rasterization (in progress): DrawingML geometry drawn from the ECMA-376 preset shape
+# definitions. Off by default.
+raster = ["pptx"]
 ffi = []
 # Shape-refinement pass (RenderOptions.refine). Enables unparser-shared's
 # `refine` module, and with it a fresh pulldown-cmark + pulldown-cmark-to-cmark (undoc has no other use

@@ -63,6 +63,8 @@ mod decode;
 pub mod detect;
 mod drawing;
 pub mod error;
+#[cfg(feature = "raster")]
+mod geometry;
 pub mod model;
 #[cfg(any(feature = "xlsx", feature = "xls"))]
 mod sheet;
