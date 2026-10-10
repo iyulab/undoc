@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-10-10
+
 ### Added
 
 - **Tables as CSV from the bindings and the C ABI.** `undoc_tables(doc, tsv)` returns every
