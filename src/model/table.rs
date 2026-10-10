@@ -230,22 +230,11 @@ impl Table {
         self.rows.len()
     }
 
-    /// Get the number of grid columns the table occupies.
-    ///
-    /// Derived from [`cell_columns`](Self::cell_columns), not from summing each row's
-    /// spans: a vertical span from above pushes a row's cells rightward, so a row can
-    /// reach further than its own spans add up to.
+    /// Get the number of grid columns the table occupies: the furthest any cell reaches
+    /// ([`unparser_shared::grid::place`]) — not the sum of a row's spans, since a vertical span
+    /// from above pushes a row's cells rightward.
     pub fn column_count(&self) -> usize {
-        self.cell_columns()
-            .iter()
-            .zip(&self.rows)
-            .flat_map(|(cols, row)| {
-                cols.iter()
-                    .zip(&row.cells)
-                    .map(|(&col, cell)| col + cell.col_span.max(1) as usize)
-            })
-            .max()
-            .unwrap_or(0)
+        self.placement().width
     }
 
     /// The grid column each cell starts in, one `Vec` per row, parallel to `row.cells`.
@@ -254,55 +243,18 @@ impl Table {
     /// the tail of a horizontal span, and the columns a vertical span occupies in the
     /// rows below — have no `Cell` of their own. So a cell's index in its row is not its
     /// column once a vertical span from above sits to its left; this walks the spans to
-    /// recover it. Every parser builds tables to that contract, and every renderer that
-    /// needs a flat grid places cells with this.
+    /// recover it ([`unparser_shared::grid::place`]). Every parser builds tables to that
+    /// contract, and every renderer that needs a flat grid places cells with this.
     pub fn cell_columns(&self) -> Vec<Vec<usize>> {
-        // For each column, how many further rows a vertical span from above still covers.
-        let mut carried: Vec<usize> = Vec::new();
-        let mut out = Vec::with_capacity(self.rows.len());
+        self.placement().columns
+    }
 
-        for row in &self.rows {
-            let mut cols = Vec::with_capacity(row.cells.len());
-            // Columns this row has already passed; a span ending here frees them for the
-            // next row.
-            let mut col = 0usize;
-            let mut seen = 0usize;
-
-            for cell in &row.cells {
-                while carried.get(col).is_some_and(|&rows| rows > 0) {
-                    col += 1;
-                }
-                // Each covered column this row steps over is consumed once.
-                for c in seen..col {
-                    if let Some(rows) = carried.get_mut(c) {
-                        *rows = rows.saturating_sub(1);
-                    }
-                }
-
-                let col_span = cell.col_span.max(1) as usize;
-                let row_span = cell.row_span.max(1) as usize;
-                cols.push(col);
-
-                if carried.len() < col + col_span {
-                    carried.resize(col + col_span, 0);
-                }
-                for covered in &mut carried[col..col + col_span] {
-                    // The span covers this many rows *below* this one.
-                    *covered = row_span - 1;
-                }
-
-                col += col_span;
-                seen = col;
-            }
-
-            // Columns still covered past this row's last cell belong to this row too.
-            for rows in carried.iter_mut().skip(seen) {
-                *rows = rows.saturating_sub(1);
-            }
-
-            out.push(cols);
-        }
-        out
+    fn placement(&self) -> unparser_shared::grid::Placement {
+        unparser_shared::grid::place(self.rows.iter().map(|row| {
+            row.cells
+                .iter()
+                .map(|cell| unparser_shared::grid::Span::new(cell.row_span, cell.col_span))
+        }))
     }
 
     /// Check if the table is empty.

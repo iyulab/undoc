@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `Table::cell_columns()` and `Table::column_count()` place cells with the walk the family's
+  other parsers share (`unparser-shared` 0.8); their results are unchanged.
+
 ## [0.21.0] - 2026-10-10
 
 ### Added
