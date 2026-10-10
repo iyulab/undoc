@@ -218,6 +218,27 @@ enum Commands {
         output: PathBuf,
     },
 
+    /// Extract the tables as CSV (RFC 4180), one per table
+    ///
+    /// Without --output the tables are written to standard output, a blank line between
+    /// two. With --output each table is a file in that directory, named for the section it
+    /// is in (a sheet, a slide, a document section) and its place there: s2-t1.csv,
+    /// s2-t2.csv, … A merged cell's text is in its top-left position and the positions it
+    /// covers are empty. A table nested in a cell is a table of its own, right after the
+    /// table that holds it.
+    Tables {
+        /// Input file path
+        input: PathBuf,
+
+        /// Output directory (stdout if not specified)
+        #[arg(short, long, value_name = "DIR")]
+        output: Option<PathBuf>,
+
+        /// Write tab-separated values (.tsv) instead of CSV
+        #[arg(long)]
+        tsv: bool,
+    },
+
     /// Update undoc to the latest version
     Update {
         /// Check only, don't install
@@ -589,6 +610,10 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
+        Commands::Tables { input, output, tsv } => {
+            run_tables(&input, output.as_deref(), tsv)?;
+        }
+
         Commands::Update { check, force } => {
             if let Err(e) = update::run_update(check, force) {
                 eprintln!("{}: {}", "Error".red().bold(), e);
@@ -865,6 +890,64 @@ fn extract_resources_to_dir(
     }
 
     Ok((image_count, media_count))
+}
+
+/// Write every table of the document as delimited text: to standard output, a blank line
+/// between two, or one file per table in `output`, named `s<section>-t<n>.<ext>`.
+fn run_tables(
+    input: &std::path::Path,
+    output: Option<&std::path::Path>,
+    tsv: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let doc = undoc::parse_file(input)?;
+
+    let (delimiter, extension) = if tsv { ('\t', "tsv") } else { (',', "csv") };
+    let mut tables: Vec<(usize, usize, String)> = Vec::new();
+    for (s, section) in doc.sections.iter().enumerate() {
+        let mut found = Vec::new();
+        for block in &section.content {
+            if let undoc::Block::Table(table) = block {
+                with_nested_tables(table, &mut found);
+            }
+        }
+        for (t, table) in found.into_iter().enumerate() {
+            tables.push((s + 1, t + 1, table.to_delimited(delimiter)));
+        }
+    }
+
+    match output {
+        // Standard output carries the tables alone, so it can be piped into another tool.
+        None => {
+            let text: Vec<&str> = tables.iter().map(|(_, _, t)| t.as_str()).collect();
+            print!("{}", text.join("\r\n"));
+        }
+        Some(dir) => {
+            fs::create_dir_all(dir)?;
+            for (section, n, text) in &tables {
+                let name = format!("s{section}-t{n}.{extension}");
+                fs::write(dir.join(&name), text)?;
+                println!("{} {}", "Extracted".green(), name);
+            }
+            println!(
+                "\n{} {} tables extracted",
+                "Done!".green().bold(),
+                tables.len()
+            );
+        }
+    }
+    Ok(())
+}
+
+/// `table`, then every table nested in its cells, depth first — the order they are read in.
+fn with_nested_tables<'a>(table: &'a undoc::Table, out: &mut Vec<&'a undoc::Table>) {
+    out.push(table);
+    for row in &table.rows {
+        for cell in &row.cells {
+            for nested in &cell.nested_tables {
+                with_nested_tables(nested, out);
+            }
+        }
+    }
 }
 
 fn write_output(path: Option<&PathBuf>, content: &str) -> Result<(), Box<dyn std::error::Error>> {

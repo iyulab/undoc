@@ -215,6 +215,7 @@ undoc text <file> [OPTIONS]        # Convert to plain text only
 undoc json <file> [OPTIONS]        # Convert to JSON only
 undoc info <file>                  # Show document information
 undoc extract <file> [OPTIONS]     # Extract resources only
+undoc tables <file> [OPTIONS]      # Extract tables as CSV
 undoc update [OPTIONS]             # Self-update to latest version
 undoc version                      # Show version information
 ```
@@ -355,6 +356,24 @@ undoc extract presentation.pptx
 # Extract to specific directory
 undoc extract presentation.pptx -o ./media
 ```
+
+### Extract Tables as CSV
+
+```bash
+# Every table to standard output, a blank line between two
+undoc tables workbook.xlsx > tables.csv
+
+# One file per table, named for its section (sheet, slide) and place: s1-t1.csv, s2-t1.csv, ...
+undoc tables workbook.xlsx -o ./tables
+
+# Tab-separated instead (files named .tsv)
+undoc tables report.docx --tsv -o ./tables
+```
+
+The output is RFC 4180 CSV: a field holding a comma, a quote or a line break is quoted.
+A merged cell's text is in its top-left position and the positions it covers are empty, so
+every row has the same number of fields. A table nested in a cell is written as a table of
+its own, right after the one that holds it. From Rust, the same comes from `Table::to_csv()`.
 
 ### Self-Update
 

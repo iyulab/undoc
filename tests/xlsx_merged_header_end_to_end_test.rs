@@ -194,3 +194,32 @@ fn workbook_without_merges_is_unaffected() {
         "no table row may contain an invented '#', got {invented:?}"
     );
 }
+
+/// CSV lays the same merges on the grid: a label at its merge's first column, the column it
+/// covers empty, and the data under its own columns.
+#[test]
+fn merged_labels_reach_csv_in_their_own_columns() {
+    let doc = parse_bytes(&grouped_header_workbook()).expect("workbook must parse");
+    assert_eq!(
+        only_table(&doc).to_csv(),
+        "Group A,,Group B,\r\na1,a2,b1,b2\r\n1,2,3,4\r\n"
+    );
+}
+
+/// A vertical merge is one value: the rows below it get an empty field in its column, not a
+/// copy and not an extra column (a merge padded twice shifts every value right).
+#[test]
+fn a_vertical_merge_reaches_csv_once() {
+    let rows = format!(
+        "{}{}{}",
+        row(1, &["Region", "Value"]),
+        row(2, &["North", "1"]),
+        row(3, &["", "2"]),
+    );
+    let merges = r#"<mergeCells count="1"><mergeCell ref="A2:A3"/></mergeCells>"#;
+    let doc = parse_bytes(&workbook(&rows, merges)).expect("workbook must parse");
+    assert_eq!(
+        only_table(&doc).to_csv(),
+        "Region,Value\r\nNorth,1\r\n,2\r\n"
+    );
+}

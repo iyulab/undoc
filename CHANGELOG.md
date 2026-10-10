@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Tables as CSV.** `undoc tables <file>` writes every table as CSV (RFC 4180) — to standard
+  output, a blank line between two, or one file per table with `-o DIR`, named for the section
+  it is in (a sheet, a slide, a document section) and its place there (`s2-t1.csv`, …);
+  tab-separated with `--tsv`. A merged cell's text is in its top-left position and the
+  positions it covers are empty, so every record has the same number of fields; a table nested
+  in a cell is a table of its own, right after the one that holds it. For library users,
+  `Table::to_csv()` and `Table::to_delimited(delimiter)`.
+
 ## [0.20.0] - 2026-10-09
 
 ### Changed

@@ -2,6 +2,7 @@
 
 use super::Paragraph;
 use serde::{Deserialize, Serialize};
+use unparser_shared::csv;
 
 /// Horizontal alignment for table cells.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -336,6 +337,42 @@ impl Table {
         }
         text
     }
+
+    /// The table as CSV ([RFC 4180](https://www.rfc-editor.org/rfc/rfc4180)): one record per
+    /// row, in order, records ended by CRLF.
+    ///
+    /// A merged cell's text is in its top-left position and the positions it covers are
+    /// empty, so every record has the same number of fields and a value is never counted
+    /// twice. A field holding the delimiter, a quote or a line break is quoted, with quotes
+    /// doubled; a cell's paragraphs are kept on their own lines inside it. A table nested in
+    /// a cell is not part of the cell's text — it is a table of its own
+    /// ([`Cell::nested_tables`]).
+    ///
+    /// ```
+    /// use undoc::model::{Cell, Row, Table};
+    ///
+    /// let mut table = Table::new();
+    /// table.add_row(Row::header(vec![Cell::header("Item"), Cell::header("Note")]));
+    /// table.add_row(Row {
+    ///     cells: vec![Cell::with_text("Bolt, M6"), Cell::with_text("He said \"no\"")],
+    ///     ..Row::default()
+    /// });
+    /// assert_eq!(table.to_csv(), "Item,Note\r\n\"Bolt, M6\",\"He said \"\"no\"\"\"\r\n");
+    /// ```
+    pub fn to_csv(&self) -> String {
+        self.to_delimited(',')
+    }
+
+    /// The table as delimited text, like [`Table::to_csv`] with `delimiter` between fields
+    /// (`'\t'` for TSV).
+    pub fn to_delimited(&self, delimiter: char) -> String {
+        let rows = self.rows.iter().map(|row| {
+            row.cells
+                .iter()
+                .map(|cell| csv::Cell::new(cell.plain_text(), cell.row_span, cell.col_span))
+        });
+        csv::to_delimited(rows, delimiter)
+    }
 }
 
 #[cfg(test)]
@@ -504,5 +541,50 @@ mod tests {
     fn test_row_is_empty_true_with_no_cells() {
         let row = Row::new();
         assert!(row.is_empty());
+    }
+
+    fn row(cells: Vec<Cell>) -> Row {
+        Row {
+            cells,
+            ..Row::default()
+        }
+    }
+
+    fn spanning(text: &str, row_span: u32, col_span: u32) -> Cell {
+        Cell {
+            row_span,
+            col_span,
+            ..Cell::with_text(text)
+        }
+    }
+
+    #[test]
+    fn to_csv_lays_merged_cells_on_their_grid() {
+        // A vertical merge owns column 0 in the row below, which has no cell for it.
+        let mut table = Table::new();
+        table.add_row(row(vec![spanning("Region", 2, 1), spanning("Sales", 1, 2)]));
+        table.add_row(row(vec![Cell::with_text("2024"), Cell::with_text("2025")]));
+        table.add_row(row(vec![
+            Cell::with_text("North"),
+            Cell::with_text("10"),
+            Cell::with_text("12"),
+        ]));
+        assert_eq!(
+            table.to_csv(),
+            "Region,Sales,\r\n,2024,2025\r\nNorth,10,12\r\n"
+        );
+    }
+
+    #[test]
+    fn to_csv_keeps_a_cells_paragraphs_and_leaves_nested_tables_out() {
+        let mut cell = Cell::with_text("first");
+        cell.content.push(Paragraph::with_text("second"));
+        let mut inner = Table::new();
+        inner.add_row(row(vec![Cell::with_text("inner")]));
+        cell.nested_tables.push(inner);
+        let mut table = Table::new();
+        table.add_row(row(vec![cell, Cell::with_text("x\ty")]));
+        assert_eq!(table.to_csv(), "\"first\nsecond\",x\ty\r\n");
+        assert_eq!(table.to_delimited('\t'), "\"first\nsecond\"\t\"x\ty\"\r\n");
     }
 }
