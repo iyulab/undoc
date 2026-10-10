@@ -194,6 +194,7 @@ unrecognised value degrades to a generic failure rather than going unhandled. `K
 - `ToText()` - Convert to plain text
 - `ToJson(bool compact)` - Convert to JSON
 - `PlainText()` - Get plain text (fast extraction)
+- `GetTables(bool tsv = false)` - Every table as CSV (RFC 4180), or tab-separated, in reading order (`IReadOnlyList<TableText>`): `Section`, `Index` (its place in the section, from 1) and `Text`. A table nested in a cell is a table of its own, right after the one that holds it; a merged cell's text is in its top-left position and the positions it covers are empty.
 - `GetResourceIds()` - List of resource IDs
 - `GetResourceInfo(string id)` - Resource metadata as JsonDocument
 - `GetResourceData(string id)` - Resource binary data

@@ -374,6 +374,52 @@ public class NativeLibraryResolverTests
     }
 }
 
+public class TableTextTests
+{
+    private static string Cell(string text, string nested = "") =>
+        $"<w:tc>{nested}<w:p><w:r><w:t>{text}</w:t></w:r></w:p></w:tc>";
+
+    /// <summary>Name | Age over Alice | 30, the «Alice» cell also holding a one-cell table, «inner».</summary>
+    private static byte[] TableDocx() =>
+        NativeTestSupport.CreateDocxBytes(
+            "<w:tbl>"
+            + $"<w:tr>{Cell("Name")}{Cell("Age")}</w:tr>"
+            + $"<w:tr>{Cell("Alice", $"<w:tbl><w:tr>{Cell("inner")}</w:tr></w:tbl>")}{Cell("30")}</w:tr>"
+            + "</w:tbl>",
+            relationships: "");
+
+    [Fact]
+    public void GetTables_ComeAsCsvWithTheirPlace_NestedTableRightAfterItsHolder()
+    {
+        NativeTestSupport.EnsureNativeLibraryPrepared();
+        using var doc = UndocDocument.ParseBytes(TableDocx());
+        var tables = doc.GetTables();
+        Assert.Equal(2, tables.Count);
+        Assert.Equal(1, tables[0].Section);
+        Assert.Equal(1, tables[0].Index);
+        Assert.Equal("Name,Age\r\nAlice,30\r\n", tables[0].Text);
+        Assert.Equal(1, tables[1].Section);
+        Assert.Equal(2, tables[1].Index);
+        Assert.Equal("inner\r\n", tables[1].Text);
+    }
+
+    [Fact]
+    public void GetTables_Tsv_SeparatesFieldsWithTabs()
+    {
+        NativeTestSupport.EnsureNativeLibraryPrepared();
+        using var doc = UndocDocument.ParseBytes(TableDocx());
+        Assert.Equal("Name\tAge\r\nAlice\t30\r\n", doc.GetTables(tsv: true)[0].Text);
+    }
+
+    [Fact]
+    public void GetTables_NoTables_IsEmpty()
+    {
+        NativeTestSupport.EnsureNativeLibraryPrepared();
+        using var doc = UndocDocument.ParseBytes(NativeTestSupport.CreateMinimalDocxBytes("No tables here"));
+        Assert.Empty(doc.GetTables());
+    }
+}
+
 public class RenderSectionTests
 {
     /// <summary>72 dpi: a slide point is a pixel, and the default slide is 10 × 7.5 inches.</summary>

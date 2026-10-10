@@ -189,6 +189,22 @@ char* undoc_get_title(const UndocDocument* doc);
 char* undoc_get_author(const UndocDocument* doc);
 
 /**
+ * Every table of the document as delimited text, in reading order, as a JSON
+ * array of {"section","index","text"}: the section's number (from 1 — a sheet,
+ * a slide, a document section), the table's place among that section's tables
+ * (from 1), and the table as CSV (RFC 4180) — tab-separated when tsv is
+ * non-zero. A table nested in a cell is a table of its own, right after the one
+ * that holds it. A merged cell's text is in its top-left position and the
+ * positions it covers are empty; records end with CRLF.
+ *
+ * @param doc Document handle
+ * @param tsv Non-zero for tab-separated instead of comma-separated
+ * @return JSON string, "[]" when the document has no tables, or NULL on error.
+ *         Must be freed with undoc_free_string().
+ */
+char* undoc_tables(const UndocDocument* doc, int tsv);
+
+/**
  * Get the ids of all embedded resources as a JSON array.
  *
  * A document with no resources returns "[]", never NULL.

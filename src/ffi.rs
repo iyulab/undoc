@@ -422,6 +422,39 @@ unparser_shared::export_optional_string_getter!(
     }
 );
 
+unparser_shared::export_string_getter!(
+    /// Get every table of the document as delimited text, in reading order, as JSON:
+    /// `[{"section","index","text"}]` — the section's number (from 1 — a sheet, a slide, a
+    /// document section), the table's place among that section's tables (from 1), and the
+    /// table as CSV (RFC 4180), or tab-separated when `tsv` is non-zero. A table nested in a
+    /// cell is a table of its own, right after the one that holds it. A merged cell's text is
+    /// in its top-left position and the positions it covers are empty; records end with CRLF.
+    /// `[]` when the document has no tables.
+    ///
+    /// # Safety
+    ///
+    /// - `doc` must be a valid document handle.
+    /// - Returns null on error. Use `undoc_last_error` to get the error message.
+    /// - The returned string must be freed with `undoc_free_string`.
+    LAST_ERROR,
+    undoc_tables(doc: UndocDocument, tsv: c_int),
+    {
+        let document = &(*doc).inner;
+        let delimiter = if tsv != 0 { '\t' } else { ',' };
+        let tables: Vec<serde_json::Value> = document
+            .tables()
+            .map(|(section, index, table)| {
+                serde_json::json!({
+                    "section": section,
+                    "index": index,
+                    "text": table.to_delimited(delimiter),
+                })
+            })
+            .collect();
+        serde_json::to_string(&tables).map_err(json_err)
+    }
+);
+
 unparser_shared::export_free_string!(
     /// Free a string allocated by this library.
     ///
@@ -697,6 +730,11 @@ mod tests {
 
     /// A one-paragraph DOCX holding `text`, assembled in memory.
     fn docx_with(text: &str) -> Vec<u8> {
+        docx_with_body(&format!("<w:p><w:r><w:t>{text}</w:t></w:r></w:p>"))
+    }
+
+    /// A DOCX whose body is `body`, assembled in memory.
+    fn docx_with_body(body: &str) -> Vec<u8> {
         use std::io::Write;
         let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
         let options = zip::write::SimpleFileOptions::default()
@@ -718,7 +756,7 @@ mod tests {
             zip,
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
-  <w:body><w:p><w:r><w:t>{text}</w:t></w:r></w:p></w:body>
+  <w:body>{body}</w:body>
 </w:document>"#
         )
         .unwrap();
@@ -786,6 +824,50 @@ mod tests {
         assert_eq!(take_string(unsafe { undoc_to_text(doc) }).trim(), HELLO);
 
         unsafe { undoc_free_document(doc) };
+    }
+
+    /// Name | Age over Alice | 30, the «Alice» cell also holding a one-cell table, «inner».
+    const TABLE_BODY: &str = "<w:tbl>\
+        <w:tr><w:tc><w:p><w:r><w:t>Name</w:t></w:r></w:p></w:tc>\
+        <w:tc><w:p><w:r><w:t>Age</w:t></w:r></w:p></w:tc></w:tr>\
+        <w:tr><w:tc><w:tbl><w:tr><w:tc><w:p><w:r><w:t>inner</w:t></w:r></w:p></w:tc></w:tr></w:tbl>\
+        <w:p><w:r><w:t>Alice</w:t></w:r></w:p></w:tc>\
+        <w:tc><w:p><w:r><w:t>30</w:t></w:r></w:p></w:tc></w:tr>\
+        </w:tbl>";
+
+    #[test]
+    fn tables_come_as_csv_with_their_place() {
+        let data = docx_with_body(TABLE_BODY);
+        let doc = unsafe { undoc_parse_bytes(data.as_ptr(), data.len()) };
+        assert!(!doc.is_null());
+
+        let json = take_string(unsafe { undoc_tables(doc, 0) });
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!([
+                {"section": 1, "index": 1, "text": "Name,Age\r\nAlice,30\r\n"},
+                {"section": 1, "index": 2, "text": "inner\r\n"},
+            ]),
+            "{json}"
+        );
+        let tsv: serde_json::Value =
+            serde_json::from_str(&take_string(unsafe { undoc_tables(doc, 1) })).unwrap();
+        assert_eq!(tsv[0]["text"], "Name\tAge\r\nAlice\t30\r\n");
+
+        unsafe { undoc_free_document(doc) };
+    }
+
+    #[test]
+    fn a_document_without_tables_has_an_empty_list() {
+        let data = hello_docx();
+        let doc = unsafe { undoc_parse_bytes(data.as_ptr(), data.len()) };
+        assert!(!doc.is_null());
+        assert_eq!(take_string(unsafe { undoc_tables(doc, 0) }), "[]");
+        unsafe { undoc_free_document(doc) };
+
+        assert!(unsafe { undoc_tables(ptr::null(), 0) }.is_null());
+        assert_eq!(undoc_last_error_kind(), UNDOC_ERROR_INVALID_ARGUMENT);
     }
 
     #[test]

@@ -183,6 +183,10 @@ itself, and never `ErrorKind.NONE` (which means success).
 - `section_count` - Number of sections
 - `resource_count` - Number of resources
 
+#### Tables
+
+- `get_tables(tsv=False)` - Every table as CSV (RFC 4180), or tab-separated with `tsv=True`, in reading order: `{"section", "index", "text"}` — the section (a sheet, a slide, a document section), the table's place among that section's tables (from 1), and the text. A table nested in a cell is a table of its own, right after the one that holds it. A merged cell's text is in its top-left position and the positions it covers are empty, so every record has the same number of fields: `pandas.read_csv(io.StringIO(t["text"]))` reads one.
+
 #### Resource Methods
 
 - `get_resource_ids()` - List of resource IDs

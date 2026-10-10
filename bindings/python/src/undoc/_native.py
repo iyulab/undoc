@@ -164,6 +164,9 @@ _lib.undoc_get_title.restype = ctypes.c_void_p
 _lib.undoc_get_author.argtypes = [ctypes.c_void_p]
 _lib.undoc_get_author.restype = ctypes.c_void_p
 
+_lib.undoc_tables.argtypes = [ctypes.c_void_p, ctypes.c_int]
+_lib.undoc_tables.restype = ctypes.c_void_p
+
 _lib.undoc_free_string.argtypes = [ctypes.c_void_p]
 _lib.undoc_free_string.restype = None
 

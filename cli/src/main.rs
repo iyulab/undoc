@@ -902,18 +902,10 @@ fn run_tables(
     let doc = undoc::parse_file(input)?;
 
     let (delimiter, extension) = if tsv { ('\t', "tsv") } else { (',', "csv") };
-    let mut tables: Vec<(usize, usize, String)> = Vec::new();
-    for (s, section) in doc.sections.iter().enumerate() {
-        let mut found = Vec::new();
-        for block in &section.content {
-            if let undoc::Block::Table(table) = block {
-                with_nested_tables(table, &mut found);
-            }
-        }
-        for (t, table) in found.into_iter().enumerate() {
-            tables.push((s + 1, t + 1, table.to_delimited(delimiter)));
-        }
-    }
+    let tables: Vec<(usize, usize, String)> = doc
+        .tables()
+        .map(|(section, n, table)| (section, n, table.to_delimited(delimiter)))
+        .collect();
 
     match output {
         // Standard output carries the tables alone, so it can be piped into another tool.
@@ -936,18 +928,6 @@ fn run_tables(
         }
     }
     Ok(())
-}
-
-/// `table`, then every table nested in its cells, depth first — the order they are read in.
-fn with_nested_tables<'a>(table: &'a undoc::Table, out: &mut Vec<&'a undoc::Table>) {
-    out.push(table);
-    for row in &table.rows {
-        for cell in &row.cells {
-            for nested in &cell.nested_tables {
-                with_nested_tables(nested, out);
-            }
-        }
-    }
 }
 
 fn write_output(path: Option<&PathBuf>, content: &str) -> Result<(), Box<dyn std::error::Error>> {

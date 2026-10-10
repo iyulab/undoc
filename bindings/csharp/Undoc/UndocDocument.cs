@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
@@ -283,6 +284,30 @@ public class UndocDocument : IDisposable
 
             return CopyAndFreeNativeUtf8String(ptr, NativeMethods.undoc_free_string);
         }
+    }
+
+    /// <summary>
+    /// Get every table of the document as delimited text, in reading order.
+    /// </summary>
+    /// <remarks>
+    /// Each table is CSV (RFC 4180), or tab-separated when <paramref name="tsv"/> is true: a
+    /// merged cell's text is in its top-left position and the positions it covers are empty,
+    /// so every record has the same number of fields; records end with CRLF. A table nested
+    /// in a cell is a table of its own, right after the one that holds it.
+    /// </remarks>
+    /// <param name="tsv">Tab-separated instead of comma-separated.</param>
+    /// <returns>The tables with their section and place in it; empty when there are none.</returns>
+    public IReadOnlyList<TableText> GetTables(bool tsv = false)
+    {
+        ThrowIfDisposed();
+        var ptr = NativeMethods.undoc_tables(_handle, tsv ? 1 : 0);
+        var json = CopyAndFreeRequiredNativeUtf8String(
+            ptr,
+            "Failed to get tables",
+            NativeFailure,
+            NativeMethods.undoc_free_string);
+        return JsonSerializer.Deserialize(json, UndocJsonContext.Default.TableTextArray)
+            ?? throw new UndocException("Failed to deserialize tables");
     }
 
     /// <summary>

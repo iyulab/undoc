@@ -217,6 +217,26 @@ impl Document {
         self.sections.is_empty() || self.sections.iter().all(|s| s.is_empty())
     }
 
+    /// Every table of the document in reading order, with where it is: the section's number
+    /// (from 1 — a sheet, a slide, a document section) and the table's place among that
+    /// section's tables (from 1) — the names `undoc tables` writes them under
+    /// (`s<section>-t<n>`). A table nested in a cell is a table of its own, right after the
+    /// one that holds it.
+    pub fn tables(&self) -> impl Iterator<Item = (usize, usize, &Table)> {
+        self.sections.iter().enumerate().flat_map(|(s, section)| {
+            let mut found = Vec::new();
+            for block in &section.content {
+                if let Block::Table(table) = block {
+                    with_nested_tables(table, &mut found);
+                }
+            }
+            found
+                .into_iter()
+                .enumerate()
+                .map(move |(t, table)| (s + 1, t + 1, table))
+        })
+    }
+
     /// Extract all text content as a single string.
     pub fn plain_text(&self) -> String {
         let mut text = String::new();
@@ -250,11 +270,23 @@ impl Document {
     }
 }
 
+/// `table`, then every table nested in its cells, depth first — the order they are read in.
+fn with_nested_tables<'a>(table: &'a Table, out: &mut Vec<&'a Table>) {
+    out.push(table);
+    for row in &table.rows {
+        for cell in &row.cells {
+            for nested in &cell.nested_tables {
+                with_nested_tables(nested, out);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::detect::FormatType;
-    use crate::model::{RevisionType, TextRun, TextStyle};
+    use crate::model::{Cell, RevisionType, Row, TextRun, TextStyle};
 
     #[test]
     fn test_document_default_format_is_docx() {
@@ -331,6 +363,53 @@ mod tests {
         assert!(json.contains("Test Author"));
         // Empty fields should not be serialized
         assert!(!json.contains("subject"));
+    }
+
+    /// A one-cell table holding `text`, its cell holding `nested`.
+    fn table(text: &str, nested: Vec<Table>) -> Table {
+        let mut cell = Cell::with_text(text);
+        cell.nested_tables = nested;
+        let mut row = Row::new();
+        row.add_cell(cell);
+        let mut table = Table::new();
+        table.add_row(row);
+        table
+    }
+
+    #[test]
+    fn tables_are_numbered_per_section_with_nested_tables_after_their_holder() {
+        let mut doc = Document::new();
+        let mut first = Section::new(0);
+        first.add_table(table(
+            "a",
+            vec![
+                table("a.1", vec![table("a.1.1", vec![])]),
+                table("a.2", vec![]),
+            ],
+        ));
+        first.add_paragraph(Paragraph::with_text("between"));
+        first.add_table(table("b", vec![]));
+        doc.add_section(first);
+        doc.add_section(Section::new(1));
+        let mut third = Section::new(2);
+        third.add_table(table("c", vec![]));
+        doc.add_section(third);
+
+        let found: Vec<(usize, usize, String)> = doc
+            .tables()
+            .map(|(s, t, table)| (s, t, table.rows[0].cells[0].plain_text()))
+            .collect();
+        let expected = [
+            (1, 1, "a"),
+            (1, 2, "a.1"),
+            (1, 3, "a.1.1"),
+            (1, 4, "a.2"),
+            (1, 5, "b"),
+            (3, 1, "c"),
+        ]
+        .map(|(s, t, text)| (s, t, text.to_string()));
+        assert_eq!(found, expected);
+        assert_eq!(Document::new().tables().count(), 0);
     }
 
     #[test]

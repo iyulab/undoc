@@ -348,6 +348,30 @@ class Undoc:
             return _copy_and_free_utf8_ptr(self._lib, result)
         return None
 
+    def get_tables(self, tsv: bool = False) -> List[Dict]:
+        """Every table of the document as delimited text, in reading order.
+
+        Args:
+            tsv: Tab-separated instead of comma-separated.
+
+        Returns:
+            A list of ``{"section", "index", "text"}``: the section's number
+            (from 1 — a sheet, a slide, a document section), the table's place
+            among that section's tables (from 1), and the table as CSV
+            (RFC 4180) — tab-separated when ``tsv`` is true. A table nested in
+            a cell is a table of its own, right after the one that holds it. A
+            merged cell's text is in its top-left position and the positions it
+            covers are empty, so every record has the same number of fields;
+            records end with CRLF. ``pandas.read_csv(io.StringIO(t["text"]))``
+            reads one. An empty list when the document has no tables.
+
+        Raises:
+            UndocError: If the tables cannot be produced.
+        """
+        result = self._lib.undoc_tables(self._handle, 1 if tsv else 0)
+        result = _require_result_ptr(self._lib, result, "Failed to get tables")
+        return json.loads(_copy_and_free_utf8_ptr(self._lib, result))
+
     def get_resource_ids(self) -> List[str]:
         """Get list of resource IDs in the document.
 

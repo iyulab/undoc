@@ -8,6 +8,7 @@ namespace Undoc;
 /// trimmed, Native AOT, and other apps that disable reflection-based serialization.
 /// </summary>
 [JsonSerializable(typeof(string[]))]
+[JsonSerializable(typeof(TableText[]))]
 [JsonSerializable(typeof(RenderInfoPayload))]
 [JsonSerializable(typeof(RenderOptionsPayload))]
 internal sealed partial class UndocJsonContext : JsonSerializerContext

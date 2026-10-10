@@ -58,12 +58,15 @@ if os.environ.get("UNDOC_REQUIRE_NATIVE") == "1" and not LIBRARY_AVAILABLE:
 
 def create_minimal_docx_bytes(text: str = "Привет из Python") -> bytes:
     """Create a tiny DOCX fixture without relying on external test files."""
+    return create_docx_with_body_bytes(f"<w:p><w:r><w:t>{text}</w:t></w:r></w:p>")
+
+
+def create_docx_with_body_bytes(body: str) -> bytes:
+    """A DOCX whose body is ``body``, assembled in memory."""
     document_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
   <w:body>
-    <w:p>
-      <w:r><w:t>{text}</w:t></w:r>
-    </w:p>
+    {body}
   </w:body>
 </w:document>"""
 
@@ -445,6 +448,38 @@ class TestParseBytes:
         doc = parse_bytes(create_minimal_docx_bytes(SAMPLE_TEXT))
 
         assert SAMPLE_TEXT in doc.to_markdown()
+
+
+def _cell(text: str, nested: str = "") -> str:
+    return f"<w:tc>{nested}<w:p><w:r><w:t>{text}</w:t></w:r></w:p></w:tc>"
+
+
+# Name | Age over Alice | 30, the «Alice» cell also holding a one-cell table, «inner».
+_TABLE_BODY = (
+    "<w:tbl>"
+    f"<w:tr>{_cell('Name')}{_cell('Age')}</w:tr>"
+    f"<w:tr>{_cell('Alice', '<w:tbl><w:tr>' + _cell('inner') + '</w:tr></w:tbl>')}"
+    f"{_cell('30')}</w:tr>"
+    "</w:tbl>"
+)
+
+
+class TestGetTables:
+    """Tables as delimited text: ``Undoc.get_tables``."""
+
+    def test_tables_come_as_csv_with_their_place(self):
+        doc = parse_bytes(create_docx_with_body_bytes(_TABLE_BODY))
+        assert doc.get_tables() == [
+            {"section": 1, "index": 1, "text": "Name,Age\r\nAlice,30\r\n"},
+            {"section": 1, "index": 2, "text": "inner\r\n"},
+        ]
+
+    def test_tsv_separates_fields_with_tabs(self):
+        doc = parse_bytes(create_docx_with_body_bytes(_TABLE_BODY))
+        assert doc.get_tables(tsv=True)[0]["text"] == "Name\tAge\r\nAlice\t30\r\n"
+
+    def test_a_document_without_tables_has_none(self):
+        assert parse_bytes(create_minimal_docx_bytes(SAMPLE_TEXT)).get_tables() == []
 
 
 class TestResources:

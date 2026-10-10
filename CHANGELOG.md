@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Tables as CSV from the bindings and the C ABI.** `undoc_tables(doc, tsv)` returns every
+  table as CSV (RFC 4180), or tab-separated, with the section it is in (a sheet, a slide, a
+  document section) and its place there, as a JSON array of `{"section", "index", "text"}`; a
+  table nested in a cell is a table of its own, right after the one that holds it. Python
+  `Undoc.get_tables()` and .NET `UndocDocument.GetTables()` wrap it. For library users,
+  `Document::tables()` lists the tables with their place — what `undoc tables` writes.
+
 ### Changed
 
 - `Table::cell_columns()` and `Table::column_count()` place cells with the walk the family's
