@@ -62,7 +62,7 @@ Parse Office documents in the browser — no server, no upload:
 
 ```js
 import { parse } from '@iyulab/undoc';
-const doc = parse(new Uint8Array(await file.arrayBuffer()));
+const doc = await parse(new Uint8Array(await file.arrayBuffer()));
 console.log(doc.format());      // "docx" | "xlsx" | "pptx"
 console.log(doc.toMarkdown());
 ```

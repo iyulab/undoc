@@ -29,6 +29,7 @@ mod text;
 mod word6;
 
 pub use parser::DocParser;
+pub use pictures::Inflate;
 
 #[cfg(test)]
 mod tests;

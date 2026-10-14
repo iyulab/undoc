@@ -6,6 +6,7 @@ use super::chars::{self, CharProps, ChpxIndex};
 use super::fib;
 use super::fib::FcLcb;
 use super::lists::{self, ListCounter, ListTable};
+use super::pictures::Inflate;
 use super::props::{self, PapxIndex, ParaProps, StyleInfo};
 use super::symbol;
 use super::text::{self, DocChar};
@@ -56,13 +57,21 @@ impl DocParser {
         Ok(Self { data })
     }
 
-    /// Parse the document.
+    /// Parse the document. Compressed metafile pictures are inflated with the built-in
+    /// decompressor (the `deflate` feature); without it they are left out.
     pub fn parse(&mut self) -> Result<Document> {
+        self.parse_with(&super::pictures::builtin_inflate)
+    }
+
+    /// Parse the document, inflating compressed metafile pictures (zlib streams) with
+    /// `inflate` -- for hosts that supply their own decompressor instead of the `deflate`
+    /// feature. A picture `inflate` returns `None` for is left out.
+    pub fn parse_with(&mut self, inflate: Inflate) -> Result<Document> {
         let mut container = cfb::CompoundFile::open(Cursor::new(&self.data[..]))
             .map_err(|e| Error::InvalidData(format!("Word document: unreadable container: {e}")))?;
         let word_document = read_stream(&mut container, "/WordDocument")?;
         match fib::parse(&word_document)? {
-            fib::Format::Word97(fib) => Self::parse_word97(container, word_document, fib),
+            fib::Format::Word97(fib) => Self::parse_word97(container, word_document, fib, inflate),
             fib::Format::Word6(fib) => Self::parse_word6(container, word_document, fib),
         }
     }
@@ -108,6 +117,7 @@ impl DocParser {
         mut container: cfb::CompoundFile<Cursor<&[u8]>>,
         word_document: Vec<u8>,
         fib: fib::Fib,
+        inflate: Inflate,
     ) -> Result<Document> {
         let table = read_stream(&mut container, &format!("/{}", fib.table_stream))?;
         // Only documents with inline pictures have one.
@@ -156,6 +166,7 @@ impl DocParser {
         let notes: Vec<&Note> = footnotes.iter().chain(&endnotes).collect();
         let mut assembler =
             Assembler::new(&papx, &chpx, &styles, &fonts, &list_table, &notes, &data);
+        assembler.inflate = inflate;
         for block in assembler.run(&chars) {
             section.add_block(block);
         }
@@ -301,6 +312,7 @@ struct Assembler<'a> {
     notes: &'a [&'a Note],
     /// The `Data` stream, and the pictures read from it so far.
     data: &'a [u8],
+    inflate: Inflate<'a>,
     resources: Vec<(String, Resource)>,
     images: Vec<InlineImage>,
     /// The character properties of the run being read.
@@ -330,6 +342,7 @@ impl<'a> Assembler<'a> {
         data: &'a [u8],
     ) -> Self {
         Self {
+            inflate: &super::pictures::builtin_inflate,
             papx,
             chpx,
             styles,
@@ -418,7 +431,7 @@ impl<'a> Assembler<'a> {
         }
         let Some(picture) = props
             .picture
-            .and_then(|offset| super::pictures::read(self.data, offset))
+            .and_then(|offset| super::pictures::read(self.data, offset, self.inflate))
         else {
             return;
         };

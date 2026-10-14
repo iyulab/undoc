@@ -2413,7 +2413,9 @@ dependencies = [
  "serde_json",
  "undoc",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
  "wasm-bindgen-test",
+ "zip 9.0.0",
 ]
 
 [[package]]

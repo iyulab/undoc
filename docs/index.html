@@ -146,7 +146,7 @@
       await wasmReady;
       try {
         const bytes = new Uint8Array(await file.arrayBuffer());
-        const doc = parse(bytes);
+        const doc = await parse(bytes);
 
         const md = doc.toMarkdown();
         const txt = doc.toText();

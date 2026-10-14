@@ -909,6 +909,50 @@ fn a_bulleted_list_has_no_numbers() {
     assert_eq!(info.number, None);
 }
 
+/// A document whose one picture is a compressed EMF: `b"packed"` standing for the zlib
+/// stream, `b"original"` for what it inflates to.
+fn compressed_emf_document() -> Vec<u8> {
+    let mut data = vec![0u8; 8];
+    data.extend(super::pictures::tests::picf_with_emf(
+        b"original",
+        b"packed",
+    ));
+    build(
+        &[p("Figure: \u{01}")],
+        Options {
+            formats: vec![("\u{01}", vec![0x03, 0x6A, 8, 0, 0, 0, 0x55, 0x08, 0x01])],
+            data: Some(data),
+            ..Default::default()
+        },
+    )
+}
+
+/// The two-pass protocol a host with only an asynchronous decompressor relies on: a first
+/// parse reports the compressed pictures, a second one is handed them inflated.
+#[test]
+fn compressed_pictures_can_be_supplied_after_a_first_pass_reports_them() {
+    let mut parser = DocParser::from_bytes(compressed_emf_document()).unwrap();
+    let seen = std::cell::RefCell::new(Vec::new());
+    let first = parser
+        .parse_with(&|body: &[u8]| {
+            seen.borrow_mut().push(body.to_vec());
+            None
+        })
+        .unwrap();
+    assert_eq!(*seen.borrow(), vec![b"packed".to_vec()]);
+    assert!(
+        first.resources.is_empty(),
+        "an uninflated picture is left out"
+    );
+
+    let second = parser
+        .parse_with(&|body: &[u8]| (body == b"packed").then(|| b"original".to_vec()))
+        .unwrap();
+    let resource = second.resources.values().next().expect("the picture");
+    assert_eq!(resource.data, b"original");
+    assert_eq!(resource.filename.as_deref(), Some("image1.emf"));
+}
+
 #[test]
 fn an_inline_picture_becomes_a_resource_the_paragraph_references() {
     let png = b"\x89PNG\r\n\x1a\npixels".to_vec();

@@ -20,7 +20,7 @@ npm install @iyulab/undoc
 import { parse } from '@iyulab/undoc';
 
 const bytes = new Uint8Array(await file.arrayBuffer());
-const doc = parse(bytes);
+const doc = await parse(bytes);
 
 console.log(doc.format());       // "docx" | "xlsx" | "pptx" | "doc" | "xls" | "ppt"
 console.log(doc.toMarkdown());   // Markdown string
@@ -49,15 +49,19 @@ JSON.parse(supportedFormats());
 Ask rather than hardcoding the extensions on your side — a local copy of the list goes stale
 the moment this package learns a new format, and nothing tells you it has.
 
-### `parse(data: Uint8Array): OfficeDocument`
+### `parse(data: Uint8Array): Promise<OfficeDocument>`
 
-Parse a DOCX, XLSX, or PPTX byte array. Throws if the format is unrecognized.
+Parse a DOCX, XLSX, or PPTX byte array. Rejects if the format is unrecognized.
+
+Asynchronous because ZIP entries are inflated with the host's `DecompressionStream`
+(`deflate-raw` for OOXML packages, `deflate` for compressed pictures in 97-2003 documents) rather than a decompressor bundled in the WebAssembly binary, so the runtime
+must provide it: all current browsers, and Node.js 18+.
 
 ### `OfficeDocument`
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `fromBytes(data)` | `OfficeDocument` | Alias for module-level `parse()` |
+| `fromBytes(data)` | `Promise<OfficeDocument>` | Alias for module-level `parse()` |
 | `format()` | `string` | `"docx"` \| `"xlsx"` \| `"pptx"` \| `"doc"` \| `"xls"` \| `"ppt"` |
 | `toMarkdown()` | `string` | Full document as Markdown |
 | `toText()` | `string` | Plain text extraction |

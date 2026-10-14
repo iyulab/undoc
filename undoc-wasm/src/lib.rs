@@ -1,4 +1,5 @@
 mod document;
+mod inflate;
 
 pub use document::OfficeDocument;
 
@@ -17,15 +18,82 @@ use wasm_bindgen::prelude::*;
 pub fn supported_formats() -> Result<String, JsValue> {
     let formats: Vec<_> = undoc::FormatType::ALL
         .iter()
+        .filter(|format| is_enabled(**format))
         .map(|format| serde_json::json!({ "extension": format.extension(), "name": format.name() }))
         .collect();
     serde_json::to_string(&formats).map_err(json_error)
 }
 
+/// Parse an Office file. Async because ZIP entries are inflated with the host's
+/// `DecompressionStream`, which only offers a stream API.
+/// Whether this build was compiled with support for `format`. `FormatType::ALL` lists every
+/// format the library knows, not just the ones its enabled features can parse.
+fn is_enabled(format: undoc::FormatType) -> bool {
+    use undoc::FormatType::*;
+    match format {
+        Docx => cfg!(feature = "docx"),
+        Xlsx => cfg!(feature = "xlsx"),
+        Pptx => cfg!(feature = "pptx"),
+        Doc => cfg!(feature = "doc"),
+        Xls => cfg!(feature = "xls"),
+        Ppt => cfg!(feature = "ppt"),
+    }
+}
+
 #[wasm_bindgen]
-pub fn parse(data: &[u8]) -> Result<OfficeDocument, JsValue> {
-    undoc::parse_bytes(data)
+pub async fn parse(data: Vec<u8>) -> Result<OfficeDocument, JsValue> {
+    let data = inflate::inflate_package(&data).await?;
+    parse_inflated(&data)
+        .await
         .map(|inner| OfficeDocument { inner })
+}
+
+async fn parse_inflated(data: &[u8]) -> Result<undoc::Document, JsValue> {
+    #[cfg(feature = "doc")]
+    if matches!(
+        undoc::detect_format_from_bytes(data),
+        Ok(undoc::FormatType::Doc)
+    ) {
+        return parse_doc(data).await;
+    }
+    undoc::parse_bytes(data).map_err(undoc_error)
+}
+
+/// Parse a .doc, inflating its compressed pictures with `DecompressionStream`.
+///
+/// The parser wants each picture inflated synchronously, which a stream API cannot do. So it
+/// runs twice: a first pass that only records the compressed pictures it meets, then -- once
+/// those are inflated -- a second that looks them up. Documents without compressed pictures
+/// (nearly all of them) finish after the first pass.
+#[cfg(feature = "doc")]
+async fn parse_doc(data: &[u8]) -> Result<undoc::Document, JsValue> {
+    use std::{cell::RefCell, collections::HashMap};
+
+    let mut parser = undoc::doc::DocParser::from_bytes(data.to_vec()).map_err(undoc_error)?;
+    let wanted = RefCell::new(Vec::<Vec<u8>>::new());
+    let first = parser
+        .parse_with(&|body: &[u8]| {
+            wanted.borrow_mut().push(body.to_vec());
+            None
+        })
+        .map_err(undoc_error)?;
+    let wanted = wanted.into_inner();
+    if wanted.is_empty() {
+        return Ok(first);
+    }
+
+    let mut inflated = HashMap::new();
+    for body in wanted {
+        if inflated.contains_key(&body) {
+            continue;
+        }
+        // A picture that will not inflate is left out, as the built-in decompressor does.
+        if let Ok(bytes) = inflate::inflate_zlib(&body).await {
+            inflated.insert(body, bytes);
+        }
+    }
+    parser
+        .parse_with(&|body: &[u8]| inflated.get(body).cloned())
         .map_err(undoc_error)
 }
 
@@ -69,16 +137,38 @@ mod tests {
     wasm_bindgen_test_configure!(run_in_node_experimental);
 
     #[wasm_bindgen_test]
-    fn test_parse_invalid_returns_error() {
-        let result = parse(b"garbage data");
+    async fn test_parse_invalid_returns_error() {
+        let result = parse(b"garbage data".to_vec()).await;
         assert!(result.is_err());
+    }
+
+    /// The end-to-end path: every entry of this package is DEFLATE-compressed, and the core
+    /// crate here cannot inflate, so reaching the text proves `DecompressionStream` ran.
+    #[wasm_bindgen_test]
+    async fn test_parse_deflated_docx() {
+        let data = include_bytes!("../tests/fixtures/deflated.docx").to_vec();
+        let doc = parse(data).await.expect("a deflated docx must parse");
+        assert_eq!(doc.format(), "docx");
+        assert!(doc.to_text().unwrap().contains("Hello deflate"));
+    }
+
+    /// A .doc whose only picture is a zlib-compressed EMF: it reaches the output only if the
+    /// second parse was handed the picture `DecompressionStream` inflated.
+    #[cfg(feature = "doc")]
+    #[wasm_bindgen_test]
+    async fn test_parse_doc_with_compressed_picture() {
+        let data = include_bytes!("../tests/fixtures/compressed-emf.doc").to_vec();
+        let doc = parse(data).await.expect("a .doc must parse");
+        assert_eq!(doc.format(), "doc");
+        assert!(doc.to_markdown().unwrap().contains("image1.emf"));
     }
 
     /// The documented contract is that a caller can branch on the reason instead of the
     /// message. That only holds if the property is actually there.
     #[wasm_bindgen_test]
-    fn test_parse_error_carries_its_kind() {
-        let error = parse(b"garbage data")
+    async fn test_parse_error_carries_its_kind() {
+        let error = parse(b"garbage data".to_vec())
+            .await
             .err()
             .expect("garbage must not parse");
         let kind = js_sys::Reflect::get(&error, &JsValue::from_str("kind"))
@@ -118,7 +208,10 @@ mod tests {
     #[test]
     fn supported_formats_stays_in_step_with_the_library() {
         let json = supported_formats().unwrap();
-        for format in undoc::FormatType::ALL {
+        for format in undoc::FormatType::ALL
+            .into_iter()
+            .filter(|f| is_enabled(*f))
+        {
             assert!(
                 json.contains(format.extension()),
                 "{} is parsed but not reported as supported",

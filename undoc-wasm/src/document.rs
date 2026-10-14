@@ -11,10 +11,8 @@ pub struct OfficeDocument {
 #[wasm_bindgen]
 impl OfficeDocument {
     #[wasm_bindgen(js_name = fromBytes)]
-    pub fn from_bytes(data: &[u8]) -> Result<OfficeDocument, JsValue> {
-        undoc::parse_bytes(data)
-            .map(|inner| OfficeDocument { inner })
-            .map_err(undoc_error)
+    pub async fn from_bytes(data: Vec<u8>) -> Result<OfficeDocument, JsValue> {
+        crate::parse(data).await
     }
 
     #[wasm_bindgen(js_name = toMarkdown)]
@@ -51,8 +49,8 @@ mod tests {
     wasm_bindgen_test_configure!(run_in_node_experimental);
 
     #[wasm_bindgen_test]
-    fn test_from_bytes_invalid_returns_err() {
-        let result = OfficeDocument::from_bytes(b"not an office file");
+    async fn test_from_bytes_invalid_returns_err() {
+        let result = OfficeDocument::from_bytes(b"not an office file".to_vec()).await;
         assert!(result.is_err());
     }
 
@@ -60,8 +58,9 @@ mod tests {
     /// same reason channel `parse` gives them — a bare string would force them back to
     /// matching on message text.
     #[wasm_bindgen_test]
-    fn test_from_bytes_error_carries_its_kind() {
-        let error = OfficeDocument::from_bytes(b"not an office file")
+    async fn test_from_bytes_error_carries_its_kind() {
+        let error = OfficeDocument::from_bytes(b"not an office file".to_vec())
+            .await
             .err()
             .expect("a non-Office file must not parse");
         let kind = js_sys::Reflect::get(&error, &JsValue::from_str("kind"))

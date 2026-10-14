@@ -20,7 +20,7 @@ rust-version = "1.88"
 crate-type = ["lib", "cdylib"]
 
 [features]
-default = ["docx", "xlsx", "pptx", "doc", "xls", "ppt", "codepages", "refine"]
+default = ["docx", "xlsx", "pptx", "doc", "xls", "ppt", "codepages", "refine", "deflate"]
 docx = []
 xlsx = []
 pptx = []
@@ -34,6 +34,11 @@ ppt = []
 # code pages (932, 949, 1251, ...). Without it those properties are left empty; UTF-16,
 # UTF-8, Windows-1252 and plain ASCII are decoded either way.
 codepages = ["dep:encoding_rs"]
+# The built-in decompressor: DEFLATE-compressed ZIP entries (every OOXML part) and zlib-
+# compressed metafile pictures in .doc files. undoc-wasm opts out and inflates with the
+# host's DecompressionStream instead (a stored-only archive for ZIP, `DocParser::parse_with`
+# for metafiles).
+deflate = ["zip/deflate", "dep:flate2"]
 async = ["tokio"]
 # Slide rasterization (in progress): DrawingML geometry drawn from the ECMA-376 preset shape
 # definitions. Off by default.
@@ -58,7 +63,7 @@ skrifa = { version = "0.48", optional = true }
 zune-jpeg = { version = "0.5", optional = true }
 # ZIP handling — default-features disabled: lzma/bzip2/xz/zstd require C toolchain
 # OOXML files exclusively use Deflate; dropping other compression codecs is safe.
-zip = { version = "9.0", default-features = false, features = ["deflate"] }
+zip = { version = "9.0", default-features = false }
 
 # OLE/CFB container inspection. Only used by format detection, to tell an ECMA-376
 # encrypted OOXML package (a CFB holding `EncryptedPackage`) apart from a legacy binary
@@ -87,9 +92,9 @@ unparser-shared = { version = "0.9", default-features = false }
 unicode-normalization = "0.1"
 unicode-width = "0.2"
 
-# Metafile pictures in 97-2003 documents are DEFLATE-compressed. Already in the tree through
-# `zip`'s deflate support, with the same backend.
-flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+# Optional (feature `deflate`): zlib-compressed metafile pictures in 97-2003 Word documents.
+# Same backend as `zip`'s deflate support.
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"], optional = true }
 
 # Optional: Windows code pages for 97-2003 document properties (feature `codepages`)
 encoding_rs = { version = "0.8", optional = true }

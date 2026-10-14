@@ -13,6 +13,33 @@ const RT_FBSE: u16 = 0xF007;
 /// `wzDescription`: the shape's alternative text.
 const PROP_DESCRIPTION: u16 = 0x0381;
 
+/// Inflates a zlib stream (RFC 1950), or `None` when it is not one. Metafile pictures are
+/// the only compressed data in a .doc, so this is the one place a build needs a decompressor.
+pub type Inflate<'a> = &'a dyn Fn(&[u8]) -> Option<Vec<u8>>;
+
+/// The most a single metafile may inflate to.
+pub(super) const MAX_INFLATED: usize = 64 << 20;
+
+/// The decompressor built in with the `deflate` feature; without it, compressed metafiles
+/// are skipped unless the caller supplies one through [`DocParser::parse_with`].
+///
+/// [`DocParser::parse_with`]: super::DocParser::parse_with
+#[cfg(feature = "deflate")]
+pub(super) fn builtin_inflate(body: &[u8]) -> Option<Vec<u8>> {
+    use std::io::Read;
+    let mut out = Vec::new();
+    flate2::read::ZlibDecoder::new(body)
+        .take(MAX_INFLATED as u64)
+        .read_to_end(&mut out)
+        .ok()?;
+    Some(out)
+}
+
+#[cfg(not(feature = "deflate"))]
+pub(super) fn builtin_inflate(_: &[u8]) -> Option<Vec<u8>> {
+    None
+}
+
 /// A picture's bytes as a file, with what describes it.
 #[derive(Debug)]
 pub(super) struct Picture {
@@ -53,7 +80,7 @@ fn u32_at(d: &[u8], at: usize) -> Option<u32> {
 
 /// The picture whose `PICF` is at `offset` in the `Data` stream. None for a picture this
 /// reader cannot turn into a file — a compressed metafile, or a structure it cannot follow.
-pub(super) fn read(data: &[u8], offset: u32) -> Option<Picture> {
+pub(super) fn read(data: &[u8], offset: u32, inflate: Inflate) -> Option<Picture> {
     let at = offset as usize;
     let lcb = u32_at(data, at)? as usize;
     let header = u16_at(data, at + 4)? as usize;
@@ -69,7 +96,7 @@ pub(super) fn read(data: &[u8], offset: u32) -> Option<Picture> {
     while let Some(r) = record(data, p, limit) {
         match r.kind {
             RT_SP_CONTAINER => alt_text = alt_text.or_else(|| description(data, &r)),
-            RT_FBSE => picture = picture.or_else(|| blip_in_fbse(data, &r)),
+            RT_FBSE => picture = picture.or_else(|| blip_in_fbse(data, &r, inflate)),
             _ => {}
         }
         p = r.end;
@@ -118,7 +145,7 @@ fn description(data: &[u8], container: &Record) -> Option<String> {
 }
 
 /// The blip a blip store entry holds, as file bytes and an extension.
-fn blip_in_fbse(data: &[u8], fbse: &Record) -> Option<(Vec<u8>, &'static str)> {
+fn blip_in_fbse(data: &[u8], fbse: &Record, inflate: Inflate) -> Option<(Vec<u8>, &'static str)> {
     // 36 fixed bytes, then `cbName` bytes of name, then the embedded blip.
     let name_len = *data.get(fbse.start + 33)? as usize;
     let blip = record(data, fbse.start + 36 + name_len, fbse.end)?;
@@ -128,8 +155,8 @@ fn blip_in_fbse(data: &[u8], fbse: &Record) -> Option<(Vec<u8>, &'static str)> {
         (0xF01E, 0x6E0) => "png",
         (0xF01F, 0x7A8) => "bmp",
         (0xF029, 0x6E4) => "tif",
-        (0xF01A, 0x3D4) => return metafile(data, &blip, "emf"),
-        (0xF01B, 0x216) => return metafile(data, &blip, "wmf"),
+        (0xF01A, 0x3D4) => return metafile(data, &blip, "emf", inflate),
+        (0xF01B, 0x216) => return metafile(data, &blip, "wmf", inflate),
         // PICT (Macintosh) and anything else: not a file this reader produces.
         _ => return None,
     };
@@ -147,23 +174,15 @@ fn metafile(
     data: &[u8],
     blip: &Record,
     extension: &'static str,
+    inflate: Inflate,
 ) -> Option<(Vec<u8>, &'static str)> {
-    use std::io::Read;
     let header = blip.start + 16 + if blip.instance & 1 == 1 { 16 } else { 0 };
-    let size = u32_at(data, header)? as usize;
     let saved = u32_at(data, header + 28)? as usize;
     let compression = *data.get(header + 32)?;
     let body = data.get(header + 34..(header + 34 + saved).min(blip.end))?;
     let bytes = match compression {
         0xFE => body.to_vec(),
-        0x00 => {
-            let mut out = Vec::with_capacity(size.min(64 << 20));
-            flate2::read::ZlibDecoder::new(body)
-                .take(64 << 20)
-                .read_to_end(&mut out)
-                .ok()?;
-            out
-        }
+        0x00 => inflate(body).filter(|inflated| inflated.len() <= MAX_INFLATED)?,
         _ => return None,
     };
     (!bytes.is_empty()).then_some((bytes, extension))
@@ -201,6 +220,22 @@ pub(super) mod tests {
 
     /// A `PICF` + shape container (with alternative text) + blip store entry holding `png`.
     pub(crate) fn picf_with_png(png: &[u8], alt: Option<&str>) -> Vec<u8> {
+        let mut blip = (0x6E0u16 << 4).to_le_bytes().to_vec();
+        blip.extend(0xF01Eu16.to_le_bytes());
+        blip.extend(((16 + 1 + png.len()) as u32).to_le_bytes());
+        blip.extend([0xAB; 16]);
+        blip.push(0xFF);
+        blip.extend(png);
+        picf_with_blip(blip, alt)
+    }
+
+    /// A `PICF` whose blip is an EMF stored as the zlib stream `packed`; `emf` is what it
+    /// inflates to.
+    pub(crate) fn picf_with_emf(emf: &[u8], packed: &[u8]) -> Vec<u8> {
+        picf_with_blip(compressed_emf_blip(emf, packed), None)
+    }
+
+    fn picf_with_blip(blip: Vec<u8>, alt: Option<&str>) -> Vec<u8> {
         let mut shape = Vec::new();
         if let Some(alt) = alt {
             let text: Vec<u8> = alt
@@ -222,12 +257,6 @@ pub(super) mod tests {
         sp.extend((shape.len() as u32).to_le_bytes());
         sp.extend(shape);
 
-        let mut blip = (0x6E0u16 << 4).to_le_bytes().to_vec();
-        blip.extend(0xF01Eu16.to_le_bytes());
-        blip.extend(((16 + 1 + png.len()) as u32).to_le_bytes());
-        blip.extend([0xAB; 16]);
-        blip.push(0xFF);
-        blip.extend(png);
         let mut fbse = (((6u16) << 4) | 0x2).to_le_bytes().to_vec();
         fbse.extend(RT_FBSE.to_le_bytes());
         fbse.extend(((36 + blip.len()) as u32).to_le_bytes());
@@ -250,7 +279,7 @@ pub(super) mod tests {
         let png = b"\x89PNG\r\n\x1a\nfake";
         let mut data = vec![0u8; 10];
         data.extend(picf_with_png(png, Some("A chart of sales")));
-        let picture = read(&data, 10).expect("a picture");
+        let picture = read(&data, 10, &builtin_inflate).expect("a picture");
         assert_eq!(picture.extension, "png");
         assert_eq!(picture.data, png);
         assert_eq!(picture.alt_text.as_deref(), Some("A chart of sales"));
@@ -259,30 +288,51 @@ pub(super) mod tests {
     #[test]
     fn a_picf_past_the_stream_is_none() {
         let data = picf_with_png(b"x", None);
-        assert!(read(&data[..data.len() - 1], 0).is_none());
+        assert!(read(&data[..data.len() - 1], 0, &builtin_inflate).is_none());
     }
 
-    #[test]
-    fn a_compressed_emf_blip_is_inflated() {
-        use std::io::Write;
-        let emf = b" EMF metafile bytes".repeat(4);
-        let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
-        z.write_all(&emf).unwrap();
-        let packed = z.finish().unwrap();
-
+    /// A blip store entry holding `packed` as a compressed EMF whose original is `emf`.
+    fn compressed_emf_blip(emf: &[u8], packed: &[u8]) -> Vec<u8> {
         let mut body = vec![0xCD; 16];
         let mut header = vec![0u8; 34];
         header[0..4].copy_from_slice(&(emf.len() as u32).to_le_bytes());
         header[28..32].copy_from_slice(&(packed.len() as u32).to_le_bytes());
         header[33] = 0xFE;
         body.extend(header);
-        body.extend(&packed);
+        body.extend(packed);
         let mut data = (0x3D4u16 << 4).to_le_bytes().to_vec();
         data.extend(0xF01Au16.to_le_bytes());
         data.extend((body.len() as u32).to_le_bytes());
         data.extend(body);
+        data
+    }
+
+    #[cfg(feature = "deflate")]
+    #[test]
+    fn a_compressed_emf_blip_is_inflated() {
+        use std::io::Write;
+        let emf = b" EMF metafile bytes".repeat(4);
+        let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        z.write_all(&emf).unwrap();
+        let data = compressed_emf_blip(&emf, &z.finish().unwrap());
         let blip = record(&data, 0, data.len()).unwrap();
-        assert_eq!(metafile(&data, &blip, "emf"), Some((emf, "emf")));
+        assert_eq!(
+            metafile(&data, &blip, "emf", &builtin_inflate),
+            Some((emf, "emf"))
+        );
+    }
+
+    /// The caller's decompressor is what runs, and it sees the zlib stream as stored.
+    #[test]
+    fn a_compressed_emf_blip_goes_through_the_callers_inflater() {
+        let data = compressed_emf_blip(b"original", b"packed");
+        let blip = record(&data, 0, data.len()).unwrap();
+        let inflate = |body: &[u8]| (body == b"packed").then(|| b"original".to_vec());
+        assert_eq!(
+            metafile(&data, &blip, "emf", &inflate),
+            Some((b"original".to_vec(), "emf"))
+        );
+        assert_eq!(metafile(&data, &blip, "emf", &|_: &[u8]| None), None);
     }
 
     #[test]
