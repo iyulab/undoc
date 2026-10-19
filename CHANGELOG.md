@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A table nested in a cell is no longer lost when its holder is not written as pipes.** The
+  Markdown renderer wrote a nested table after the table that holds it, but only on the path
+  that writes the holder as a pipe table: a holder with a merged cell under
+  `TableFallback::Html`, and a one-cell emphasized table written as a callout quote
+  (`callout_blockquote`), returned before the nested tables were reached and dropped them.
+  A nested table now follows its holder however the holder is written, after a blank line so
+  an HTML holder's block has ended.
+
 ## [0.27.0] - 2026-10-15
 
 ### Added

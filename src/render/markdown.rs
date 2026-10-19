@@ -1116,8 +1116,34 @@ fn render_callout_blockquote(
     Some(out)
 }
 
-/// Render a table to Markdown.
+/// Render a table to Markdown, then each table nested in its cells as a block of its own.
+///
+/// Markdown has no table inside a table cell, so the cell holds its own text and a nested
+/// table follows the one that holds it -- however that one is written (pipes, HTML or a
+/// callout quote), and depth first.
 fn render_table(table: &Table, options: &RenderOptions, resource_map: &ResourceMap) -> String {
+    let mut output = render_table_without_nested(table, options, resource_map);
+    for row in &table.rows {
+        for cell in &row.cells {
+            for nested in &cell.nested_tables {
+                // A blank line ends the holder's block, an HTML one included.
+                if !output.ends_with('\n') {
+                    output.push('\n');
+                }
+                output.push('\n');
+                output.push_str(&render_table(nested, options, resource_map));
+            }
+        }
+    }
+    output
+}
+
+/// Render a table to Markdown without the tables nested in its cells.
+fn render_table_without_nested(
+    table: &Table,
+    options: &RenderOptions,
+    resource_map: &ResourceMap,
+) -> String {
     if table.is_empty() {
         return String::new();
     }
@@ -1136,7 +1162,6 @@ fn render_table(table: &Table, options: &RenderOptions, resource_map: &ResourceM
     }
 
     let mut output = String::new();
-    let mut nested_tables: Vec<&Table> = Vec::new();
 
     // Merges are placed on a flat grid first. Markdown has no colspan/rowspan, so a
     // merged cell must be anchored at the column it starts in with the columns it
@@ -1160,11 +1185,6 @@ fn render_table(table: &Table, options: &RenderOptions, resource_map: &ResourceM
                 Some(cell) => {
                     let text = render_cell_content(cell, options, resource_map, is_header_row);
                     output.push_str(&format!(" {} |", text));
-
-                    // Collect nested tables for rendering after the main table
-                    for nested in &cell.nested_tables {
-                        nested_tables.push(nested);
-                    }
                 }
                 // A column covered by a merge, or one this row does not reach.
                 None => output.push_str("  |"),
@@ -1188,13 +1208,6 @@ fn render_table(table: &Table, options: &RenderOptions, resource_map: &ResourceM
             }
             output.push('\n');
         }
-    }
-
-    // Render nested tables after the main table
-    // This preserves their structure instead of flattening into cell content
-    for nested in nested_tables {
-        output.push('\n');
-        output.push_str(&render_table(nested, options, resource_map));
     }
 
     output
@@ -2461,6 +2474,75 @@ mod tests {
         assert!(
             md.contains("First line<br>Second line"),
             "Expected preserved line break in table cell, got: {md}"
+        );
+    }
+
+    /// A table of one row, `merged` spanning two columns, holding `nested` in its first cell.
+    fn holder_with_nested(nested: Table) -> Table {
+        let mut first = Cell::with_text("holder");
+        first.nested_tables.push(nested);
+        let mut spanning = Cell::with_text("wide");
+        spanning.col_span = 2;
+        let mut table = Table::new();
+        table.add_row(row_of(vec![first, spanning]));
+        table
+    }
+
+    fn row_of(cells: Vec<Cell>) -> Row {
+        Row {
+            cells,
+            ..Row::default()
+        }
+    }
+
+    fn inner_table() -> Table {
+        let mut inner = Table::new();
+        inner.add_row(row_of(vec![
+            Cell::with_text("inner a"),
+            Cell::with_text("inner b"),
+        ]));
+        inner
+    }
+
+    #[test]
+    fn a_nested_table_follows_a_holder_written_as_html() {
+        // A merged cell sends the holder to the HTML fallback, which used to return before
+        // the nested tables were written: they vanished from the output.
+        let options = RenderOptions::new().with_table_fallback(crate::render::TableFallback::Html);
+        let md = render_table(
+            &holder_with_nested(inner_table()),
+            &options,
+            &empty_resource_map(),
+        );
+        assert!(md.contains("<table>"), "holder is HTML, got: {md}");
+        let holder_at = md.find("holder").expect("holder text");
+        let nested_at = md
+            .find("inner a")
+            .expect("the nested table must be written");
+        assert!(
+            holder_at < nested_at,
+            "nested follows its holder, got: {md}"
+        );
+    }
+
+    #[test]
+    fn a_nested_table_follows_a_holder_written_as_a_callout() {
+        // A 1x1 emphasized table is written as a blockquote; the nested table is not
+        // part of the quote and must still be written.
+        let mut cell = Cell::with_text("note");
+        for run in cell.content[0].runs.iter_mut() {
+            run.style.bold = true;
+        }
+        cell.nested_tables.push(inner_table());
+        let mut table = Table::new();
+        table.add_row(row_of(vec![cell]));
+        let mut options = RenderOptions::new();
+        options.callout_blockquote = true;
+        let md = render_table(&table, &options, &empty_resource_map());
+        assert!(md.contains("> **note**"), "holder is a callout, got: {md}");
+        assert!(
+            md.contains("inner a"),
+            "nested table must be written, got: {md}"
         );
     }
 
