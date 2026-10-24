@@ -8,7 +8,7 @@ version = "0.27.0"
 description = "High-performance Microsoft Office document extraction to Markdown"
 readme = "README.md"
 license = "MIT"
-license-files = ["LICENSE"]
+license-files = ["LICENSE", "THIRD-PARTY-NOTICES"]
 authors = [{ name = "iyulab", email = "tech@iyulab.com" }]
 keywords = ["office", "docx", "xlsx", "pptx", "markdown", "extraction"]
 classifiers = [

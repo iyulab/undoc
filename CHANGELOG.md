@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The packages carry a third-party notice for the Symbol-font map.** Word 97-2003 text set in
+  the Symbol font is read with the Unicode Consortium's Adobe Symbol mapping, whose terms ask
+  that its notice stay attached. `THIRD-PARTY-NOTICES` now holds it and ships in the PyPI,
+  NuGet and npm packages and in the CLI and C-library archives of a GitHub release, which
+  carried no license text either.
 - **A table nested in a cell is no longer lost when its holder is not written as pipes.** The
   Markdown renderer wrote a nested table after the table that holds it, but only on the path
   that writes the holder as a pipe table: a holder with a merged cell under
