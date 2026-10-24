@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.27.1] - 2026-10-24
+
 ### Fixed
 
 - **The packages carry a third-party notice for the Symbol-font map.** Word 97-2003 text set in
