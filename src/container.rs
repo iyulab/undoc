@@ -317,7 +317,9 @@ impl OoxmlContainer {
 
         // Detect encoding from BOM
         let content = decode_xml_bytes(&bytes)?;
-        Ok(content)
+        // Readers match elements by their written prefix; give them the conventional one
+        // whatever prefix the writer chose (see `xmlns`).
+        Ok(crate::xmlns::canonical_prefixes(content))
     }
 
     /// Read an optional XML part.

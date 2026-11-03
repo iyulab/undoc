@@ -75,6 +75,7 @@ mod sheet;
 pub mod streaming;
 #[cfg(any(feature = "doc", feature = "xls", feature = "ppt"))]
 mod summary;
+mod xmlns;
 
 #[cfg(any(feature = "docx", feature = "doc"))]
 mod fields;

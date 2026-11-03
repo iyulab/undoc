@@ -19,6 +19,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bound to, and the package and part relationship files accept a prefixed
   `Relationships`/`Relationship` as well. Matching by namespace rather than the written prefix
   is how ECMA-376 identifies an element.
+- **A Word document whose elements use another namespace prefix is no longer read as empty.**
+  The DOCX reader matched the written names (`w:p`, `w:t`, `r:id`, `a:blip`), so a valid
+  document written with `ns0:` (Python's `ElementTree` without a registered namespace) or with
+  the main namespace as the default produced no paragraphs, runs or tables and no error. Parts
+  that bind a known WordprocessingML, DrawingML or relationships namespace to anything but its
+  conventional prefix are now respelled with the conventional one before they are read;
+  parts that already use it are not touched or parsed again.
 
 ## [0.27.1] - 2026-10-24
 
