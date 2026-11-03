@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.27.2] - 2026-11-03
+
 ### Fixed
 
 - **A workbook whose spreadsheet XML uses a namespace prefix is no longer read as empty.**
