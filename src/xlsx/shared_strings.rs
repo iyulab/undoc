@@ -28,7 +28,7 @@ impl SharedStrings {
 
         loop {
             match reader.read_event_into(&mut buf) {
-                Ok(quick_xml::events::Event::Start(e)) => match e.name().as_ref() {
+                Ok(quick_xml::events::Event::Start(e)) => match e.name().local_name().as_ref() {
                     "si" => {
                         in_si = true;
                         current_text.clear();
@@ -47,7 +47,7 @@ impl SharedStrings {
                 Ok(quick_xml::events::Event::GeneralRef(e)) if in_t => {
                     current_text.push_str(&resolve_general_ref(&e));
                 }
-                Ok(quick_xml::events::Event::End(e)) => match e.name().as_ref() {
+                Ok(quick_xml::events::Event::End(e)) => match e.name().local_name().as_ref() {
                     "si" => {
                         // Collapse CR that re-entered via &#13;/&#xD; refs (Excel
                         // in-cell breaks); a CRLF pair arrives as two refs, so the

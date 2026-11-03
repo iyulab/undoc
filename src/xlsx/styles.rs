@@ -25,7 +25,7 @@ impl Styles {
         loop {
             match reader.read_event_into(&mut buf) {
                 Ok(quick_xml::events::Event::Start(ref e)) => {
-                    match e.name().as_ref() {
+                    match e.name().local_name().as_ref() {
                         "numFmts" => in_num_fmts = true,
                         "cellXfs" => in_cell_xfs = true,
                         "xf" if in_cell_xfs => {
@@ -44,7 +44,7 @@ impl Styles {
                     }
                 }
                 Ok(quick_xml::events::Event::Empty(ref e)) => {
-                    match e.name().as_ref() {
+                    match e.name().local_name().as_ref() {
                         "numFmt" if in_num_fmts => {
                             let mut num_fmt_id: Option<u32> = None;
                             let mut format_code = String::new();
@@ -78,7 +78,7 @@ impl Styles {
                         _ => {}
                     }
                 }
-                Ok(quick_xml::events::Event::End(ref e)) => match e.name().as_ref() {
+                Ok(quick_xml::events::Event::End(ref e)) => match e.name().local_name().as_ref() {
                     "numFmts" => in_num_fmts = false,
                     "cellXfs" => in_cell_xfs = false,
                     _ => {}

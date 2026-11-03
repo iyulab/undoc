@@ -648,7 +648,7 @@ pub(crate) fn parse_relationships_xml(content: &str, location: &str) -> Result<R
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(quick_xml::events::Event::Empty(e)) | Ok(quick_xml::events::Event::Start(e))
-                if e.name().as_ref() == "Relationship" =>
+                if e.name().local_name().as_ref() == "Relationship" =>
             {
                 rels.add(parse_relationship_element(&e, location)?);
             }

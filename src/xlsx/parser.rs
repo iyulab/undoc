@@ -104,21 +104,23 @@ impl XlsxParser {
         loop {
             match reader.read_event_into(&mut buf) {
                 Ok(quick_xml::events::Event::Empty(e)) | Ok(quick_xml::events::Event::Start(e))
-                    if e.name().as_ref() == "sheet" =>
+                    if e.name().local_name().as_ref() == "sheet" =>
                 {
                     let mut name = String::new();
                     let mut sheet_id = String::new();
                     let mut rel_id = String::new();
 
                     for attr in e.attributes().flatten() {
-                        match attr.key.as_ref() {
+                        // The relationship id is `<prefix>:id` for whatever prefix the
+                        // writer bound to the relationships namespace.
+                        match attr.key.local_name().as_ref() {
                             "name" => {
                                 name = attr.value.to_string();
                             }
                             "sheetId" => {
                                 sheet_id = attr.value.to_string();
                             }
-                            "r:id" => {
+                            "id" => {
                                 rel_id = attr.value.to_string();
                             }
                             _ => {}
@@ -314,7 +316,7 @@ impl XlsxParser {
             match reader.read_event_into(&mut buf) {
                 Ok(quick_xml::events::Event::Empty(ref e))
                 | Ok(quick_xml::events::Event::Start(ref e))
-                    if e.name().as_ref() == "mergeCell" =>
+                    if e.name().local_name().as_ref() == "mergeCell" =>
                 {
                     for attr in e.attributes().flatten() {
                         if attr.key.as_ref() == "ref" {
@@ -412,82 +414,86 @@ impl XlsxParser {
 
         loop {
             match reader.read_event_into(&mut buf) {
-                Ok(quick_xml::events::Event::Start(ref e)) => match e.name().as_ref() {
-                    "row" => {
-                        in_row = true;
-                        sheet.start_row(
-                            e.attributes()
-                                .flatten()
-                                .find(|a| a.key.as_ref() == "r")
-                                .and_then(|a| a.value.parse().ok()),
-                        );
+                Ok(quick_xml::events::Event::Start(ref e)) => {
+                    match e.name().local_name().as_ref() {
+                        "row" => {
+                            in_row = true;
+                            sheet.start_row(
+                                e.attributes()
+                                    .flatten()
+                                    .find(|a| a.key.as_ref() == "r")
+                                    .and_then(|a| a.value.parse().ok()),
+                            );
+                        }
+                        "c" if in_row => {
+                            in_cell = true;
+                            current_cell_type = None;
+                            current_cell_ref = None;
+                            current_cell_style = None;
+                            current_cell_vm = None;
+                            current_cell_value.clear();
+                            Self::parse_cell_attributes(
+                                e,
+                                &mut current_cell_type,
+                                &mut current_cell_ref,
+                                &mut current_cell_style,
+                                &mut current_cell_vm,
+                            );
+                        }
+                        "v" if in_cell => {
+                            in_value = true;
+                        }
+                        "t" if in_cell => {
+                            // Inline string
+                            in_value = true;
+                        }
+                        _ => {}
                     }
-                    "c" if in_row => {
-                        in_cell = true;
-                        current_cell_type = None;
-                        current_cell_ref = None;
-                        current_cell_style = None;
-                        current_cell_vm = None;
-                        current_cell_value.clear();
-                        Self::parse_cell_attributes(
-                            e,
-                            &mut current_cell_type,
-                            &mut current_cell_ref,
-                            &mut current_cell_style,
-                            &mut current_cell_vm,
-                        );
-                    }
-                    "v" if in_cell => {
-                        in_value = true;
-                    }
-                    "t" if in_cell => {
-                        // Inline string
-                        in_value = true;
-                    }
-                    _ => {}
-                },
-                Ok(quick_xml::events::Event::Empty(ref e)) => match e.name().as_ref() {
-                    "c" if in_row => {
-                        current_cell_type = None;
-                        current_cell_ref = None;
-                        current_cell_style = None;
-                        current_cell_vm = None;
-                        current_cell_value.clear();
-                        Self::parse_cell_attributes(
-                            e,
-                            &mut current_cell_type,
-                            &mut current_cell_ref,
-                            &mut current_cell_style,
-                            &mut current_cell_vm,
-                        );
+                }
+                Ok(quick_xml::events::Event::Empty(ref e)) => {
+                    match e.name().local_name().as_ref() {
+                        "c" if in_row => {
+                            current_cell_type = None;
+                            current_cell_ref = None;
+                            current_cell_style = None;
+                            current_cell_vm = None;
+                            current_cell_value.clear();
+                            Self::parse_cell_attributes(
+                                e,
+                                &mut current_cell_type,
+                                &mut current_cell_ref,
+                                &mut current_cell_style,
+                                &mut current_cell_vm,
+                            );
 
-                        let mut cell = self.build_sheet_cell(
-                            &current_cell_value,
-                            current_cell_type.as_deref(),
-                            current_cell_style,
-                            current_cell_ref.as_deref(),
-                            BuildSheetCellContext {
-                                hyperlink_map,
-                                comment_map,
-                                is_header: sheet.in_first_row(),
-                            },
-                        )?;
-                        Self::attach_rich_value_image(
-                            &mut cell,
-                            current_cell_vm,
-                            current_cell_type.as_deref(),
-                            rich_value_images,
-                        );
+                            let mut cell = self.build_sheet_cell(
+                                &current_cell_value,
+                                current_cell_type.as_deref(),
+                                current_cell_style,
+                                current_cell_ref.as_deref(),
+                                BuildSheetCellContext {
+                                    hyperlink_map,
+                                    comment_map,
+                                    is_header: sheet.in_first_row(),
+                                },
+                            )?;
+                            Self::attach_rich_value_image(
+                                &mut cell,
+                                current_cell_vm,
+                                current_cell_type.as_deref(),
+                                rich_value_images,
+                            );
 
-                        sheet.place(
-                            cell,
-                            current_cell_ref.as_deref().and_then(Self::parse_cell_ref),
-                        );
+                            sheet.place(
+                                cell,
+                                current_cell_ref.as_deref().and_then(Self::parse_cell_ref),
+                            );
 
-                        current_cell_ref = None;
+                            current_cell_ref = None;
+                        }
+                        _ => {}
                     }
-                    _ => {}
-                },
+                }
                 Ok(quick_xml::events::Event::Text(ref e)) if in_value => {
                     let text = crate::decode::decode_text_lossy(e);
                     current_cell_value.push_str(&text);
@@ -498,7 +504,7 @@ impl XlsxParser {
                 Ok(quick_xml::events::Event::GeneralRef(ref e)) if in_value => {
                     current_cell_value.push_str(&resolve_general_ref(e));
                 }
-                Ok(quick_xml::events::Event::End(ref e)) => match e.name().as_ref() {
+                Ok(quick_xml::events::Event::End(ref e)) => match e.name().local_name().as_ref() {
                     "row" => {
                         sheet.end_row();
                         in_row = false;
@@ -692,21 +698,25 @@ impl XlsxParser {
 
         loop {
             match reader.read_event_into(&mut buf) {
-                Ok(quick_xml::events::Event::Start(ref e)) => match e.name().as_ref() {
-                    "hyperlinks" => {
-                        in_hyperlinks = true;
+                Ok(quick_xml::events::Event::Start(ref e)) => {
+                    match e.name().local_name().as_ref() {
+                        "hyperlinks" => {
+                            in_hyperlinks = true;
+                        }
+                        "hyperlink" if in_hyperlinks => {
+                            Self::collect_hyperlink_attrs(e, sheet_rels, &mut hyperlinks);
+                        }
+                        _ => {}
                     }
-                    "hyperlink" if in_hyperlinks => {
-                        Self::collect_hyperlink_attrs(e, sheet_rels, &mut hyperlinks);
-                    }
-                    _ => {}
-                },
+                }
                 Ok(quick_xml::events::Event::Empty(ref e))
-                    if in_hyperlinks && e.name().as_ref() == "hyperlink" =>
+                    if in_hyperlinks && e.name().local_name().as_ref() == "hyperlink" =>
                 {
                     Self::collect_hyperlink_attrs(e, sheet_rels, &mut hyperlinks);
                 }
-                Ok(quick_xml::events::Event::End(ref e)) if e.name().as_ref() == "hyperlinks" => {
+                Ok(quick_xml::events::Event::End(ref e))
+                    if e.name().local_name().as_ref() == "hyperlinks" =>
+                {
                     break; // Done with hyperlinks section
                 }
                 Ok(quick_xml::events::Event::Eof) => break,
@@ -729,11 +739,11 @@ impl XlsxParser {
         let mut r_id = String::new();
 
         for attr in e.attributes().flatten() {
-            match attr.key.as_ref() {
+            match attr.key.local_name().as_ref() {
                 "ref" => {
                     cell_ref = attr.value.to_uppercase();
                 }
-                "r:id" => {
+                "id" => {
                     r_id = attr.value.to_string();
                 }
                 _ => {}

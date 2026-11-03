@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A workbook whose spreadsheet XML uses a namespace prefix is no longer read as empty.**
+  Writers that serialise typed elements (the Open XML SDK, Python's `ElementTree` without a
+  registered namespace) emit `<x:worksheet xmlns:x="…/spreadsheetml/2006/main">`, `<x:row>`,
+  `<x:c>`. The XLSX reader compared the written qualified name with `row`, `c`, `sheet`, so such
+  a file produced no sheet, no rows and no cells, with no error. Elements of the workbook,
+  worksheet, shared-strings and styles parts are now matched by local name, the sheet's and
+  hyperlinks' relationship id is read under whatever prefix the relationships namespace is
+  bound to, and the package and part relationship files accept a prefixed
+  `Relationships`/`Relationship` as well. Matching by namespace rather than the written prefix
+  is how ECMA-376 identifies an element.
+
 ## [0.27.1] - 2026-10-24
 
 ### Fixed
