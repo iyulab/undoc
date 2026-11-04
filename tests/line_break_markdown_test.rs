@@ -203,6 +203,36 @@ fn a_powerpoint_line_break_keeps_the_words_on_either_side_apart() {
 }
 
 #[test]
+fn an_emitted_page_break_in_a_paragraph_is_a_thematic_break() {
+    let options = RenderOptions::new().with_emit_page_breaks(true);
+    let md = word(
+        r#"<w:r><w:t>Zero</w:t><w:br w:type="page"/><w:t>Charlie</w:t></w:r>"#,
+        &options,
+    );
+    // The thematic break is structure: it was written as `\---` when the whole paragraph was
+    // escaped as text.
+    assert_eq!(md.trim(), "Zero\n\n---\n\nCharlie", "{md:?}");
+}
+
+#[test]
+fn the_text_after_a_page_break_opens_a_block_and_is_escaped_as_one() {
+    let options = RenderOptions::new().with_emit_page_breaks(true);
+    let md = word(
+        r#"<w:r><w:t>Zero</w:t><w:br w:type="page"/><w:t xml:space="preserve">1. Charlie</w:t></w:r>"#,
+        &options,
+    );
+    assert_eq!(md.trim(), "Zero\n\n---\n\n1\\. Charlie", "{md:?}");
+}
+
+#[test]
+fn a_page_break_in_a_table_cell_is_a_space_when_emitted() {
+    let options = RenderOptions::new().with_emit_page_breaks(true);
+    let table = r#"<w:tbl><w:tr><w:tc><w:p><w:r><w:t>Notes</w:t></w:r></w:p></w:tc></w:tr><w:tr><w:tc><w:p><w:r><w:t>Zero</w:t><w:br w:type="page"/><w:t>Charlie</w:t></w:r></w:p></w:tc></w:tr></w:tbl>"#;
+    let md = markdown(&docx(table), &options);
+    assert!(md.contains("| Zero Charlie |"), "{md:?}");
+}
+
+#[test]
 fn a_break_in_a_heading_leaves_the_heading_on_one_line() {
     let body = r#"<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Zero</w:t><w:br/><w:t>Charlie</w:t></w:r></w:p>"#;
     for options in [

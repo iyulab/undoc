@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A page break written inside a paragraph is a thematic break, not three escaped hyphens.**
+  With `emit_page_breaks` on, a page break in the middle of a paragraph wrote `---` between two
+  blocks, and the escaping of the paragraph's text then read that line as text and wrote `\---`.
+  The paragraph is now escaped piece by piece, each piece a block of its own, so the text after a
+  page break is escaped as the start of a block (`1\. Next`) and the thematic break is left as
+  it is. In a table cell, whose text is one line, a page break is a space.
 - **A line break keeps the words on either side of it apart in Markdown.** A Word line break
   (`<w:br/>`, Shift+Enter), a page break and PowerPoint's `<a:br/>` end a line, but with
   `preserve_line_breaks` off, the default, the Markdown writer wrote nothing for them, so

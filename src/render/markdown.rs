@@ -1,6 +1,7 @@
 //! Markdown renderer implementation.
 
 use std::collections::HashMap;
+use std::ops::Range;
 
 use crate::detect::FormatType;
 use crate::error::Result;
@@ -573,7 +574,7 @@ fn render_paragraph(
     } else {
         options
     };
-    render_runs(&merged_para.runs, run_options, run_ctx, &mut output);
+    let mut page_breaks = render_runs(&merged_para.runs, run_options, run_ctx, &mut output);
     // Markdown has no paragraph indentation: a first line opening with a tab or four
     // spaces is an indented code block, so a paragraph indented with a tab stop would
     // come out as code. The indentation carries no text, so it is dropped — from a line
@@ -583,12 +584,24 @@ fn render_paragraph(
     if !rest.is_empty() {
         let indent = output.len() - body_start - rest.len();
         output.replace_range(body_start..body_start + indent, "");
+        for marker in &mut page_breaks {
+            *marker = marker.start - indent..marker.end - indent;
+        }
     }
     // The paragraph's own markers -- a heading's `#`, a list item's -- are written above; text
     // that merely starts like one (`1. `, `* `, `# ` in a paragraph Word does not number or
     // style) is the document's text and stays text. A heading's content opens no block.
     if options.escape_special_chars && effective_heading.is_none() {
-        let body = markdown::escape_block_starts(&output[body_start..]);
+        // Each piece between the thematic breaks of page breaks opens a block of its own; the
+        // breaks themselves are written as they are.
+        let mut body = String::new();
+        let mut at = body_start;
+        for marker in &page_breaks {
+            body.push_str(&markdown::escape_block_starts(&output[at..marker.start]));
+            body.push_str(&output[marker.clone()]);
+            at = marker.end;
+        }
+        body.push_str(&markdown::escape_block_starts(&output[at..]));
         output.replace_range(body_start.., &body);
     }
 
@@ -673,9 +686,17 @@ fn ends_a_line(run: &TextRun) -> bool {
 /// ends with. Writing nothing fused them (`Zero<w:br/>Charlie` read `ZeroCharlie`). The space is
 /// written once the next text arrives, so a break that ends the paragraph, or sits against a
 /// space already there, adds none -- and a break in a run that rendered nothing still counts.
-fn render_runs(runs: &[TextRun], options: &RenderOptions, ctx: RunContext, out: &mut String) {
+/// Returns where the thematic breaks of emitted page breaks stand in `out`, which the caller
+/// must not escape as text.
+fn render_runs(
+    runs: &[TextRun],
+    options: &RenderOptions,
+    ctx: RunContext,
+    out: &mut String,
+) -> Vec<Range<usize>> {
     let start = out.len();
     let mut apart = false;
+    let mut page_breaks = Vec::new();
     for (i, run) in runs.iter().enumerate() {
         let after = runs.get(i + 1).and_then(|next| next.text.chars().next());
         let text = render_run(run, options, ctx, out.chars().next_back(), after);
@@ -689,11 +710,19 @@ fn render_runs(runs: &[TextRun], options: &RenderOptions, ctx: RunContext, out: 
             apart = false;
         }
         out.push_str(&text);
+        if run.page_break && options.emit_page_breaks {
+            // The marker ends the run's text; it is structure, not text to be escaped.
+            page_breaks.push(out.len() - PAGE_BREAK_MARKER.len()..out.len());
+        }
         if ends_a_line(run) && break_marker(run, options).is_empty() {
             apart = true;
         }
     }
+    page_breaks
 }
+
+/// A page break written inside a paragraph: a thematic break between two blocks.
+const PAGE_BREAK_MARKER: &str = "\n\n---\n\n";
 
 /// The break marker a run ends with, if the options ask for it.
 ///
@@ -701,7 +730,7 @@ fn render_runs(runs: &[TextRun], options: &RenderOptions, ctx: RunContext, out: 
 /// rendered, including a run that rendered nothing at all.
 fn break_marker(run: &TextRun, options: &RenderOptions) -> &'static str {
     if run.page_break && options.emit_page_breaks {
-        "\n\n---\n\n"
+        PAGE_BREAK_MARKER
     } else if run.line_break && options.preserve_line_breaks {
         "  \n"
     } else {
@@ -1011,7 +1040,19 @@ fn render_cell_content(
             suppress_emphasis,
         };
 
-        render_runs(&merged_para.runs, options, ctx, &mut para_text);
+        // A cell is one line: its text is flattened, and a thematic break in it would be
+        // three hyphens among the words. A page break there is a space, as a heading's is.
+        let cell_options;
+        let run_options = if options.emit_page_breaks {
+            cell_options = RenderOptions {
+                emit_page_breaks: false,
+                ..options.clone()
+            };
+            &cell_options
+        } else {
+            options
+        };
+        render_runs(&merged_para.runs, run_options, ctx, &mut para_text);
 
         if !para_text.is_empty() {
             parts.push(para_text);
