@@ -558,14 +558,22 @@ fn render_paragraph(
         suppress_emphasis: suppress_heading_emphasis,
     };
     let body_start = output.len();
-    for (i, run) in merged_para.runs.iter().enumerate() {
-        let after = merged_para
-            .runs
-            .get(i + 1)
-            .and_then(|next| next.text.chars().next());
-        let run_text = render_run(run, options, run_ctx, output.chars().next_back(), after);
-        output.push_str(&run_text);
-    }
+    // A heading is one line: a hard break, or the thematic break of a page, written inside it
+    // would end the heading after its first line. Its breaks are spaces, as without the options.
+    let heading_options;
+    let run_options = if effective_heading.is_some()
+        && (options.preserve_line_breaks || options.emit_page_breaks)
+    {
+        heading_options = RenderOptions {
+            preserve_line_breaks: false,
+            emit_page_breaks: false,
+            ..options.clone()
+        };
+        &heading_options
+    } else {
+        options
+    };
+    render_runs(&merged_para.runs, run_options, run_ctx, &mut output);
     // Markdown has no paragraph indentation: a first line opening with a tab or four
     // spaces is an indented code block, so a paragraph indented with a tab stop would
     // come out as code. The indentation carries no text, so it is dropped — from a line
@@ -649,6 +657,42 @@ fn push_thematic_break(output: &mut String) {
         output.push_str("\n\n");
     }
     output.push_str("---\n\n");
+}
+
+/// Whether the run ends a line or a page, whatever the options make of it.
+fn ends_a_line(run: &TextRun) -> bool {
+    run.line_break || run.page_break
+}
+
+/// Write `runs` one after another onto `out`.
+///
+/// The runs carry their own whitespace (`xml:space="preserve"`), so they are written side by
+/// side: a word split across two styles is still one word. A break is the exception. It ends a
+/// line, so the words on either side of it are two words, and when the options ask for no marker
+/// ([`break_marker`] is empty) a Markdown paragraph has a space there -- the one a reflowed line
+/// ends with. Writing nothing fused them (`Zero<w:br/>Charlie` read `ZeroCharlie`). The space is
+/// written once the next text arrives, so a break that ends the paragraph, or sits against a
+/// space already there, adds none -- and a break in a run that rendered nothing still counts.
+fn render_runs(runs: &[TextRun], options: &RenderOptions, ctx: RunContext, out: &mut String) {
+    let start = out.len();
+    let mut apart = false;
+    for (i, run) in runs.iter().enumerate() {
+        let after = runs.get(i + 1).and_then(|next| next.text.chars().next());
+        let text = render_run(run, options, ctx, out.chars().next_back(), after);
+        if apart && !text.is_empty() {
+            let touching = out.len() > start
+                && !out.ends_with(char::is_whitespace)
+                && !text.starts_with(char::is_whitespace);
+            if touching {
+                out.push(' ');
+            }
+            apart = false;
+        }
+        out.push_str(&text);
+        if ends_a_line(run) && break_marker(run, options).is_empty() {
+            apart = true;
+        }
+    }
 }
 
 /// The break marker a run ends with, if the options ask for it.
@@ -755,11 +799,9 @@ fn render_run(
         (RevisionType::Inserted, RevisionHandling::ShowMarkup) => false,
         _ => delimited && !html_wrapped && run.hyperlink.is_none(),
     };
-    let after = if break_marker(run, options).is_empty() {
-        after
-    } else {
-        Some('\n')
-    };
+    // Whitespace follows a run that ends a line, whether the break is written as a marker or
+    // as the space `render_runs` adds.
+    let after = if ends_a_line(run) { Some('\n') } else { after };
 
     // OOXML stores the whitespace around a word in the runs themselves — often in a run of
     // its own, or flagged with `xml:space="preserve"`. That whitespace sits *between* runs,
@@ -969,14 +1011,7 @@ fn render_cell_content(
             suppress_emphasis,
         };
 
-        for (i, run) in merged_para.runs.iter().enumerate() {
-            let after = merged_para
-                .runs
-                .get(i + 1)
-                .and_then(|next| next.text.chars().next());
-            let run_text = render_run(run, options, ctx, para_text.chars().next_back(), after);
-            para_text.push_str(&run_text);
-        }
+        render_runs(&merged_para.runs, options, ctx, &mut para_text);
 
         if !para_text.is_empty() {
             parts.push(para_text);

@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A line break keeps the words on either side of it apart in Markdown.** A Word line break
+  (`<w:br/>`, Shift+Enter), a page break and PowerPoint's `<a:br/>` end a line, but with
+  `preserve_line_breaks` off, the default, the Markdown writer wrote nothing for them, so
+  `Zero<w:br/>Charlie` came out as `ZeroCharlie` (the plain-text writer kept a newline) and an
+  address, a verse or a form label on two lines of one paragraph came out as one word. The break
+  is now the space a reflowed paragraph has there -- written once, none at the end of a paragraph
+  or beside a space that is already there. Emphasis closes before it (`**Zero.** Charlie`; the
+  full stop used to be pushed out of the bold). With `preserve_line_breaks` on the output is as
+  before, a hard break. A heading is one line, so its breaks are spaces whatever the options say
+  (a hard break had cut a heading after its first line). The same writer serves the legacy
+  `.doc` and `.ppt` readers: of 246 Word, PowerPoint, 97-2003 and generated documents, one output
+  changes, a price list whose headings and column titles had two words fused
+  (`Наименование****продукции`).
+
 ## [0.27.2] - 2026-11-03
 
 ### Fixed
