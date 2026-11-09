@@ -279,10 +279,13 @@ impl OoxmlContainer {
     /// ```
     #[cfg(not(target_arch = "wasm32"))]
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        let file = File::open(path.as_ref())?;
+        let path = path.as_ref();
+        let file = File::open(path).map_err(|e| Error::read_file(path, e))?;
         let mut reader = BufReader::new(file);
         let mut data = Vec::new();
-        reader.read_to_end(&mut data)?;
+        reader
+            .read_to_end(&mut data)
+            .map_err(|e| Error::read_file(path, e))?;
         Self::from_bytes(data)
     }
 

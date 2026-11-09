@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Converting a presentation or workbook no longer reports files it did not write.** The CLI converts
+  these section by section and discarded the result of every write -- the JSON preamble, each
+  section, each extracted picture or media file -- and counted a picture as written all the same, so
+  a folder that could not be created, or a full disk, ended in a success exit code and a summary
+  naming files that did not exist. The first write that fails now stops the conversion and fails the
+  command with the error.
+
+- **A file that cannot be read says which file.** The error for an input that does not exist or cannot be opened
+  named only the operating-system text ("No such file or directory"), so a caller handing in several paths could
+  not tell which one failed. It now reads `I/O error: cannot read '<path>': <os text>`; the `io::ErrorKind` is kept,
+  the original error stays reachable as its source, and the classification is still `ErrorKind::Io`.
+
+- **The CLI names the file or folder it could not create or write.** An output folder that cannot be created, or a
+  file that cannot be written, was reported with the operating-system text alone; it now says `cannot create output
+  directory '<path>'` / `cannot write output file '<path>'`, so a command with both an input file and an output
+  folder shows which one is at fault. Exit codes and successful output are unchanged.
+
 ## [0.27.3] - 2026-11-04
 
 ### Fixed

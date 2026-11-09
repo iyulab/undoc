@@ -145,7 +145,8 @@ impl std::fmt::Display for FormatType {
 /// ```
 #[cfg(not(target_arch = "wasm32"))]
 pub fn detect_format_from_path(path: impl AsRef<Path>) -> Result<FormatType> {
-    let file = File::open(path.as_ref())?;
+    let path = path.as_ref();
+    let file = File::open(path).map_err(|e| Error::read_file(path, e))?;
     let reader = BufReader::new(file);
     detect_format_from_reader(reader)
 }

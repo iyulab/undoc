@@ -162,8 +162,9 @@ impl PptParser {
     /// Open a .ppt file.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn open(path: impl AsRef<std::path::Path>) -> Result<Self> {
+        let path = path.as_ref();
         Ok(Self {
-            data: std::fs::read(path)?,
+            data: std::fs::read(path).map_err(|e| Error::read_file(path, e))?,
         })
     }
 

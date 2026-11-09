@@ -8,7 +8,7 @@
 //!   `finish` — processes one section at a time with bounded memory.
 
 use std::collections::HashMap;
-use std::fs::{self, File};
+use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
@@ -85,7 +85,7 @@ impl<'a> MultiFormatWriter<'a> {
             let markdown = to_markdown(doc, self.render_opts)
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
             let path = self.out_dir.join("extract.md");
-            fs::write(&path, &markdown)?;
+            crate::output::write(&path, &markdown)?;
             summary.word_count = markdown.split_whitespace().count();
             summary.md_path = Some(path);
         }
@@ -94,7 +94,7 @@ impl<'a> MultiFormatWriter<'a> {
             let text = to_text(doc, self.render_opts)
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
             let path = self.out_dir.join("extract.txt");
-            fs::write(&path, text)?;
+            crate::output::write(&path, text)?;
             summary.txt_path = Some(path);
         }
 
@@ -102,7 +102,7 @@ impl<'a> MultiFormatWriter<'a> {
             let json = to_json(doc, JsonFormat::Pretty)
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
             let path = self.out_dir.join("content.json");
-            fs::write(&path, json)?;
+            crate::output::write(&path, json)?;
             summary.json_path = Some(path);
         }
 
@@ -159,7 +159,7 @@ impl StreamingWriter {
 
         let (md, md_path) = if want_md {
             let p = out_dir.join("extract.md");
-            let f = File::create(&p)?;
+            let f = crate::output::create(&p)?;
             (Some(BufWriter::new(f)), Some(p))
         } else {
             (None, None)
@@ -167,7 +167,7 @@ impl StreamingWriter {
 
         let (txt, txt_path) = if want_txt {
             let p = out_dir.join("extract.txt");
-            let f = File::create(&p)?;
+            let f = crate::output::create(&p)?;
             (Some(BufWriter::new(f)), Some(p))
         } else {
             (None, None)
@@ -175,7 +175,7 @@ impl StreamingWriter {
 
         let (json, json_path) = if want_json {
             let p = out_dir.join("content.json");
-            let f = File::create(&p)?;
+            let f = crate::output::create(&p)?;
             (Some(BufWriter::new(f)), Some(p))
         } else {
             (None, None)
@@ -287,7 +287,7 @@ impl StreamingWriter {
                     Some(ref refine_options) => refine(&cleaned, refine_options),
                     None => cleaned,
                 };
-                std::fs::write(&md_path, refined)?;
+                crate::output::write(&md_path, refined)?;
             }
             summary.md_path = Some(md_path);
         }

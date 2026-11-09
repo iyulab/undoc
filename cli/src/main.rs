@@ -2,12 +2,12 @@
 //!
 //! A command-line tool for extracting content from DOCX, XLSX, and PPTX files.
 
+mod output;
 mod writer;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use colored::*;
 use indicatif::{ProgressBar, ProgressStyle};
-use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use undoc::render::{CleanupPreset, HeadingConfig, JsonFormat, RenderOptions, TableFallback};
@@ -596,7 +596,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 
             let doc = undoc::parse_file(&input)?;
 
-            fs::create_dir_all(&output)?;
+            output::create_dir_all(&output)?;
 
             let mut count = 0;
             for (id, resource) in &doc.resources {
@@ -605,7 +605,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     .file_name()
                     .unwrap_or_else(|| std::ffi::OsStr::new(&raw));
                 let path = output.join(safe_name);
-                fs::write(&path, &resource.data)?;
+                output::write(&path, &resource.data)?;
                 count += 1;
             }
 
@@ -668,7 +668,7 @@ fn run_convert(p: ConvertParams<'_>) -> Result<(), Box<dyn std::error::Error>> {
         None => default_output_dir(p.input),
     };
 
-    fs::create_dir_all(&output_dir)?;
+    output::create_dir_all(&output_dir)?;
 
     let heading_config = HeadingConfig::default().with_default_style_mapping();
     let base = if p.lossless {
@@ -811,13 +811,19 @@ fn run_convert_streaming(
     let mut media_count = 0usize;
     let images_dir = output_dir.join(IMAGES_SUBDIR);
     let media_dir = output_dir.join(MEDIA_SUBDIR);
+    // The first write that fails ends the stream: the callback cannot return an error, and a
+    // file that was not written must not be reported as written.
+    let mut write_error: Option<std::io::Error> = None;
 
     parse_file_streaming(input, stream_opts, |event| {
         match event {
             ParseEvent::DocumentStart { image_map, .. } => {
                 match mfw.open_streaming(doc_format, image_map) {
                     Ok(mut writer) => {
-                        let _ = writer.write_json_start();
+                        if let Err(e) = writer.write_json_start() {
+                            write_error = Some(e);
+                            return ControlFlow::Break(());
+                        }
                         sw = Some(writer);
                     }
                     Err(_) => return ControlFlow::Break(()),
@@ -825,7 +831,10 @@ fn run_convert_streaming(
             }
             ParseEvent::SectionParsed(section) => {
                 if let Some(ref mut writer) = sw {
-                    let _ = writer.write_section(section);
+                    if let Err(e) = writer.write_section(section) {
+                        write_error = Some(e);
+                        return ControlFlow::Break(());
+                    }
                 }
             }
             ParseEvent::SectionFailed { .. } | ParseEvent::DocumentEnd => {}
@@ -842,18 +851,29 @@ fn run_convert_streaming(
                     "png" | "jpg" | "jpeg" | "gif" | "bmp" | "tiff" | "tif" | "wmf" | "emf" | "svg"
                 );
                 if is_image {
-                    let _ = fs::create_dir_all(&images_dir);
-                    let _ = fs::write(images_dir.join(safe_name), &data);
+                    if let Err(e) = output::create_dir_all(&images_dir)
+                        .and_then(|()| output::write(images_dir.join(safe_name), &data))
+                    {
+                        write_error = Some(e);
+                        return ControlFlow::Break(());
+                    }
                     image_count += 1;
                 } else {
-                    let _ = fs::create_dir_all(&media_dir);
-                    let _ = fs::write(media_dir.join(safe_name), &data);
+                    if let Err(e) = output::create_dir_all(&media_dir)
+                        .and_then(|()| output::write(media_dir.join(safe_name), &data))
+                    {
+                        write_error = Some(e);
+                        return ControlFlow::Break(());
+                    }
                     media_count += 1;
                 }
             }
         }
         ControlFlow::Continue(())
     })?;
+    if let Some(e) = write_error {
+        return Err(e.into());
+    }
 
     // If streaming path didn't initialize (e.g., empty document), fall back to batch
     let summary = match sw {
@@ -885,12 +905,12 @@ fn extract_resources_to_dir(
                 .file_name()
                 .unwrap_or_else(|| std::ffi::OsStr::new(&raw));
             if resource.is_image() {
-                fs::create_dir_all(&images_dir)?;
-                fs::write(images_dir.join(safe_name), &resource.data)?;
+                output::create_dir_all(&images_dir)?;
+                output::write(images_dir.join(safe_name), &resource.data)?;
                 image_count += 1;
             } else {
-                fs::create_dir_all(&media_dir)?;
-                fs::write(media_dir.join(safe_name), &resource.data)?;
+                output::create_dir_all(&media_dir)?;
+                output::write(media_dir.join(safe_name), &resource.data)?;
                 media_count += 1;
             }
         }
@@ -921,10 +941,10 @@ fn run_tables(
             print!("{}", text.join("\r\n"));
         }
         Some(dir) => {
-            fs::create_dir_all(dir)?;
+            output::create_dir_all(dir)?;
             for (section, n, text) in &tables {
                 let name = format!("s{section}-t{n}.{extension}");
-                fs::write(dir.join(&name), text)?;
+                output::write(dir.join(&name), text)?;
                 println!("{} {}", "Extracted".green(), name);
             }
             println!(
@@ -940,7 +960,7 @@ fn run_tables(
 fn write_output(path: Option<&PathBuf>, content: &str) -> Result<(), Box<dyn std::error::Error>> {
     match path {
         Some(p) => {
-            fs::write(p, content)?;
+            output::write(p, content)?;
         }
         None => {
             let stdout = io::stdout();
