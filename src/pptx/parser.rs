@@ -1,6 +1,6 @@
 //! PPTX parser implementation.
 
-use super::bullets::InheritedBullets;
+use super::bullets::{text_marker, InheritedBullets, Marker};
 use crate::charts;
 use crate::container::OoxmlContainer;
 use crate::error::Result;
@@ -842,12 +842,15 @@ impl PptxParser {
         let mut in_bu_blip = false;
         let mut in_lst_style = false;
         let mut lst_style_level: Option<u8> = None;
-        let mut shape_bullets: HashMap<u8, Option<String>> = HashMap::new();
+        let mut shape_bullets: HashMap<u8, Option<Marker>> = HashMap::new();
         let mut current_ph_type: Option<String> = None;
         let mut current_ph_idx: Option<String> = None;
         let mut current_level: u8 = 0;
-        let mut current_bullet: Option<String> = None;
+        // The paragraph's own marker, and whether it says it has none (`a:buNone`).
+        let mut current_bullet: Option<Marker> = None;
         let mut bullet_overridden = false;
+        // The numbers the paragraphs of the shape's text have taken, per level.
+        let mut numbering = Numbering::default();
 
         loop {
             match reader.read_event_into(&mut buf) {
@@ -872,6 +875,7 @@ impl PptxParser {
                             current_ph_idx = None;
                             shape_para_start = paragraphs.len();
                             shape_bullets.clear();
+                            numbering = Numbering::default();
                         }
                         "lstStyle" if in_shape && !in_table => {
                             in_lst_style = true;
@@ -887,12 +891,13 @@ impl PptxParser {
                         "buBlip" if in_ppr || lst_style_level.is_some() => {
                             in_bu_blip = true;
                         }
-                        "buNone" | "buChar" | "buAutoNum" if in_ppr => {
+                        name @ ("buNone" | "buChar" | "buAutoNum") if in_ppr => {
                             bullet_overridden = true;
+                            current_bullet = text_marker(name, e);
                         }
-                        "buNone" | "buChar" | "buAutoNum" if lst_style_level.is_some() => {
+                        name @ ("buNone" | "buChar" | "buAutoNum") if lst_style_level.is_some() => {
                             if let Some(level) = lst_style_level {
-                                shape_bullets.insert(level, None);
+                                shape_bullets.insert(level, text_marker(name, e));
                             }
                         }
                         "blip" if in_bu_blip => {
@@ -937,12 +942,13 @@ impl PptxParser {
                         "pPr" if in_paragraph && !in_table && !runs.in_run() => {
                             current_level = paragraph_level(e);
                         }
-                        "buNone" | "buChar" | "buAutoNum" if in_ppr => {
+                        name @ ("buNone" | "buChar" | "buAutoNum") if in_ppr => {
                             bullet_overridden = true;
+                            current_bullet = text_marker(name, e);
                         }
-                        "buNone" | "buChar" | "buAutoNum" if lst_style_level.is_some() => {
+                        name @ ("buNone" | "buChar" | "buAutoNum") if lst_style_level.is_some() => {
                             if let Some(level) = lst_style_level {
-                                shape_bullets.insert(level, None);
+                                shape_bullets.insert(level, text_marker(name, e));
                             }
                         }
                         "blip" if in_bu_blip => {
@@ -1001,7 +1007,7 @@ impl PptxParser {
                             if !runs.is_empty() {
                                 // The paragraph's own bullet, else the shape's list style,
                                 // else what the layout and master give the placeholder.
-                                let marker_image = current_bullet.clone().or_else(|| {
+                                let marker = current_bullet.take().or_else(|| {
                                     if bullet_overridden {
                                         return None;
                                     }
@@ -1015,15 +1021,15 @@ impl PptxParser {
                                             .and_then(|levels| levels.get(&current_level))
                                             .cloned()
                                             .flatten()
-                                            .map(|path| media_name(&path)),
+                                            .map(|marker| match marker {
+                                                Marker::Image(path) => {
+                                                    Marker::Image(media_name(&path))
+                                                }
+                                                other => other,
+                                            }),
                                     }
                                 });
-                                let list_info = marker_image.map(|image| ListInfo {
-                                    list_type: ListType::Bullet,
-                                    level: current_level,
-                                    number: None,
-                                    marker_image: Some(image),
-                                });
+                                let list_info = numbering.list_info(marker, current_level);
                                 paragraphs.push(Paragraph {
                                     runs,
                                     heading: current_heading,
@@ -1531,8 +1537,8 @@ fn record_bullet(
     rels: &HashMap<String, String>,
     in_paragraph_properties: bool,
     list_style_level: Option<u8>,
-    paragraph_bullet: &mut Option<String>,
-    shape_bullets: &mut HashMap<u8, Option<String>>,
+    paragraph_bullet: &mut Option<Marker>,
+    shape_bullets: &mut HashMap<u8, Option<Marker>>,
 ) {
     let Some(target) = blip
         .attributes()
@@ -1544,9 +1550,58 @@ fn record_bullet(
     };
     let file = media_name(target);
     if in_paragraph_properties {
-        *paragraph_bullet = Some(file);
+        *paragraph_bullet = Some(Marker::Image(file));
     } else if let Some(level) = list_style_level {
-        shape_bullets.insert(level, Some(file));
+        shape_bullets.insert(level, Some(Marker::Image(file)));
+    }
+}
+
+/// The numbers the paragraphs of one shape's text have taken, per level: automatic numbers
+/// continue down consecutive paragraphs of a level (that state the same scheme and start) and
+/// start over after anything that interrupts them — a paragraph without numbers at their level
+/// or above, or one of a shallower level.
+#[derive(Default)]
+struct Numbering {
+    /// For each level: the scheme, the number the run started at, and the last number given.
+    levels: [Option<(String, u32, u32)>; 10],
+}
+
+impl Numbering {
+    /// The list information of a paragraph at `level` with `marker`, and the numbers it uses up.
+    fn list_info(&mut self, marker: Option<Marker>, level: u8) -> Option<ListInfo> {
+        let at = usize::from(level).min(self.levels.len() - 1);
+        // Whatever the paragraph is, deeper levels start over after it.
+        for deeper in &mut self.levels[at + 1..] {
+            *deeper = None;
+        }
+        let info = |list_type, number, marker_image| ListInfo {
+            list_type,
+            level,
+            number,
+            marker_image,
+        };
+        match marker {
+            None => {
+                self.levels[at] = None;
+                None
+            }
+            Some(Marker::Image(file)) => {
+                self.levels[at] = None;
+                Some(info(ListType::Bullet, None, Some(file)))
+            }
+            Some(Marker::Char) => {
+                self.levels[at] = None;
+                Some(info(ListType::Bullet, None, None))
+            }
+            Some(Marker::Number { scheme, start_at }) => {
+                let number = match &self.levels[at] {
+                    Some((s, start, last)) if *s == scheme && *start == start_at => last + 1,
+                    _ => start_at,
+                };
+                self.levels[at] = Some((scheme, start_at, number));
+                Some(info(ListType::Numbered, Some(number), None))
+            }
+        }
     }
 }
 
@@ -2665,6 +2720,157 @@ mod tests {
         assert!(!md.contains(".png"), "markdown: {md}");
     }
 
+    /// Character bullets and automatic numbers make list items, by the same chain a picture
+    /// bullet follows: master `txStyles`, then the paragraph's own properties. Numbers continue
+    /// down consecutive paragraphs of a level and start over after anything that interrupts them;
+    /// a shape that is no placeholder inherits nothing.
+    #[test]
+    fn test_text_bullets_and_numbers_make_list_items() {
+        let master = r#"<?xml version="1.0" encoding="UTF-8"?>
+<p:sldMaster xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><p:cSld><p:spTree/></p:cSld>
+<p:txStyles><p:titleStyle><a:lvl1pPr><a:buNone/></a:lvl1pPr></p:titleStyle>
+<p:bodyStyle><a:lvl1pPr><a:buChar char="&#8226;"/></a:lvl1pPr><a:lvl2pPr><a:buAutoNum type="arabicPeriod"/></a:lvl2pPr></p:bodyStyle>
+<p:otherStyle/></p:txStyles></p:sldMaster>"#;
+        let layout = r#"<?xml version="1.0" encoding="UTF-8"?>
+<p:sldLayout xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><p:cSld><p:spTree>
+<p:sp><p:nvSpPr><p:cNvPr id="2" name="A"/><p:cNvSpPr/><p:nvPr><p:ph type="body" idx="1"/></p:nvPr></p:nvSpPr><p:spPr/><p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>Prompt</a:t></a:r></a:p></p:txBody></p:sp>
+<p:sp><p:nvSpPr><p:cNvPr id="4" name="T"/><p:cNvSpPr/><p:nvPr><p:ph type="title"/></p:nvPr></p:nvSpPr><p:spPr/><p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>Prompt</a:t></a:r></a:p></p:txBody></p:sp>
+</p:spTree></p:cSld></p:sldLayout>"#;
+        let master_rels = rels_xml(&[]);
+        let layout_rels =
+            rels_xml(&[("rIdMaster", MASTER_REL, "../slideMasters/slideMaster1.xml")]);
+        let shape = |nv: &str, style: &str, paras: &[(&str, &str)]| {
+            let paras: String = paras
+                .iter()
+                .map(|(ppr, text)| {
+                    format!(r#"<a:p><a:pPr{ppr}</a:pPr><a:r><a:t>{text}</a:t></a:r></a:p>"#)
+                })
+                .collect();
+            format!(
+                r#"<p:sp><p:nvSpPr><p:cNvPr id="9" name="S"/><p:cNvSpPr/><p:nvPr>{nv}</p:nvPr></p:nvSpPr><p:spPr/><p:txBody><a:bodyPr/>{style}{paras}</p:txBody></p:sp>"#
+            )
+        };
+        let shapes = [
+            // The body placeholder takes the master's body style: bullets, numbers on level 2.
+            shape(
+                r#"<p:ph type="body" idx="1"/>"#,
+                "<a:lstStyle/>",
+                &[
+                    (">", "first"),
+                    (r#" lvl="1">"#, "num a"),
+                    (r#" lvl="1">"#, "num b"),
+                    (">", "second"),
+                    (r#" lvl="1">"#, "num c"),
+                    ("><a:buNone/>", "plain"),
+                    (r#" lvl="1">"#, "num d"),
+                ],
+            ),
+            shape(
+                r#"<p:ph type="title"/>"#,
+                "<a:lstStyle/>",
+                &[(">", "A title")],
+            ),
+            // A text box inherits nothing; its paragraphs state their own bullets.
+            shape(
+                "",
+                "<a:lstStyle/>",
+                &[
+                    (">", "no bullet"),
+                    (r#"><a:buAutoNum type="romanLcPeriod" startAt="4"/>"#, "x"),
+                    (r#"><a:buAutoNum type="romanLcPeriod" startAt="4"/>"#, "y"),
+                    ("><a:buChar char=\"-\"/>", "dash"),
+                    (r#"><a:buAutoNum type="romanLcPeriod" startAt="4"/>"#, "z"),
+                    // Another scheme, then the same scheme from another number: each starts
+                    // over at its own first number.
+                    (r#"><a:buAutoNum type="arabicPeriod"/>"#, "arabic"),
+                    (
+                        r#"><a:buAutoNum type="arabicPeriod" startAt="7"/>"#,
+                        "again",
+                    ),
+                ],
+            ),
+            // A bullet the shape's list style gives its level.
+            shape(
+                "",
+                r#"<a:lstStyle><a:lvl1pPr><a:buChar char="*"/></a:lvl1pPr></a:lstStyle>"#,
+                &[(">", "styled"), ("><a:buNone/>", "cancelled")],
+            ),
+        ]
+        .concat();
+        let slide_rels = rels_xml(&[("rIdLayout", LAYOUT_REL, "../slideLayouts/slideLayout1.xml")]);
+        let data = deck(
+            &[(&slide(&shapes), &slide_rels)],
+            &[
+                ("ppt/slideLayouts/slideLayout1.xml", layout.as_bytes()),
+                (
+                    "ppt/slideLayouts/_rels/slideLayout1.xml.rels",
+                    layout_rels.as_bytes(),
+                ),
+                ("ppt/slideMasters/slideMaster1.xml", master.as_bytes()),
+                (
+                    "ppt/slideMasters/_rels/slideMaster1.xml.rels",
+                    master_rels.as_bytes(),
+                ),
+            ],
+        );
+        let doc = PptxParser::from_bytes(data).unwrap().parse().unwrap();
+        let got: Vec<(String, String)> = paragraphs(&doc.sections[0])
+            .iter()
+            .map(|para| {
+                let marker = match &para.list_info {
+                    None => "none".to_string(),
+                    Some(l) => match l.list_type {
+                        ListType::Numbered => format!("{}:{}.", l.level, l.number.unwrap()),
+                        _ => format!("{}:-", l.level),
+                    },
+                };
+                (para.plain_text(), marker)
+            })
+            .collect();
+        let want = [
+            ("first", "0:-"),
+            ("num a", "1:1."),
+            ("num b", "1:2."),
+            ("second", "0:-"),
+            // The shallower paragraph in between started the numbers over.
+            ("num c", "1:1."),
+            ("plain", "none"),
+            // After a paragraph without a bullet at the level above, the numbers start over too.
+            ("num d", "1:1."),
+            ("A title", "none"),
+            ("no bullet", "none"),
+            ("x", "0:4."),
+            ("y", "0:5."),
+            // A different kind of bullet interrupts the numbers.
+            ("dash", "0:-"),
+            ("z", "0:4."),
+            ("arabic", "0:1."),
+            ("again", "0:7."),
+            ("styled", "0:-"),
+            ("cancelled", "none"),
+        ];
+        let want: Vec<(String, String)> = want
+            .iter()
+            .map(|(t, m)| (t.to_string(), m.to_string()))
+            .collect();
+        assert_eq!(got, want);
+
+        let md =
+            crate::render::to_markdown(&doc, &crate::render::RenderOptions::default()).unwrap();
+        for line in [
+            "- first",
+            "  1. num a",
+            "  2. num b",
+            "- second",
+            "  1. num c",
+        ] {
+            assert!(
+                md.lines().any(|l| l == line),
+                "{line:?} missing from:\n{md}"
+            );
+        }
+    }
+
     /// Picture bullets come down the placeholder chain — master `txStyles`, master
     /// placeholder, layout placeholder, slide shape, paragraph — level by level; a bullet
     /// of another kind replaces an inherited picture. The image a slide inherits is listed
@@ -2755,7 +2961,9 @@ mod tests {
             got,
             [
                 ("layout one".to_string(), some(0, "layout-bullet.png")),
-                ("layout char overrides master".to_string(), None),
+                // The layout's character replaces the master's picture: a plain bullet, with no
+                // picture to trace.
+                ("layout char overrides master".to_string(), some(1, "")),
                 ("no bullet".to_string(), None),
                 ("master one".to_string(), some(0, "master-bullet.png")),
                 ("master two".to_string(), some(1, "master-bullet.png")),

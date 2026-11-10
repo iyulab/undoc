@@ -1,11 +1,11 @@
-//! Picture bullets a slide inherits from its layout and master.
+//! Bullets a slide inherits from its layout and master.
 //!
 //! A placeholder on a slide takes its paragraph properties from the layout's placeholder
 //! with the same `idx` (or type), which takes them from the master's placeholder of that
 //! type, which takes them from the master's `p:txStyles` (`titleStyle` / `bodyStyle` /
-//! `otherStyle`). Only the bullet is resolved here: for each list level, either the
-//! picture a `a:buBlip` names or "no picture" (`a:buNone`, `a:buChar`, `a:buAutoNum`
-//! replace an inherited picture bullet).
+//! `otherStyle`). Only the bullet is resolved here: for each list level, what marks its
+//! paragraphs — a picture (`a:buBlip`), a character (`a:buChar`), automatic numbers
+//! (`a:buAutoNum`) — or nothing (`a:buNone`), each replacing whatever was inherited.
 
 use std::collections::HashMap;
 
@@ -13,9 +13,35 @@ use quick_xml::events::{BytesStart, Event};
 
 use crate::container::OoxmlContainer;
 
-/// The bullet of each list level (0-based): `Some(package path)` of a picture, `None`
-/// where another bullet kind or none replaces an inherited picture.
-pub(super) type BulletLevels = HashMap<u8, Option<String>>;
+/// What marks the paragraphs of a list level.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum Marker {
+    /// A picture: the package path of the image where it was inherited, the media file name
+    /// where a slide states it.
+    Image(String),
+    /// A character; which one is a matter of typography, not content.
+    Char,
+    /// Automatic numbers: the numbering scheme (`type`, e.g. `arabicPeriod`) and the number the
+    /// first paragraph takes.
+    Number { scheme: String, start_at: u32 },
+}
+
+/// The bullet of each list level (0-based): its marker, or `None` where the level has none —
+/// which is how a level cancels a marker it would inherit.
+pub(super) type BulletLevels = HashMap<u8, Option<Marker>>;
+
+/// The marker an `a:buChar` or `a:buAutoNum` element states; `None` for any other element
+/// (`a:buNone` states no marker).
+pub(super) fn text_marker(name: &str, e: &BytesStart<'_>) -> Option<Marker> {
+    match name {
+        "buChar" => Some(Marker::Char),
+        "buAutoNum" => Some(Marker::Number {
+            scheme: attr(e, "type").unwrap_or_else(|| "arabicPeriod".into()),
+            start_at: attr(e, "startAt").and_then(|v| v.parse().ok()).unwrap_or(1),
+        }),
+        _ => None,
+    }
+}
 
 /// The bullets one layout or master part sets.
 #[derive(Debug, Default)]
@@ -95,7 +121,10 @@ impl InheritedBullets {
             .values()
             .chain(self.by_type.values())
             .flat_map(|levels| levels.values().flatten())
-            .map(String::as_str)
+            .filter_map(|marker| match marker {
+                Marker::Image(path) => Some(path.as_str()),
+                _ => None,
+            })
             .find(|path| path.rsplit('/').next() == Some(file))
     }
 }
@@ -197,7 +226,8 @@ fn scan_part(xml: &str, part_path: &str, rels: &HashMap<String, String>) -> Part
             }
             "buNone" | "buChar" | "buAutoNum" => {
                 if let Some(l) = level {
-                    target(&mut out, text_style, &mut shape_levels).insert(l, None);
+                    target(&mut out, text_style, &mut shape_levels)
+                        .insert(l, text_marker(local.as_ref(), &e));
                 }
             }
             "buBlip" => in_bu_blip = is_start,
@@ -205,7 +235,8 @@ fn scan_part(xml: &str, part_path: &str, rels: &HashMap<String, String>) -> Part
                 if let (Some(l), Some(rel)) = (level, attr(&e, "embed")) {
                     if let Some(rel_target) = rels.get(&rel) {
                         let path = OoxmlContainer::resolve_path(part_path, rel_target);
-                        target(&mut out, text_style, &mut shape_levels).insert(l, Some(path));
+                        target(&mut out, text_style, &mut shape_levels)
+                            .insert(l, Some(Marker::Image(path)));
                     }
                 }
             }

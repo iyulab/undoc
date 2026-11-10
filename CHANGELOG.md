@@ -41,6 +41,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Of 147 public sample presentations, 16 hold tables -- 48 in all, each laid out as the independent
   survey of their shapes predicts -- and no text is lost or added in any of them.
 
+### Changed
+
+- **A bulleted or numbered paragraph of a `.pptx` slide is a list item.** Only a picture bullet marked
+  its paragraph as a list item (`list_info`); the ordinary bullet of a body placeholder -- the kind
+  nearly every slide has -- and automatic numbering did not, so a bulleted slide came out as a run of
+  plain paragraphs. A character bullet (`a:buChar`) is now a bullet item and automatic numbering
+  (`a:buAutoNum`) a numbered one, with the paragraph's level giving the nesting; they come the way a
+  picture bullet already did: from the master's text styles, the layout and master placeholders, the
+  shape's list style and the paragraph's own properties, a level's `a:buNone` cancelling an inherited
+  marker. Numbers continue down consecutive paragraphs of a level (honouring `startAt` and the
+  numbering scheme) and start over after a shallower paragraph or one that is not numbered at that
+  level. The Markdown shows what the slide shows -- `- item`, nested lists, `1. step` -- and the text of
+  the deck is the same: of 83 public sample presentations, 27 change, 12 list items become 1 094, and
+  every deck keeps exactly its characters. A shape that is not a placeholder inherits nothing.
+
 ### Fixed
 
 - **The charts of a `.pptx` slide come in the order the slide draws them, the same on every run.** A
