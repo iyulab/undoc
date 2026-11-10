@@ -18,6 +18,12 @@ const INK: Rgba = Rgba {
     b: 0.349,
     a: 1.0,
 };
+const WHITE: Rgba = Rgba {
+    r: 1.0,
+    g: 1.0,
+    b: 1.0,
+    a: 1.0,
+};
 const GRID: Rgba = Rgba {
     r: 0.851,
     g: 0.851,
@@ -40,10 +46,22 @@ enum Grouping {
     Percent,
 }
 
+/// What a series labels its points with, and the number format those labels take.
+#[derive(Debug, Default, Clone)]
+struct Labels {
+    value: bool,
+    percent: bool,
+    category: bool,
+    format: Option<String>,
+}
+
 #[derive(Debug)]
 struct Series {
     name: String,
     values: Vec<Option<f64>>,
+    labels: Labels,
+    /// The number format the cached values carry (`General` is none).
+    source_format: Option<String>,
     color: Rgba,
     /// A pie's color per slice.
     slices: Vec<Rgba>,
@@ -76,6 +94,8 @@ struct Chart {
     legend: Option<char>,
     min: Option<f64>,
     max: Option<f64>,
+    /// The value axis's number format.
+    axis_format: Option<String>,
     background: Option<Rgba>,
 }
 
@@ -118,6 +138,129 @@ fn points(node: Node) -> Vec<Option<String>> {
             .map(|t| t.trim().to_string());
     }
     out
+}
+
+/// The ink that reads on `background`: white on a dark one, the chart's ink on a light one.
+fn contrast(background: Rgba) -> Rgba {
+    if background.r * 0.299 + background.g * 0.587 + background.b * 0.114 < 0.5 {
+        WHITE
+    } else {
+        INK
+    }
+}
+
+impl Labels {
+    /// The text of a value label.
+    fn render(&self, value: f64) -> String {
+        match &self.format {
+            Some(code) => format_code(value, code),
+            None => format_value(value, false),
+        }
+    }
+}
+
+/// The labels of a `c:dLbls` element; a format that follows the source cells is the series'.
+fn read_labels(node: Node, source: &Option<String>) -> Labels {
+    if cval(node, "delete") == Some("1") {
+        return Labels::default();
+    }
+    let flag = |name: &str| cval(node, name) == Some("1");
+    let explicit = cnode(node, "numFmt").and_then(|n| {
+        (n.attribute("sourceLinked") != Some("1"))
+            .then(|| n.attribute("formatCode").map(str::to_string))
+            .flatten()
+    });
+    Labels {
+        value: flag("showVal"),
+        percent: flag("showPercent"),
+        category: flag("showCatName"),
+        format: explicit.or_else(|| source.clone()),
+    }
+}
+
+/// `value` written the way the number format `code` asks for: digits after the point, a
+/// thousands separator, a percent scale, and the literal text around the number. Anything else a
+/// format can say (conditions, dates, exponents) is left out.
+fn format_code(value: f64, code: &str) -> String {
+    let section = code.split(';').next().unwrap_or("").trim();
+    if section.is_empty() || section.eq_ignore_ascii_case("general") {
+        return format_value(value, false);
+    }
+    let (mut prefix, mut suffix) = (String::new(), String::new());
+    let (mut percent, mut thousands, mut point, mut seen) = (false, false, false, false);
+    let mut decimals = 0usize;
+    let mut chars = section.chars();
+    while let Some(c) = chars.next() {
+        let literal: Option<String> = match c {
+            '"' => Some(chars.by_ref().take_while(|c| *c != '"').collect()),
+            '\\' => chars.next().map(String::from),
+            '_' | '*' => {
+                chars.next();
+                None
+            }
+            '[' => {
+                chars.by_ref().find(|c| *c == ']');
+                None
+            }
+            '0' | '#' | '?' => {
+                seen = true;
+                if point {
+                    decimals += 1;
+                }
+                None
+            }
+            '.' if seen || chars.clone().next().is_some_and(|n| matches!(n, '0' | '#')) => {
+                point = true;
+                None
+            }
+            ',' if seen => {
+                thousands = true;
+                None
+            }
+            '%' => {
+                percent = true;
+                None
+            }
+            c if c.is_ascii_alphabetic() => None,
+            other => Some(other.to_string()),
+        };
+        if let Some(text) = literal {
+            if seen {
+                suffix.push_str(&text);
+            } else {
+                prefix.push_str(&text);
+            }
+        }
+    }
+    let scaled = if percent { value * 100.0 } else { value };
+    let digits = format!("{:.*}", decimals, scaled.abs());
+    let (whole, fraction) = digits.split_once('.').unwrap_or((&digits, ""));
+    let whole = if thousands {
+        let mut out = String::new();
+        for (i, ch) in whole.chars().enumerate() {
+            if i > 0 && (whole.len() - i) % 3 == 0 {
+                out.push(',');
+            }
+            out.push(ch);
+        }
+        out
+    } else {
+        whole.to_string()
+    };
+    let sign = if scaled < 0.0 && digits.chars().any(|c| c.is_ascii_digit() && c != '0') {
+        "-"
+    } else {
+        ""
+    };
+    let fraction = if fraction.is_empty() {
+        String::new()
+    } else {
+        format!(".{fraction}")
+    };
+    format!(
+        "{sign}{prefix}{whole}{fraction}{}{suffix}",
+        if percent { "%" } else { "" }
+    )
 }
 
 /// The color Office gives the `index`-th series or slice of a chart whose style names none: the
@@ -224,9 +367,23 @@ fn read_chart(doc: &roxmltree::Document, colors: &Colors) -> Option<Chart> {
             let marker = cnode(ser, "marker")
                 .and_then(|m| cval(m, "symbol"))
                 .is_none_or(|s| s != "none");
+            let source_format = cnode(ser, "val")
+                .and_then(|v| {
+                    v.descendants()
+                        .find(|n| n.has_tag_name((C, "formatCode")))
+                        .and_then(|n| n.text())
+                })
+                .map(|t| t.trim().to_string())
+                .filter(|t| !t.is_empty() && !t.eq_ignore_ascii_case("general"));
+            let labels = cnode(ser, "dLbls")
+                .or_else(|| cnode(node, "dLbls"))
+                .map(|l| read_labels(l, &source_format))
+                .unwrap_or_default();
             series.push(Series {
                 name,
                 values,
+                labels,
+                source_format,
                 color,
                 slices,
                 marker,
@@ -300,6 +457,18 @@ fn read_chart(doc: &roxmltree::Document, colors: &Colors) -> Option<Chart> {
             .and_then(|v| v.parse::<f64>().ok())
             .filter(|v| v.is_finite())
     };
+    let axis_format = area
+        .children()
+        .find(|n| n.has_tag_name((C, "valAx")))
+        .and_then(|ax| cnode(ax, "numFmt"))
+        .filter(|n| n.attribute("sourceLinked") != Some("1"))
+        .and_then(|n| n.attribute("formatCode").map(str::to_string))
+        .or_else(|| {
+            plots
+                .iter()
+                .flat_map(|p| p.series.iter())
+                .find_map(|s| s.source_format.clone())
+        });
     let background = cnode(space, "spPr")
         .and_then(|p| child(p, A, "solidFill"))
         .and_then(|f| color_child(f, colors, None));
@@ -310,6 +479,7 @@ fn read_chart(doc: &roxmltree::Document, colors: &Colors) -> Option<Chart> {
         legend,
         min: bound("min"),
         max: bound("max"),
+        axis_format,
         background,
     })
 }
@@ -573,7 +743,7 @@ impl<'a> Painter<'a> {
         }
 
         if pie {
-            self.draw_pie(first, (left, top, right, bottom), t);
+            self.draw_pie(first, &chart.categories, (left, top, right, bottom), t);
             return;
         }
 
@@ -631,7 +801,13 @@ impl<'a> Painter<'a> {
         };
         let horizontal = first.kind == Kind::Bar && first.horizontal;
 
-        let tick_labels: Vec<String> = ticks.iter().map(|v| format_value(*v, percent)).collect();
+        let tick_labels: Vec<String> = ticks
+            .iter()
+            .map(|v| match (&chart.axis_format, percent) {
+                (Some(code), false) => format_code(*v, code),
+                _ => format_value(*v, percent),
+            })
+            .collect();
         let cat_labels: Vec<String> = (0..n)
             .map(|i| chart.categories.get(i).cloned().unwrap_or_default())
             .collect();
@@ -760,6 +936,9 @@ impl<'a> Painter<'a> {
         let gap = (plot.gap / 100.0).max(0.0);
         let width = 1.0 / (slots - (slots - 1.0) * overlap + gap);
         let group = width * (slots - (slots - 1.0) * overlap);
+        let size = 9.0 * EMU_PER_PT;
+        // Labels go on once every bar is down, so no later bar covers one.
+        let mut labels: Vec<(String, f32, f32, Align, Rgba)> = Vec::new();
         for i in 0..n {
             let total: f64 = plot
                 .series
@@ -769,9 +948,10 @@ impl<'a> Painter<'a> {
                 .sum();
             let (mut pos, mut neg) = (0.0f64, 0.0f64);
             for (j, series) in plot.series.iter().enumerate() {
-                let Some(mut v) = series.values.get(i).copied().flatten() else {
+                let Some(raw) = series.values.get(i).copied().flatten() else {
                     continue;
                 };
+                let mut v = raw;
                 if percent && total > 0.0 {
                     v /= total;
                 }
@@ -810,7 +990,47 @@ impl<'a> Painter<'a> {
                         t,
                     );
                 }
+                if series.labels.value {
+                    let text = series.labels.render(raw);
+                    let (mid_c, lo, hi) = ((a + b) / 2.0, p.min(q), p.max(q));
+                    // Beside a bar the label is in ink; inside a stacked segment it contrasts
+                    // with the segment.
+                    let inside = contrast(series.color);
+                    labels.push(match (horizontal, stacked) {
+                        (false, false) if v >= 0.0 => {
+                            (text, mid_c, lo - size * 1.4, Align::Center, INK)
+                        }
+                        (false, false) => (text, mid_c, hi + size * 0.2, Align::Center, INK),
+                        (true, false) if v >= 0.0 => {
+                            (text, hi + size * 0.3, mid_c - size * 0.55, Align::Left, INK)
+                        }
+                        (true, false) => (
+                            text,
+                            lo - size * 0.3,
+                            mid_c - size * 0.55,
+                            Align::Right,
+                            INK,
+                        ),
+                        (false, true) => (
+                            text,
+                            mid_c,
+                            (lo + hi) / 2.0 - size * 0.55,
+                            Align::Center,
+                            inside,
+                        ),
+                        (true, true) => (
+                            text,
+                            (lo + hi) / 2.0,
+                            mid_c - size * 0.55,
+                            Align::Center,
+                            inside,
+                        ),
+                    });
+                }
             }
+        }
+        for (text, x, y, align, ink) in labels {
+            self.label(&text, x, y, size, ink, align, t);
         }
     }
 
@@ -836,10 +1056,11 @@ impl<'a> Painter<'a> {
                         .sum()
                 })
                 .collect();
-            let mut runs: Vec<Vec<(f32, f32, f32)>> = vec![Vec::new()];
+            let mut runs: Vec<Vec<(f32, f32, f32, f64)>> = vec![Vec::new()];
             for i in 0..n {
                 match series.values.get(i).copied().flatten() {
-                    Some(mut v) => {
+                    Some(raw) => {
+                        let mut v = raw;
                         if percent && totals[i] > 0.0 {
                             v /= totals[i];
                         }
@@ -848,7 +1069,9 @@ impl<'a> Painter<'a> {
                             running[i] += v;
                         }
                         let x = cat(i as f32 + 0.5);
-                        runs.last_mut().unwrap().push((x, val(base + v), val(base)));
+                        runs.last_mut()
+                            .unwrap()
+                            .push((x, val(base + v), val(base), raw));
                     }
                     None => runs.push(Vec::new()),
                 }
@@ -882,11 +1105,24 @@ impl<'a> Painter<'a> {
                         }
                     }
                 }
+                if !area && series.labels.value {
+                    let size = 9.0 * EMU_PER_PT;
+                    for p in run {
+                        let text = series.labels.render(p.3);
+                        self.label(&text, p.0, p.1 - size * 1.9, size, INK, Align::Center, t);
+                    }
+                }
             }
         }
     }
 
-    fn draw_pie(&mut self, plot: &Plot, rect: (f32, f32, f32, f32), t: Transform) {
+    fn draw_pie(
+        &mut self,
+        plot: &Plot,
+        categories: &[String],
+        rect: (f32, f32, f32, f32),
+        t: Transform,
+    ) {
         let Some(series) = plot.series.first() else {
             return;
         };
@@ -933,17 +1169,41 @@ impl<'a> Painter<'a> {
             if let Some(path) = pb.finish() {
                 let color = series.slices.get(i).copied().unwrap_or(series.color);
                 self.fill_with(&path, color, t);
-                self.stroke(
-                    &path,
-                    EMU_PER_PT,
-                    Rgba {
-                        r: 1.0,
-                        g: 1.0,
-                        b: 1.0,
-                        a: 1.0,
-                    },
-                    t,
-                );
+                self.stroke(&path, EMU_PER_PT, WHITE, t);
+                let labels = &series.labels;
+                if labels.value || labels.percent || labels.category {
+                    let mut parts = Vec::new();
+                    if labels.category {
+                        parts.push(categories.get(i).cloned().unwrap_or_default());
+                    }
+                    if labels.value {
+                        parts.push(labels.render(*v));
+                    }
+                    if labels.percent {
+                        let share = *v / total;
+                        parts.push(match &labels.format {
+                            Some(code) if code.contains('%') => format_code(share, code),
+                            _ => format_value(share, true),
+                        });
+                    }
+                    let mid = angle + sweep / 2.0;
+                    let at = if inner > 0.0 {
+                        (radius + inner) / 2.0
+                    } else {
+                        radius * 0.65
+                    };
+                    let size = 9.0 * EMU_PER_PT;
+                    let ink = contrast(color);
+                    self.label(
+                        &parts.join(", "),
+                        cx + at * mid.cos(),
+                        cy + at * mid.sin() - size * 0.55,
+                        size,
+                        ink,
+                        Align::Center,
+                        t,
+                    );
+                }
             }
             angle += sweep;
         }
@@ -976,6 +1236,54 @@ mod tests {
         assert_eq!(format_value(40.0, false), "40");
         assert_eq!(format_value(0.25, false), "0.25");
         assert_eq!(format_value(0.5, true), "50%");
+    }
+
+    #[test]
+    fn number_formats_are_written_the_way_the_format_asks() {
+        assert_eq!(format_code(0.5, "0%"), "50%");
+        assert_eq!(format_code(0.1234, "0.0%"), "12.3%");
+        assert_eq!(format_code(1234567.0, "#,##0"), "1,234,567");
+        assert_eq!(format_code(1.23456, "0.00"), "1.23");
+        assert_eq!(format_code(2.5, "General"), "2.5");
+        assert_eq!(format_code(1500.0, r##""$"#,##0"##), "$1,500");
+        assert_eq!(format_code(2.0, r#"0.0"x""#), "2.0x");
+        assert_eq!(format_code(-5.0, "0"), "-5");
+        assert_eq!(format_code(7.0, "0;[Red]-0"), "7");
+    }
+
+    #[test]
+    fn data_labels_and_number_formats_are_read_from_the_chart_part() {
+        let with_labels = series(0, "S", &["A", "B"], &[0.25, 0.5]).replace(
+            "<c:cat>",
+            r#"<c:dLbls><c:numFmt formatCode="0.0%" sourceLinked="0"/><c:showVal val="1"/><c:showPercent val="0"/></c:dLbls><c:cat>"#,
+        );
+        let part = chart_part(
+            &format!(
+                r#"<c:barChart><c:barDir val="col"/><c:grouping val="clustered"/>{with_labels}<c:axId val="1"/><c:axId val="2"/></c:barChart><c:valAx><c:axId val="2"/><c:scaling/><c:numFmt formatCode="0%" sourceLinked="0"/></c:valAx>"#
+            ),
+            "",
+        );
+        let doc = roxmltree::Document::parse(&part).unwrap();
+        let colors = Colors {
+            scheme: HashMap::new(),
+            map: HashMap::new(),
+        };
+        let chart = read_chart(&doc, &colors).unwrap();
+        let labels = &chart.plots[0].series[0].labels;
+        assert!(labels.value && !labels.percent && !labels.category);
+        assert_eq!(labels.render(0.25), "25.0%");
+        assert_eq!(chart.axis_format.as_deref(), Some("0%"));
+        // A series without labels shows none.
+        let plain = chart_part(
+            &format!(
+                r#"<c:barChart><c:barDir val="col"/>{}<c:axId val="1"/><c:axId val="2"/></c:barChart>"#,
+                series(0, "S", &["A"], &[1.0])
+            ),
+            "",
+        );
+        let doc = roxmltree::Document::parse(&plain).unwrap();
+        let chart = read_chart(&doc, &colors).unwrap();
+        assert!(!chart.plots[0].series[0].labels.value);
     }
 
     use crate::pptx::raster::tests::{deck_full, pixel, render};
