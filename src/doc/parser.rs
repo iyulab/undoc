@@ -1,5 +1,6 @@
 //! Assembles the main document text of a Word 97-2003 file into the document model.
 
+use std::collections::HashMap;
 use std::io::{Cursor, Read};
 
 use super::chars::{self, CharProps, ChpxIndex};
@@ -7,6 +8,7 @@ use super::fib;
 use super::fib::FcLcb;
 use super::lists::{self, ListCounter, ListTable};
 use super::props::{self, PapxIndex, ParaProps, StyleInfo};
+use super::shapes::{self, Drawing};
 use super::symbol;
 use super::text::{self, DocChar};
 use super::word6;
@@ -33,6 +35,8 @@ const FIELD_END: char = '\u{15}';
 const PICTURE: char = '\u{01}';
 /// Auto-numbered note reference.
 const NOTE_REFERENCE: char = '\u{02}';
+/// Anchor of a drawn object: a floating shape, found through the table of anchors.
+const DRAWN_OBJECT: char = '\u{08}';
 /// Non-breaking and optional hyphens.
 const NON_BREAKING_HYPHEN: char = '\u{1E}';
 const OPTIONAL_HYPHEN: char = '\u{1F}';
@@ -122,6 +126,9 @@ impl DocParser {
         let fonts = symbol::read_font_names(&table, fib.sttbf_ffn);
         let list_table = lists::read_lists(&table, fib.plf_lst, fib.plf_lfo);
 
+        // Floating pictures: the shapes of the main drawing, anchored by drawn-object characters.
+        let drawing = shapes::read(&word_document, &table, fib.plc_spa_mom, fib.dgg_info);
+
         // Footnotes follow the main text; endnotes follow the footnote, header and comment
         // stories. Each is listed by the position of its reference and the range of its text.
         let read_notes = |refs: FcLcb, txt: FcLcb, story: u32, marker: &str| -> Result<Vec<Note>> {
@@ -156,7 +163,8 @@ impl DocParser {
         let mut section = Section::new(0);
         let notes: Vec<&Note> = footnotes.iter().chain(&endnotes).collect();
         let mut assembler =
-            Assembler::new(&papx, &chpx, &styles, &fonts, &list_table, &notes, &data);
+            Assembler::new(&papx, &chpx, &styles, &fonts, &list_table, &notes, &data)
+                .with_drawing(&drawing);
         for block in assembler.run(&chars) {
             section.add_block(block);
         }
@@ -302,6 +310,9 @@ struct Assembler<'a> {
     notes: &'a [&'a Note],
     /// The `Data` stream, and the pictures read from it so far.
     data: &'a [u8],
+    /// The floating pictures of the main drawing, and the resource each became.
+    drawing: Option<&'a Drawing>,
+    drawn: HashMap<usize, String>,
     resources: Vec<(String, Resource)>,
     images: Vec<InlineImage>,
     /// The character properties of the run being read.
@@ -341,6 +352,8 @@ impl<'a> Assembler<'a> {
             counter: ListCounter::default(),
             notes,
             data,
+            drawing: None,
+            drawn: HashMap::new(),
             resources: Vec::new(),
             images: Vec::new(),
             props: CharProps::default(),
@@ -355,6 +368,12 @@ impl<'a> Assembler<'a> {
             cells: Vec::new(),
             cell: Vec::new(),
         }
+    }
+
+    /// Read the floating pictures of `drawing` where their anchors stand.
+    fn with_drawing(mut self, drawing: &'a Drawing) -> Self {
+        self.drawing = Some(drawing);
+        self
     }
 
     fn run(&mut self, chars: &[DocChar]) -> Vec<Block> {
@@ -393,6 +412,7 @@ impl<'a> Assembler<'a> {
                     }
                 }
                 PICTURE => self.picture(c.fc),
+                DRAWN_OBJECT => self.floating(c.cp, c.fc),
                 NOTE_REFERENCE => {
                     if let Some(note) = self.notes.iter().find(|n| n.cp == c.cp) {
                         self.flush_run();
@@ -412,6 +432,37 @@ impl<'a> Assembler<'a> {
         }
         self.close_table();
         std::mem::take(&mut self.blocks)
+    }
+
+    /// A floating picture: its bytes become a resource (once, however many anchors show it), and
+    /// the paragraph holding the anchor references it.
+    fn floating(&mut self, cp: u32, fc: u32) {
+        if self.chpx.at(fc).hidden {
+            return;
+        }
+        let Some(drawing) = self.drawing else {
+            return;
+        };
+        let Some(anchor) = drawing.at(cp) else {
+            return;
+        };
+        let id = match self.drawn.get(&anchor.picture) {
+            Some(id) => id.clone(),
+            None => {
+                let (bytes, extension) = &drawing.pictures[anchor.picture];
+                let id = format!("image{}", self.resources.len() + 1);
+                let resource = Resource::image(bytes.clone(), Some(format!("{id}.{extension}")));
+                self.resources.push((id.clone(), resource));
+                self.drawn.insert(anchor.picture, id.clone());
+                id
+            }
+        };
+        self.images.push(InlineImage {
+            resource_id: id,
+            alt_text: anchor.alt_text.clone(),
+            width: None,
+            height: None,
+        });
     }
 
     /// An inline picture: its bytes become a resource, and the paragraph references it.

@@ -4,7 +4,6 @@
 
 #[cfg(feature = "doc")]
 pub(crate) const RT_SP_CONTAINER: u16 = 0xF004;
-#[cfg(feature = "ppt")]
 pub(crate) const RT_FSP: u16 = 0xF00A;
 pub(crate) const RT_FOPT: u16 = 0xF00B;
 pub(crate) const RT_TERTIARY_FOPT: u16 = 0xF122;

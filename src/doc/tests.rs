@@ -5,6 +5,7 @@
 use super::DocParser;
 use crate::error::Error;
 use crate::model::{Block, HeadingLevel};
+use crate::officeart::tests::{fbse, fopt, png_blip};
 
 /// One paragraph of a test document.
 struct Para {
@@ -82,6 +83,44 @@ struct Options {
     list_nfc: u8,
     /// A `Data` stream, for inline pictures.
     data: Option<Vec<u8>>,
+    /// Floating pictures.
+    drawn: Option<Drawn>,
+}
+
+/// Floating pictures: the drawn-object characters (`\u{08}`) of the main story show these
+/// shapes in order — (shape id, `pib`, alternative text) — and the blip store has these
+/// entries: a PNG kept in the `WordDocument` stream, or an emptied slot.
+struct Drawn {
+    shapes: Vec<(u32, u32, Option<&'static str>)>,
+    store: Vec<Option<&'static [u8]>>,
+    /// A shape of the headers' drawing, which anchors in the text of no body story.
+    in_header: Option<(u32, u32)>,
+}
+
+fn art(version: u8, instance: u16, kind: u16, data: &[u8]) -> Vec<u8> {
+    let mut out = ((instance << 4) | version as u16).to_le_bytes().to_vec();
+    out.extend(kind.to_le_bytes());
+    out.extend((data.len() as u32).to_le_bytes());
+    out.extend(data);
+    out
+}
+
+/// A drawing: one picture shape per `(shape id, pib, alt)`.
+fn drawing(shapes: &[(u32, u32, Option<&'static str>)]) -> Vec<u8> {
+    let shapes: Vec<u8> = shapes
+        .iter()
+        .flat_map(|&(id, pib, alt)| {
+            let mut fsp = id.to_le_bytes().to_vec();
+            fsp.extend([0u8; 4]);
+            art(
+                0xF,
+                0,
+                0xF004,
+                &[art(2, 75, 0xF00A, &fsp), fopt(Some(pib), alt)].concat(),
+            )
+        })
+        .collect();
+    art(0xF, 0, 0xF002, &art(0xF, 0, 0xF003, &shapes))
 }
 
 const TEXT_AT: usize = 1024;
@@ -323,6 +362,63 @@ fn build(paras: &[Para], opts: Options) -> Vec<u8> {
     table.extend_from_slice(&lfo);
     let lfo_len = table.len() - lfo_at;
 
+    // Floating pictures: the anchors (a PLC of 26-byte `Spa`) and the `OfficeArtContent` — the
+    // drawing group with its blip store, then the main drawing — in the table stream, the blips
+    // behind the page of character properties in the `WordDocument` stream.
+    let mut delayed = Vec::new();
+    let (spa_at, spa_len, dgg_at, dgg_len) = match &opts.drawn {
+        None => (0, 0, 0, 0),
+        Some(drawn) => {
+            let anchors: Vec<usize> = text
+                .chars()
+                .take(ccp_text)
+                .enumerate()
+                .filter(|(_, c)| *c == '\u{08}')
+                .map(|(i, _)| i)
+                .collect();
+            assert_eq!(anchors.len(), drawn.shapes.len());
+            let spa_at = table.len();
+            for cp in &anchors {
+                le32(&mut table, *cp as u32);
+            }
+            le32(&mut table, ccp_text as u32);
+            for &(id, _, _) in &drawn.shapes {
+                let mut spa = id.to_le_bytes().to_vec();
+                spa.extend([0u8; 22]);
+                table.extend(spa);
+            }
+            let spa_len = table.len() - spa_at;
+
+            let mut entries = Vec::new();
+            for entry in &drawn.store {
+                entries.push(match entry {
+                    Some(png) => {
+                        let blip = png_blip(png);
+                        let fo = chpx_at + 512 + delayed.len();
+                        delayed.extend(&blip);
+                        fbse(blip.len() as u32, fo as u32, &[])
+                    }
+                    None => fbse(0, 0, &[]),
+                });
+            }
+            let group = art(
+                0xF,
+                0,
+                0xF000,
+                &art(0xF, entries.len() as u16, 0xF001, &entries.concat()),
+            );
+            let dgg_at = table.len();
+            table.extend(group);
+            table.push(0); // the main document's drawing
+            table.extend(drawing(&drawn.shapes));
+            if let Some((id, pib)) = drawn.in_header {
+                table.push(1); // the headers' drawing
+                table.extend(drawing(&[(id, pib, None)]));
+            }
+            (spa_at, spa_len, dgg_at, table.len() - dgg_at)
+        }
+    };
+
     // The File Information Block.
     let mut wd = vec![0u8; chpx_at + 512];
     wd[0..2].copy_from_slice(&0xA5ECu16.to_le_bytes());
@@ -350,12 +446,15 @@ fn build(paras: &[Para], opts: Options) -> Vec<u8> {
     pair(12, chpx_plc_at, chpx_plc_len);
     pair(13, papx_at, papx_len);
     pair(33, clx_at, clx_len);
+    pair(40, spa_at, spa_len);
+    pair(50, dgg_at, dgg_len);
     pair(73, lst_at, lst_len);
     pair(74, lfo_at, lfo_len);
     assert!(rg_fc_lcb + 93 * 8 <= TEXT_AT);
     wd[TEXT_AT..TEXT_AT + encoded.len()].copy_from_slice(&encoded);
     wd[fkp_at..fkp_at + 512].copy_from_slice(&page);
     wd[chpx_at..chpx_at + 512].copy_from_slice(&chpx_page);
+    wd.extend_from_slice(&delayed);
 
     let mut container = cfb::CompoundFile::create(std::io::Cursor::new(Vec::new())).unwrap();
     let mut streams = vec![("/WordDocument", wd), ("/1Table", table)];
@@ -1048,4 +1147,105 @@ fn a_row_whose_boundaries_do_not_match_its_cells_is_left_as_read() {
         .rows
         .iter()
         .all(|r| r.cells.iter().all(|c| c.col_span == 1)));
+}
+
+const PNG_ONE: &[u8] = b"\x89PNG\r\n\x1a\nfirst";
+const PNG_TWO: &[u8] = b"\x89PNG\r\n\x1a\nsecond";
+
+/// The pictures a paragraph references: (alt text, the resource's bytes).
+fn paragraph_images(doc: &crate::Document, block: usize) -> Vec<(Option<String>, Vec<u8>)> {
+    let Block::Paragraph(para) = &doc.sections[0].content[block] else {
+        panic!("not a paragraph")
+    };
+    para.images
+        .iter()
+        .map(|i| {
+            (
+                i.alt_text.clone(),
+                doc.resources[&i.resource_id].data.clone(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn a_floating_picture_is_a_resource_the_anchoring_paragraph_references() {
+    let doc = parse(
+        &[p("Figure \u{08} here."), p("After.")],
+        Options {
+            drawn: Some(Drawn {
+                shapes: vec![(1026, 2, Some("Sales by region"))],
+                store: vec![Some(PNG_ONE), Some(PNG_TWO)],
+                in_header: None,
+            }),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    // `pib` 2 is the second entry of the blip store.
+    assert_eq!(
+        paragraph_images(&doc, 0),
+        [(Some("Sales by region".to_string()), PNG_TWO.to_vec())]
+    );
+    assert_eq!(paragraphs(&doc), ["Figure  here.", "After."]);
+    let resource = doc.resources.values().next().unwrap();
+    assert_eq!(resource.filename.as_deref(), Some("image1.png"));
+    assert_eq!(doc.resources.len(), 1);
+}
+
+#[test]
+fn shapes_showing_one_picture_share_its_resource() {
+    let doc = parse(
+        &[p("A \u{08}"), p("B \u{08}")],
+        Options {
+            drawn: Some(Drawn {
+                shapes: vec![(1026, 1, Some("First use")), (1027, 1, None)],
+                store: vec![Some(PNG_ONE)],
+                in_header: None,
+            }),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(doc.resources.len(), 1);
+    assert_eq!(
+        paragraph_images(&doc, 0),
+        [(Some("First use".to_string()), PNG_ONE.to_vec())]
+    );
+    assert_eq!(paragraph_images(&doc, 1), [(None, PNG_ONE.to_vec())]);
+}
+
+#[test]
+fn an_emptied_slot_a_missing_entry_and_an_unanchored_shape_show_no_picture() {
+    // Anchors 1 and 2 name an emptied slot and an index past the store. The headers' drawing
+    // has a shape with the second anchor's id and a valid `pib`: it is not the body's.
+    let doc = parse(
+        &[
+            p("one \u{08}"),
+            p("two \u{08}"),
+            p("three \u{08}"),
+            p("kept"),
+        ],
+        Options {
+            drawn: Some(Drawn {
+                shapes: vec![(1026, 1, None), (1027, 9, None), (1028, 2, None)],
+                store: vec![None, Some(PNG_ONE)],
+                in_header: Some((1027, 2)),
+            }),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    // The third anchor names shape 1028, which the main drawing has with `pib` 2: the picture.
+    assert!(paragraph_images(&doc, 0).is_empty());
+    assert!(paragraph_images(&doc, 1).is_empty());
+    assert_eq!(paragraph_images(&doc, 2), [(None, PNG_ONE.to_vec())]);
+    assert_eq!(paragraphs(&doc), ["one ", "two ", "three ", "kept"]);
+}
+
+#[test]
+fn a_document_without_shapes_is_read_as_before() {
+    let doc = parse(&[p("Plain \u{08}text")], Options::default()).unwrap();
+    assert!(paragraph_images(&doc, 0).is_empty());
+    assert_eq!(paragraphs(&doc), ["Plain text"]);
 }

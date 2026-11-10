@@ -24,6 +24,7 @@ mod lists;
 mod parser;
 mod pictures;
 mod props;
+mod shapes;
 mod symbol;
 mod text;
 mod word6;

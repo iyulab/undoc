@@ -20,6 +20,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   files); every extracted file starts with its format's signature, and 154 of the 155 PNG and JPEG
   files decode (the remaining one's own data is not decodable).
 
+- **A Word 97-2003 document keeps its floating pictures.** Only a picture set in the text line (an
+  inline picture) was read; a picture placed on the page -- anchored to a paragraph, wrapped by the
+  text around it -- was dropped, so a `.doc` whose images were all floating came out as text alone.
+  A drawn-object character is now tied, through the table of shape anchors, to its shape in the
+  main drawing, and the shape's picture is read from the blip store the way an inline one is: the
+  paragraph that holds the anchor references it, with the shape's alternative text, and several
+  shapes showing one picture share a resource. The pictures of the headers' drawing are not read.
+  Of 158 public sample documents, 12 gain pictures (each independently re-counted from the files'
+  own structures, with no difference); every extracted file has its format's signature.
+
 ### Fixed
 
 - **A Word 97-2003 table whose rows have different numbers of cells keeps its columns.** Word marks no

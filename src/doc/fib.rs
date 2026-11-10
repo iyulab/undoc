@@ -43,8 +43,10 @@ const PAIR_PLCF_BTE_CHPX: usize = 12;
 const PAIR_PLCF_BTE_PAPX: usize = 13;
 const PAIR_STTBF_FFN: usize = 15;
 const PAIR_CLX: usize = 33;
+const PAIR_PLC_SPA_MOM: usize = 40;
 const PAIR_PLCFEND_REF: usize = 46;
 const PAIR_PLCFEND_TXT: usize = 47;
+const PAIR_DGG_INFO: usize = 50;
 const PAIR_PLF_LST: usize = 73;
 const PAIR_PLF_LFO: usize = 74;
 
@@ -119,6 +121,10 @@ pub(super) struct Fib {
     /// List definitions and list format overrides.
     pub plf_lst: FcLcb,
     pub plf_lfo: FcLcb,
+    /// The anchors of the main document's shapes (`PlcfSpaMom`) and the drawing they are in
+    /// (`OfficeArtContent`).
+    pub plc_spa_mom: FcLcb,
+    pub dgg_info: FcLcb,
 }
 
 fn u16_at(data: &[u8], at: usize) -> Option<u16> {
@@ -199,6 +205,8 @@ pub(super) fn parse(word_document: &[u8]) -> Result<Format> {
         plcf_hdd: pair(PAIR_PLCF_HDD)?,
         plf_lst: pair(PAIR_PLF_LST)?,
         plf_lfo: pair(PAIR_PLF_LFO)?,
+        plc_spa_mom: pair(PAIR_PLC_SPA_MOM)?,
+        dgg_info: pair(PAIR_DGG_INFO)?,
     }))
 }
 
