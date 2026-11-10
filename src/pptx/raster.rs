@@ -872,7 +872,7 @@ impl<'a> Painter<'a> {
                         .and_then(|g| g.attribute("uri"))
                         .unwrap_or("");
                     if uri.ends_with("/chart") {
-                        self.gaps.charts += 1;
+                        self.chart(node, parent);
                     } else if uri.ends_with("/table") {
                         self.table(node, parent);
                     } else if uri.ends_with("/diagram") {
@@ -2952,6 +2952,8 @@ fn to_path(segments: &[Segment]) -> Option<tiny_skia::Path> {
     }
     pb.finish()
 }
+
+mod chart;
 
 #[cfg(test)]
 pub(crate) mod tests;

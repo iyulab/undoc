@@ -15,7 +15,7 @@ fn emu(pt: u32) -> u32 {
     pt * 12_700
 }
 
-fn rels(items: &[(&str, &str, &str)]) -> String {
+pub(crate) fn rels(items: &[(&str, &str, &str)]) -> String {
     let body: String = items
         .iter()
         .map(|(id, kind, target)| {
@@ -37,7 +37,7 @@ fn deck_with(shapes: &str, master_bg: &str, layout_shapes: &str) -> Vec<u8> {
 }
 
 /// [`deck_with`], with more slide relationships `(id, type, target)` and more parts.
-fn deck_full(
+pub(crate) fn deck_full(
     shapes: &str,
     master_bg: &str,
     layout_shapes: &str,
@@ -200,7 +200,7 @@ pub(crate) fn solid(hex: &str) -> String {
     format!(r#"<a:solidFill><a:srgbClr val="{hex}"/></a:solidFill><a:ln><a:noFill/></a:ln>"#)
 }
 
-fn render(pptx: Vec<u8>) -> crate::raster::RasteredSlide {
+pub(crate) fn render(pptx: Vec<u8>) -> crate::raster::RasteredSlide {
     PptxParser::from_bytes(pptx)
         .unwrap()
         .render_slide(
@@ -214,7 +214,7 @@ fn render(pptx: Vec<u8>) -> crate::raster::RasteredSlide {
         .unwrap()
 }
 
-fn pixel(slide: &crate::raster::RasteredSlide, x: u32, y: u32) -> [u8; 3] {
+pub(crate) fn pixel(slide: &crate::raster::RasteredSlide, x: u32, y: u32) -> [u8; 3] {
     let i = ((y * slide.width + x) * 4) as usize;
     [slide.rgba[i], slide.rgba[i + 1], slide.rgba[i + 2]]
 }
