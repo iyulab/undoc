@@ -740,3 +740,34 @@ fn a_table_renders_as_a_markdown_table() {
     let md = crate::render::to_markdown(&doc, &crate::render::RenderOptions::default()).unwrap();
     assert!(md.contains("| a | b |\n| --- | --- |\n| c | d |"), "{md}");
 }
+
+#[test]
+fn the_same_presentation_gives_the_same_output_every_time() {
+    crate::assert_deterministic("ppt", || {
+        PptParser::from_bytes(build_with(
+            &[slide_with(vec![
+                Shape::Picture(1, Some("one")),
+                Shape::Group {
+                    table: Some((3, 2)),
+                    cells: vec![
+                        (100, 100, 200, 200, "d"),
+                        (0, 100, 100, 200, "c"),
+                        (100, 0, 200, 100, "b"),
+                        (0, 0, 100, 100, "a"),
+                    ],
+                },
+                Shape::Picture(3, None),
+                Shape::Picture(2, Some("two")),
+            ])],
+            false,
+            &[
+                Entry::Png(PNG_A),
+                Entry::Png(PNG_B),
+                Entry::Png(b"\x89PNG\r\n\x1a\nthree"),
+            ],
+        ))
+        .unwrap()
+        .parse()
+        .unwrap()
+    });
+}

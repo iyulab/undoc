@@ -1448,3 +1448,30 @@ fn a_vertical_merge_renders_as_a_row_span() {
     let md = crate::render::to_markdown(&doc, &options).unwrap();
     assert!(md.contains("rowspan=\"2\""), "{md}");
 }
+
+#[test]
+fn the_same_document_gives_the_same_output_every_time() {
+    crate::assert_deterministic("doc", || {
+        parse(
+            &[p("A \u{08}"), p("B \u{08}"), p("C \u{08}"), p("D \u{08}")],
+            Options {
+                drawn: Some(Drawn {
+                    shapes: vec![
+                        (1026, 1, None),
+                        (1027, 2, Some("two")),
+                        (1028, 3, None),
+                        (1029, 2, None),
+                    ],
+                    store: vec![
+                        Some(PNG_ONE),
+                        Some(PNG_TWO),
+                        Some(b"\x89PNG\r\n\x1a\nthree"),
+                    ],
+                    in_header: None,
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+    });
+}

@@ -330,3 +330,27 @@ pub fn to_json(path: impl AsRef<Path>, format: render::JsonFormat) -> Result<Str
     let doc = parse_file(path)?;
     render::to_json(&doc, format)
 }
+
+/// Tests that a reader gives the same output every time it reads the same input.
+///
+/// The standard library seeds each `HashMap` differently, so a reader whose output depends on
+/// the order a map hands its entries out in — resources listed, a tie between two counts decided
+/// by whichever came last — gives different output on each parse, even inside one process.
+/// `parse` is called afresh for each run, so every run builds its maps anew.
+#[cfg(test)]
+pub(crate) fn assert_deterministic(what: &str, parse: impl Fn() -> Document) {
+    let render = |doc: &Document| {
+        (
+            doc.to_json().expect("the document serializes"),
+            render::to_markdown(doc, &render::RenderOptions::default()).expect("it renders"),
+        )
+    };
+    let first = render(&parse());
+    for run in 1..24 {
+        assert_eq!(
+            render(&parse()),
+            first,
+            "{what}: run {run} differs from the first"
+        );
+    }
+}

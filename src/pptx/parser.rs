@@ -3360,6 +3360,20 @@ mod tests {
         zip.finish().unwrap().into_inner()
     }
 
+    /// Reading the same presentation again gives the same output: charts drawn in an order that
+    /// is neither the order of their ids nor any order a map hands out, and picture bullets
+    /// that make several resources.
+    #[test]
+    fn test_the_same_presentation_gives_the_same_output_every_time() {
+        let data = presentation_with_charts(&[5, 2, 4, 1, 3]);
+        crate::assert_deterministic("pptx", || {
+            PptxParser::from_bytes(data.clone())
+                .unwrap()
+                .parse()
+                .unwrap()
+        });
+    }
+
     #[test]
     fn test_charts_come_in_the_order_the_slide_draws_them() {
         // Drawn 3, 1, 4, 2: not the order of their ids, and not any order a map of the

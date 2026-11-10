@@ -740,3 +740,29 @@ fn a_workbook_without_a_drawing_is_read_as_before() {
     assert!(sheet_images(&doc, 0).is_empty());
     assert!(doc.resources.is_empty());
 }
+
+#[test]
+fn the_same_workbook_gives_the_same_output_every_time() {
+    let png: &'static [&'static [u8]] = &[
+        PNG_A,
+        PNG_B,
+        b"\x89PNG\r\n\x1a\nthird",
+        b"\x89PNG\r\n\x1a\nfourth",
+    ];
+    crate::assert_deterministic("xls", || {
+        parse(Book {
+            strings: vec!["x"],
+            sheets: vec![sheet("One"), sheet("Two")],
+            pictures: Some(Pictures {
+                store: png.iter().map(|p| Some(*p)).collect(),
+                drawings: vec![
+                    vec![(4, None), (1, Some("a")), (3, None)],
+                    vec![(2, None), (4, Some("b"))],
+                ],
+                spread: true,
+            }),
+            ..Default::default()
+        })
+        .unwrap()
+    });
+}
