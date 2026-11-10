@@ -616,7 +616,10 @@ impl PptxParser {
         let mut in_ppr = false;
         let mut in_bu_blip = false;
         let mut current_level: u8 = 0;
-        let mut current_bullet: Option<String> = None;
+        // The paragraph's own marker (a cell's text has no list style to inherit from here),
+        // and the numbers the paragraphs of the current cell have taken.
+        let mut current_bullet: Option<Marker> = None;
+        let mut numbering = Numbering::default();
 
         let mut current_table = Table::new();
         let mut current_row = Row::new();
@@ -656,6 +659,7 @@ impl PptxParser {
                             cell_covered = read_table_cell_merge(e, &mut current_cell);
                             row_under_merge |= cell_covered && is_vertically_covered(e);
                             current_paragraphs.clear();
+                            numbering = Numbering::default();
                         }
                         // a:tcPr - cell properties; its fill may be a picture
                         "tcPr" if in_cell => {
@@ -678,9 +682,12 @@ impl PptxParser {
                         "buBlip" if in_ppr => {
                             in_bu_blip = true;
                         }
+                        name @ ("buNone" | "buChar" | "buAutoNum") if in_ppr => {
+                            current_bullet = text_marker(name, e);
+                        }
                         "blip" if in_bu_blip => {
                             if let Some(file) = blip_file(e, rels) {
-                                current_bullet = Some(file);
+                                current_bullet = Some(Marker::Image(file));
                             }
                         }
                         // a:p - paragraph
@@ -716,9 +723,12 @@ impl PptxParser {
                         "pPr" if in_paragraph && !runs.in_run() => {
                             current_level = paragraph_level(e);
                         }
+                        name @ ("buNone" | "buChar" | "buAutoNum") if in_ppr => {
+                            current_bullet = text_marker(name, e);
+                        }
                         "blip" if in_bu_blip => {
                             if let Some(file) = blip_file(e, rels) {
-                                current_bullet = Some(file);
+                                current_bullet = Some(Marker::Image(file));
                             }
                         }
                         _ => {}
@@ -737,12 +747,8 @@ impl PptxParser {
                         "p" if in_txbody => {
                             let runs = runs.finish();
                             if !runs.is_empty() {
-                                let list_info = current_bullet.take().map(|image| ListInfo {
-                                    list_type: ListType::Bullet,
-                                    level: current_level,
-                                    number: None,
-                                    marker_image: Some(image),
-                                });
+                                let list_info =
+                                    numbering.list_info(current_bullet.take(), current_level);
                                 current_paragraphs.push(Paragraph {
                                     runs,
                                     list_info,
@@ -2718,6 +2724,46 @@ mod tests {
         let md =
             crate::render::to_markdown(&doc, &crate::render::RenderOptions::default()).unwrap();
         assert!(!md.contains(".png"), "markdown: {md}");
+    }
+
+    /// A table cell's own `a:buChar` and `a:buAutoNum` make list items just as a text box's do,
+    /// with numbers that continue down the paragraphs of one cell and start over in the next;
+    /// `a:buNone` and a paragraph without a marker stay plain.
+    #[test]
+    fn test_table_cell_text_bullets_and_numbers_make_list_items() {
+        let table = r#"<p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="4" name="Table"/><p:cNvGraphicFramePr/><p:nvPr/></p:nvGraphicFramePr><a:graphic><a:graphicData><a:tbl><a:tblGrid><a:gridCol w="100"/><a:gridCol w="100"/></a:tblGrid>
+<a:tr h="10"><a:tc><a:txBody><a:bodyPr/><a:p><a:pPr><a:buAutoNum type="arabicPeriod"/></a:pPr><a:r><a:t>One</a:t></a:r></a:p><a:p><a:pPr><a:buAutoNum type="arabicPeriod"/></a:pPr><a:r><a:t>Two</a:t></a:r></a:p><a:p><a:pPr><a:buNone/></a:pPr><a:r><a:t>Break</a:t></a:r></a:p></a:txBody></a:tc><a:tc><a:txBody><a:bodyPr/><a:p><a:pPr><a:buChar char="&#8226;"/></a:pPr><a:r><a:t>Dot</a:t></a:r></a:p><a:p><a:r><a:t>Plain</a:t></a:r></a:p></a:txBody></a:tc></a:tr>
+<a:tr h="10"><a:tc><a:txBody><a:bodyPr/><a:p><a:pPr><a:buAutoNum type="arabicPeriod"/></a:pPr><a:r><a:t>Again</a:t></a:r></a:p></a:txBody></a:tc><a:tc><a:txBody><a:bodyPr/><a:p><a:r><a:t>x</a:t></a:r></a:p></a:txBody></a:tc></a:tr>
+</a:tbl></a:graphicData></a:graphic></p:graphicFrame>"#;
+        let data = deck(&[(&slide(table), &rels_xml(&[]))], &[]);
+        let doc = PptxParser::from_bytes(data).unwrap().parse().unwrap();
+        let Block::Table(t) = &doc.sections[0].content[0] else {
+            panic!("expected a table: {:?}", doc.sections[0].content);
+        };
+        let info = |r: usize, c: usize, p: usize| {
+            t.rows[r].cells[c].content[p]
+                .list_info
+                .as_ref()
+                .map(|l| (l.list_type, l.number))
+        };
+        assert_eq!(info(0, 0, 0), Some((ListType::Numbered, Some(1))));
+        assert_eq!(info(0, 0, 1), Some((ListType::Numbered, Some(2))));
+        assert_eq!(info(0, 0, 2), None, "a:buNone is no marker");
+        assert_eq!(info(0, 1, 0), Some((ListType::Bullet, None)));
+        assert_eq!(info(0, 1, 1), None);
+        assert_eq!(
+            info(1, 0, 0),
+            Some((ListType::Numbered, Some(1))),
+            "numbers restart in a cell"
+        );
+        assert_eq!(info(1, 1, 0), None);
+        let md =
+            crate::render::to_markdown(&doc, &crate::render::RenderOptions::default()).unwrap();
+        assert!(
+            md.contains("| 1. One<br>2. Two<br>Break | - Dot<br>Plain |"),
+            "markdown: {md}"
+        );
+        assert!(md.contains("| 1. Again | x |"), "markdown: {md}");
     }
 
     /// Character bullets and automatic numbers make list items, by the same chain a picture

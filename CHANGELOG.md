@@ -81,6 +81,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the deck is the same: of 83 public sample presentations, 27 change, 12 list items become 1 094, and
   every deck keeps exactly its characters. A shape that is not a placeholder inherits nothing.
 
+- **A table cell's list items keep their markers.** A table cell's paragraph was a list item only when
+  its bullet was a picture: `a:buChar` and `a:buAutoNum` in a `.pptx` cell were ignored, and the
+  Markdown of any table -- `.docx`, `.doc` and `.pptx` alike -- wrote a cell's list items as plain
+  lines joined by `<br>`, so "1. step" and "- item" lost their markers. A cell paragraph of a `.pptx`
+  now takes its own character bullet or automatic number (numbers continue down the paragraphs of one
+  cell and start over in the next; `a:buNone` is no marker), and a cell's list item is written with its
+  marker as its first characters (`1. One<br>2. Two`, `- Dot`), since a Markdown table cell cannot hold
+  a list. A table cell inherits no bullet from the presentation's default text style.
+
 ### Fixed
 
 - **A tie between font sizes no longer depends on the run.** The body font size of a document and the

@@ -1054,7 +1054,21 @@ fn render_cell_content(
         };
         render_runs(&merged_para.runs, run_options, ctx, &mut para_text);
 
+        // A list item keeps its marker: a cell cannot hold a Markdown list, so the marker is
+        // written as the item's first characters, as the text of a cell's list is read.
         if !para_text.is_empty() {
+            if let Some(list_info) = &merged_para.list_info {
+                match list_info.list_type {
+                    crate::model::ListType::Bullet => {
+                        para_text.insert_str(0, &format!("{} ", options.list_marker));
+                    }
+                    crate::model::ListType::Numbered => {
+                        let number = list_info.number.unwrap_or(1);
+                        para_text.insert_str(0, &format!("{number}. "));
+                    }
+                    crate::model::ListType::None => {}
+                }
+            }
             parts.push(para_text);
         }
 
