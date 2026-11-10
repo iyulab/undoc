@@ -2,7 +2,6 @@
 //! the `Data` stream and PowerPoint in the `Pictures` stream, both as blip store entries
 //! (`OfficeArtFBSE`) around the bytes of a picture (`OfficeArtBlip`).
 
-#[cfg(feature = "doc")]
 pub(crate) const RT_SP_CONTAINER: u16 = 0xF004;
 pub(crate) const RT_FSP: u16 = 0xF00A;
 pub(crate) const RT_FOPT: u16 = 0xF00B;
@@ -89,6 +88,38 @@ pub(crate) fn picture_properties(data: &[u8], fopt: &Record) -> ShapePicture {
         }
     }
     out
+}
+
+/// A shape property: its value, or — for a complex property — the bytes the value counts.
+#[cfg(feature = "ppt")]
+pub(crate) struct Property<'a> {
+    pub value: u32,
+    pub complex: Option<&'a [u8]>,
+}
+
+/// The property `id` of a property table, if it has one.
+#[cfg(feature = "ppt")]
+pub(crate) fn property<'a>(data: &'a [u8], fopt: &Record, id: u16) -> Option<Property<'a>> {
+    let count = fopt.instance as usize;
+    let mut complex = fopt.start + count * 6;
+    for i in 0..count {
+        let at = fopt.start + i * 6;
+        let (pid, value) = (u16_at(data, at)?, u32_at(data, at + 2)?);
+        let is_complex = pid & 0x8000 != 0;
+        let bytes = is_complex
+            .then(|| data.get(complex..(complex.checked_add(value as usize)?).min(fopt.end)))
+            .flatten();
+        if pid & 0x3FFF == id {
+            return Some(Property {
+                value,
+                complex: bytes,
+            });
+        }
+        if is_complex {
+            complex = complex.checked_add(value as usize)?;
+        }
+    }
+    None
 }
 
 /// The shape container's alternative text, from its property tables.

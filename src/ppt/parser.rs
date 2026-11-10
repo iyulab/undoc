@@ -5,7 +5,9 @@ use std::io::{Cursor as IoCursor, Read};
 
 use crate::detect::FormatType;
 use crate::error::{Error, Result};
-use crate::model::{Block, Document, HeadingLevel, Paragraph, Resource, Section, TextRun};
+use crate::model::{
+    Block, Cell, Document, HeadingLevel, Paragraph, Resource, Row, Section, Table, TextRun,
+};
 use crate::officeart::{self, ShapePicture};
 
 /// Record types ([MS-PPT] 2.13.24 `RecordType`).
@@ -28,6 +30,22 @@ const RT_DRAWING_GROUP: u16 = 0x040B;
 /// `OfficeArtBStoreContainer`).
 const RT_DGG_CONTAINER: u16 = 0xF000;
 const RT_BSTORE_CONTAINER: u16 = 0xF001;
+const RT_SPGR_CONTAINER: u16 = 0xF003;
+/// `OfficeArtChildAnchor`: a shape inside a group, in the group's coordinate space.
+const RT_CHILD_ANCHOR: u16 = 0xF00F;
+/// Group shape properties that make a group a table: `tableProperties` (bit 0 set; bit 1: the
+/// first row is a header) and `tableRowProperties` (an array with one element per row).
+const PROP_TABLE_PROPERTIES: u16 = 0x039F;
+const PROP_TABLE_ROW_PROPERTIES: u16 = 0x03A0;
+const TABLE_FIRST_ROW: u32 = 0x2;
+/// Shape type of a table cell (`msosptRectangle`).
+const SHAPE_RECTANGLE: u16 = 1;
+/// How many cells, and how many grid positions, a table may have: a group with more is not
+/// read as a table.
+const MAX_TABLE_CELLS: usize = 10_000;
+const MAX_GRID_POSITIONS: usize = 1_000_000;
+/// How deep shape groups are followed.
+const MAX_GROUP_DEPTH: u8 = 16;
 const RT_EX_HYPERLINK: u16 = 0x0FD7;
 const RT_EX_HYPERLINK_ATOM: u16 = 0x0FD3;
 const RT_CSTRING: u16 = 0x0FBA;
@@ -277,9 +295,10 @@ impl PptParser {
                 doc.add_section(section);
                 continue;
             };
-            for item in slide_items(&stream, slide, outline) {
+            for item in slide_items(&stream, slide, outline, &urls) {
                 match item {
                     Item::Text(text) => add_text(&mut section, &text, &urls),
+                    Item::Table(table) => section.add_table(table),
                     Item::Picture(shape) => {
                         let blip = shape.blip.and_then(|blip| {
                             pictures.resolve(&mut doc, blip, |blip| {
@@ -443,6 +462,7 @@ fn drawing_texts(stream: &[u8], container: Header) -> Vec<Text> {
 enum Item {
     Text(Text),
     Picture(ShapePicture),
+    Table(Table),
 }
 
 /// A shape's property table, as the atom it is read from.
@@ -455,10 +475,15 @@ fn art_record(atom: Header) -> officeart::Record {
     }
 }
 
-/// A slide's content in reading order: its shapes as drawn — text, and the pictures that name
-/// a blip — each outline reference resolved to the outline text it points at, then any
-/// outline text no shape referenced.
-fn slide_items(stream: &[u8], slide: Header, outline: &[Text]) -> Vec<Item> {
+/// A slide's content in reading order: its shapes as drawn — text, the pictures that name a
+/// blip, and tables — each outline reference resolved to the outline text it points at, then
+/// any outline text no shape referenced.
+fn slide_items(
+    stream: &[u8],
+    slide: Header,
+    outline: &[Text],
+    urls: &HashMap<u32, String>,
+) -> Vec<Item> {
     /// Close the shape being read: a picture goes after the text drawn before it.
     fn end_shape(
         out: &mut Vec<Item>,
@@ -474,11 +499,30 @@ fn slide_items(stream: &[u8], slide: Header, outline: &[Text]) -> Vec<Item> {
         }
     }
 
+    let mut tables = Vec::new();
+    find_tables(stream, slide.start, slide.end, urls, 0, &mut tables);
+    let mut emitted = vec![false; tables.len()];
+
     let mut out = Vec::new();
     let mut used = vec![false; outline.len()];
     let mut pending: Vec<Header> = Vec::new();
     let mut shape = ShapePicture::default();
     for atom in atoms_in(stream, slide) {
+        // Everything inside a table group belongs to the table, which appears where the group
+        // is drawn.
+        if let Some(i) = tables
+            .iter()
+            .position(|t| t.start <= atom.start && atom.start < t.end)
+        {
+            if !emitted[i] {
+                emitted[i] = true;
+                end_shape(&mut out, &mut pending, stream, &mut shape);
+                out.extend(texts_in(stream, &pending).into_iter().map(Item::Text));
+                pending.clear();
+                out.push(Item::Table(tables[i].table.clone()));
+            }
+            continue;
+        }
         match atom.kind {
             RT_OUTLINE_TEXT_REF_ATOM => {
                 out.extend(texts_in(stream, &pending).into_iter().map(Item::Text));
@@ -510,6 +554,181 @@ fn slide_items(stream: &[u8], slide: Header, outline: &[Text]) -> Vec<Item> {
             .map(|(t, _)| Item::Text(t.clone())),
     );
     out
+}
+
+/// A table drawn as a group of shapes: the byte range of the group in the stream, and the table.
+struct TableGroup {
+    start: usize,
+    end: usize,
+    table: Table,
+}
+
+/// The groups of shapes within `[start, end)` that are tables ([MS-ODRAW] group shape
+/// properties `tableProperties` and `tableRowProperties`; PowerPoint 97-2003 has no table
+/// object). A group that sets them but whose cells do not tile a grid is not read as a table:
+/// its texts are read as the texts they are.
+fn find_tables(
+    stream: &[u8],
+    start: usize,
+    end: usize,
+    urls: &HashMap<u32, String>,
+    depth: u8,
+    out: &mut Vec<TableGroup>,
+) {
+    for h in children(stream, start, end) {
+        if h.version != 0x0F || depth >= MAX_GROUP_DEPTH {
+            continue;
+        }
+        if h.kind == RT_SPGR_CONTAINER {
+            if let Some(table) = table_of(stream, h, urls) {
+                out.push(TableGroup {
+                    // The group's own header is not an atom; its first byte is.
+                    start: h.start,
+                    end: h.end,
+                    table,
+                });
+                continue;
+            }
+        }
+        find_tables(stream, h.start, h.end, urls, depth + 1, out);
+    }
+}
+
+/// One cell shape of a table group: its place in the group's coordinate space and its text.
+struct CellShape {
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+    content: Vec<Paragraph>,
+}
+
+/// The table a group of shapes is, if it is one that can be read: the group's own shape names
+/// the table properties and its rows; the cells are its rectangles, which together tile a grid
+/// whose rows are those the group states. Cells are laid out by position — the order they are
+/// stored in is not the reading order — and a cell that spans grid rows or columns is one
+/// shape, as in the `.pptx` and `.docx` models.
+fn table_of(stream: &[u8], group: Header, urls: &HashMap<u32, String>) -> Option<Table> {
+    let shapes = children(stream, group.start, group.end);
+    // The first shape is the group's own: its property tables make the group a table.
+    let own = shapes
+        .first()
+        .filter(|h| h.kind == officeart::RT_SP_CONTAINER)?;
+    let mut flags = None;
+    let mut rows = None;
+    for property_table in children(stream, own.start, own.end)
+        .into_iter()
+        .filter(|h| h.kind == officeart::RT_FOPT || h.kind == officeart::RT_TERTIARY_FOPT)
+    {
+        let record = art_record(property_table);
+        if let Some(p) = officeart::property(stream, &record, PROP_TABLE_PROPERTIES) {
+            flags = Some(p.value);
+        }
+        if let Some(p) = officeart::property(stream, &record, PROP_TABLE_ROW_PROPERTIES) {
+            // An array property: element count (`u16`), allocated, element size — one element
+            // per row.
+            rows = p
+                .complex
+                .and_then(|c| c.get(..2))
+                .map(|b| usize::from(u16::from_le_bytes([b[0], b[1]])));
+        }
+    }
+    let (flags, rows) = (flags.filter(|f| f & 1 != 0)?, rows.filter(|&r| r > 0)?);
+
+    let mut cells = Vec::new();
+    for shape in &shapes[1..] {
+        if shape.kind != officeart::RT_SP_CONTAINER {
+            continue;
+        }
+        let parts = children(stream, shape.start, shape.end);
+        let is_cell = parts
+            .iter()
+            .any(|h| h.kind == officeart::RT_FSP && h.instance == SHAPE_RECTANGLE);
+        let Some(anchor) = parts
+            .iter()
+            .find(|h| h.kind == RT_CHILD_ANCHOR && h.end - h.start == 16)
+        else {
+            continue;
+        };
+        if !is_cell {
+            continue;
+        }
+        let at = |i: usize| u32_at(stream, anchor.start + i * 4).map(|v| v as i32);
+        let (left, top, right, bottom) = (at(0)?, at(1)?, at(2)?, at(3)?);
+        let mut content = Vec::new();
+        for text in texts_in(stream, &atoms_in(stream, *shape)) {
+            content.extend(paragraphs_of(&text, urls));
+        }
+        cells.push(CellShape {
+            left,
+            top,
+            right,
+            bottom,
+            content,
+        });
+        if cells.len() > MAX_TABLE_CELLS {
+            return None;
+        }
+    }
+    if cells.is_empty() {
+        return None;
+    }
+
+    // The grid lines: every edge any cell has.
+    let lines = |edges: Vec<i32>| {
+        let mut edges = edges;
+        edges.sort_unstable();
+        edges.dedup();
+        edges
+    };
+    let xs = lines(cells.iter().flat_map(|c| [c.left, c.right]).collect());
+    let ys = lines(cells.iter().flat_map(|c| [c.top, c.bottom]).collect());
+    let (n_cols, n_rows) = (xs.len() - 1, ys.len() - 1);
+    if n_rows != rows || n_cols == 0 || n_rows.saturating_mul(n_cols) > MAX_GRID_POSITIONS {
+        return None;
+    }
+
+    // Every position of the grid is covered by exactly one cell.
+    let index = |lines: &[i32], v: i32| lines.binary_search(&v).ok();
+    let mut covered = vec![false; n_rows * n_cols];
+    let mut placed = Vec::new();
+    for cell in cells {
+        let (c0, c1) = (index(&xs, cell.left)?, index(&xs, cell.right)?);
+        let (r0, r1) = (index(&ys, cell.top)?, index(&ys, cell.bottom)?);
+        if c1 <= c0 || r1 <= r0 {
+            return None;
+        }
+        for r in r0..r1 {
+            for c in c0..c1 {
+                if std::mem::replace(&mut covered[r * n_cols + c], true) {
+                    return None;
+                }
+            }
+        }
+        placed.push((r0, c0, r1 - r0, c1 - c0, cell.content));
+    }
+    if covered.iter().any(|c| !c) {
+        return None;
+    }
+
+    placed.sort_by_key(|&(row, col, ..)| (row, col));
+    let mut table = Table::new();
+    let mut placed = placed.into_iter().peekable();
+    for row_index in 0..n_rows {
+        let mut row = Row::new();
+        row.is_header = row_index == 0 && flags & TABLE_FIRST_ROW != 0;
+        while let Some((_, _, row_span, col_span, content)) =
+            placed.next_if(|&(r, ..)| r == row_index)
+        {
+            let mut cell = Cell::new();
+            cell.content = content;
+            cell.row_span = u32::try_from(row_span).unwrap_or(1);
+            cell.col_span = u32::try_from(col_span).unwrap_or(1);
+            row.cells.push(cell);
+        }
+        table.add_row(row);
+    }
+    Some(table)
 }
 
 /// The blip store of the document's drawing group: one entry per picture, in order — a shape's

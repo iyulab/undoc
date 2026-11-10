@@ -54,6 +54,30 @@ enum Shape {
     TextBox(&'static str),
     /// A picture shape: its `pib` (1-based blip store index) and alternative text.
     Picture(u32, Option<&'static str>),
+    /// A group of shapes, a table when `table` (its `tableProperties` flags and the number of
+    /// rows it states) is given: the cells are rectangles `(left, top, right, bottom, text)`,
+    /// stored in the order given.
+    Group {
+        table: Option<(u32, usize)>,
+        cells: Vec<(i32, i32, i32, i32, &'static str)>,
+    },
+}
+
+/// The tertiary property table of a table group's own shape: `tableProperties` and the array
+/// `tableRowProperties` with one element per row.
+fn table_properties(flags: u32, rows: usize) -> Vec<u8> {
+    let mut array = (rows as u16).to_le_bytes().to_vec();
+    array.extend((rows as u16).to_le_bytes());
+    array.extend(4u16.to_le_bytes());
+    for _ in 0..rows {
+        array.extend(100u32.to_le_bytes());
+    }
+    let mut table = 0x039Fu16.to_le_bytes().to_vec();
+    table.extend(flags.to_le_bytes());
+    table.extend((0x03A0u16 | 0x8000).to_le_bytes());
+    table.extend((array.len() as u32).to_le_bytes());
+    table.extend(array);
+    record(3, 2, 0xF122, &table)
 }
 
 /// An entry of the blip store the document's drawing group lists.
@@ -144,6 +168,30 @@ fn build_with(slides: &[Slide], encrypted: bool, store: &[Entry]) -> Vec<u8> {
                     ),
                     Shape::Picture(pib, alt) => {
                         container(0xF004, 0, &[fsp(75), fopt(Some(*pib), *alt)])
+                    }
+                    Shape::Group { table, cells } => {
+                        // The group's own shape first, then its children.
+                        let mut own = vec![fsp(0)];
+                        if let Some((flags, rows)) = table {
+                            own.push(table_properties(*flags, *rows));
+                        }
+                        let mut parts = vec![container(0xF004, 0, &own)];
+                        for (left, top, right, bottom, text) in cells {
+                            let anchor: Vec<u8> = [left, top, right, bottom]
+                                .into_iter()
+                                .flat_map(|v| v.to_le_bytes())
+                                .collect();
+                            parts.push(container(
+                                0xF004,
+                                0,
+                                &[
+                                    fsp(1),
+                                    record(0, 0, 0xF00F, &anchor),
+                                    container(0xF00D, 0, &[text_header(4), chars(text)]),
+                                ],
+                            ));
+                        }
+                        container(0xF003, 0, &parts)
                     }
                 }
             })
@@ -512,4 +560,183 @@ fn a_picture_renders_as_an_image_in_markdown() {
     let doc = crate::parse_bytes(&bytes).unwrap();
     let md = crate::render::to_markdown(&doc, &crate::render::RenderOptions::default()).unwrap();
     assert!(md.contains("![Org chart](image1.png)"), "{md}");
+}
+
+/// A row as read back: whether it is a header, and its cells as (text, row span, col span).
+type ReadRow = (bool, Vec<(String, u32, u32)>);
+
+/// The table of a section.
+fn table_of(section: &crate::Section) -> Vec<ReadRow> {
+    let Some(Block::Table(table)) = section
+        .content
+        .iter()
+        .find(|b| matches!(b, Block::Table(_)))
+    else {
+        panic!("no table")
+    };
+    table
+        .rows
+        .iter()
+        .map(|row| {
+            (
+                row.is_header,
+                row.cells
+                    .iter()
+                    .map(|c| {
+                        let text: Vec<String> = c.content.iter().map(|p| p.plain_text()).collect();
+                        (text.join("|"), c.row_span, c.col_span)
+                    })
+                    .collect(),
+            )
+        })
+        .collect()
+}
+
+fn slide_with(shapes: Vec<Shape>) -> Slide {
+    Slide {
+        outline: vec![],
+        shapes,
+        notes: None,
+        links: vec![],
+    }
+}
+
+fn parse_slide(shapes: Vec<Shape>) -> crate::Document {
+    PptParser::from_bytes(build(&[slide_with(shapes)], false))
+        .unwrap()
+        .parse()
+        .unwrap()
+}
+
+#[test]
+fn a_group_that_states_table_properties_is_a_table_read_by_position() {
+    // Two rows of three cells, stored last row and right-most cell first — the order the
+    // sample files keep them in. The text boxes around the table keep their place.
+    let doc = parse_slide(vec![
+        Shape::TextBox("before"),
+        Shape::Group {
+            table: Some((3, 2)),
+            cells: vec![
+                (200, 100, 300, 200, "F"),
+                (100, 100, 200, 200, "E"),
+                (0, 100, 100, 200, "D"),
+                (200, 0, 300, 100, "C"),
+                (100, 0, 200, 100, "B"),
+                (0, 0, 100, 100, "A"),
+            ],
+        },
+        Shape::TextBox("after"),
+    ]);
+    let kinds: Vec<&str> = doc.sections[0]
+        .content
+        .iter()
+        .map(|b| match b {
+            Block::Paragraph(_) => "text",
+            Block::Table(_) => "table",
+            _ => "other",
+        })
+        .collect();
+    assert_eq!(kinds, ["text", "table", "text"]);
+    let row = |cells: [&str; 3]| cells.map(|t| (t.to_string(), 1, 1)).to_vec();
+    assert_eq!(
+        table_of(&doc.sections[0]),
+        [(true, row(["A", "B", "C"])), (false, row(["D", "E", "F"]))]
+    );
+}
+
+#[test]
+fn a_cell_that_covers_several_grid_positions_is_one_cell_with_spans() {
+    // A wide cell over two columns in the first row, a tall one over two rows in the last column.
+    let doc = parse_slide(vec![Shape::Group {
+        table: Some((1, 2)),
+        cells: vec![
+            (0, 0, 200, 100, "wide"),
+            (200, 0, 300, 200, "tall"),
+            (0, 100, 100, 200, "x"),
+            (100, 100, 200, 200, "y"),
+        ],
+    }]);
+    assert_eq!(
+        table_of(&doc.sections[0]),
+        [
+            (
+                false,
+                vec![("wide".to_string(), 1, 2), ("tall".to_string(), 2, 1)]
+            ),
+            (
+                false,
+                vec![("x".to_string(), 1, 1), ("y".to_string(), 1, 1)]
+            ),
+        ]
+    );
+}
+
+#[test]
+fn cells_that_do_not_tile_a_grid_are_read_as_the_texts_they_are() {
+    // The bottom-right position has no cell, and a group of two rows states three: neither is
+    // a table, and neither loses a word.
+    for (rows, cells) in [
+        (
+            2,
+            vec![
+                (0, 0, 100, 100, "a"),
+                (100, 0, 200, 100, "b"),
+                (0, 100, 100, 200, "c"),
+            ],
+        ),
+        (
+            3,
+            vec![
+                (0, 0, 100, 100, "a"),
+                (100, 0, 200, 100, "b"),
+                (0, 100, 100, 200, "c"),
+                (100, 100, 200, 200, "d"),
+            ],
+        ),
+    ] {
+        let doc = parse_slide(vec![Shape::Group {
+            table: Some((1, rows)),
+            cells,
+        }]);
+        assert!(!doc.sections[0]
+            .content
+            .iter()
+            .any(|b| matches!(b, Block::Table(_))));
+        let words: Vec<String> = texts(&doc.sections[0]).into_iter().map(|t| t.0).collect();
+        assert!(words.len() >= 3, "{words:?}");
+        assert!(words.iter().any(|w| w == "a"));
+    }
+}
+
+#[test]
+fn a_group_without_table_properties_is_not_a_table() {
+    let doc = parse_slide(vec![Shape::Group {
+        table: None,
+        cells: vec![(0, 0, 100, 100, "one"), (100, 0, 200, 100, "two")],
+    }]);
+    assert!(!doc.sections[0]
+        .content
+        .iter()
+        .any(|b| matches!(b, Block::Table(_))));
+    let words: Vec<String> = texts(&doc.sections[0]).into_iter().map(|t| t.0).collect();
+    assert_eq!(words, ["one", "two"]);
+}
+
+#[test]
+fn a_table_renders_as_a_markdown_table() {
+    let bytes = build(
+        &[slide_with(vec![Shape::Group {
+            table: Some((3, 2)),
+            cells: vec![
+                (100, 100, 200, 200, "d"),
+                (0, 100, 100, 200, "c"),
+                (100, 0, 200, 100, "b"),
+                (0, 0, 100, 100, "a"),
+            ],
+        }])],
+        false,
+    );
+    let doc = crate::parse_bytes(&bytes).unwrap();
+    let md = crate::render::to_markdown(&doc, &crate::render::RenderOptions::default()).unwrap();
+    assert!(md.contains("| a | b |\n| --- | --- |\n| c | d |"), "{md}");
 }

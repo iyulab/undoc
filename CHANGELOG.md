@@ -30,6 +30,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Of 158 public sample documents, 12 gain pictures (each independently re-counted from the files'
   own structures, with no difference); every extracted file has its format's signature.
 
+- **A PowerPoint 97-2003 slide keeps its tables.** PowerPoint 97-2003 has no table object: a table
+  is a group of shapes -- one rectangle per cell, lines for the borders -- and the reader returned
+  each cell's text as a paragraph of its own, in the reverse of reading order, so a table came out as a
+  run of unrelated lines. A group that states the table group properties is now read as a table, where
+  it is drawn on the slide: the cells are laid out by position on the grid their edges make, a cell
+  that covers several columns or rows is one cell with a `col_span` / `row_span`, and a table whose
+  group sets the first-row flag has a header row. A group whose cells do not fill a grid exactly, or
+  whose rows are not the number it states, is not read as a table and its texts are read as before.
+  Of 147 public sample presentations, 16 hold tables -- 48 in all, each laid out as the independent
+  survey of their shapes predicts -- and no text is lost or added in any of them.
+
 ### Fixed
 
 - **A Word 97-2003 table keeps its vertically merged cells.** A cell that Word merged with the cell
