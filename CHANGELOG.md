@@ -43,6 +43,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The charts of a `.pptx` slide come in the order the slide draws them, the same on every run.** A
+  slide with several charts gave their data tables in the order a map of the slide's relationships
+  handed them out, which changes from one run to the next -- the same file converted twice could put
+  its charts in a different order. They now follow the order in which the slide names them.
+
 - **A Word 97-2003 table keeps its vertically merged cells.** A cell that Word merged with the cell
   above it was read as an empty cell of its own, so a label spanning several rows sat in the first
   row with blank cells under it. The cells a table definition marks as continuing a merged range are

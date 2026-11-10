@@ -324,7 +324,7 @@ impl PptxParser {
         }
 
         // Parse charts and convert to tables for RAG-ready output
-        let chart_tables = self.parse_charts(rels, slide_path)?;
+        let chart_tables = self.parse_charts(xml, rels, slide_path)?;
         for table in chart_tables {
             blocks.push(Block::Table(table));
         }
@@ -505,15 +505,26 @@ impl PptxParser {
 
     /// Parse charts referenced in slide relationships and convert to tables for RAG-ready output.
     /// Chart data is extracted from ppt/charts/chartN.xml files.
-    fn parse_charts(&self, rels: &HashMap<String, String>, slide_path: &str) -> Result<Vec<Table>> {
+    ///
+    /// The charts come in the order the slide draws them: where the slide first names each
+    /// relationship. (A map of relationships has no order; reading it as it comes made a slide
+    /// with several charts give them in a different order on each run.)
+    fn parse_charts(
+        &self,
+        xml: &str,
+        rels: &HashMap<String, String>,
+        slide_path: &str,
+    ) -> Result<Vec<Table>> {
         let mut tables = Vec::new();
 
         // Find chart relationships (target contains "chart")
-        for target in rels.values() {
-            if !target.contains("chart") {
-                continue;
-            }
-
+        let mut chart_rels: Vec<(&String, &String)> = rels
+            .iter()
+            .filter(|(_, target)| target.contains("chart"))
+            .collect();
+        chart_rels
+            .sort_by_key(|(id, _)| (xml.find(&format!("\"{id}\"")).unwrap_or(usize::MAX), *id));
+        for (_, target) in chart_rels {
             // Resolve chart path relative to slide
             // Relationship target is like "../charts/chart1.xml"
             let chart_path = if let Some(stripped) = target.strip_prefix("../") {
@@ -3037,6 +3048,127 @@ mod tests {
                 "unexpected msg: {msg}"
             ),
             other => panic!("expected InvalidData, got {other:?}"),
+        }
+    }
+
+    /// A presentation of one slide that draws the charts named by `drawn` (relationship ids, in
+    /// drawing order), each relationship `rIdN` being `ppt/charts/chartN.xml` whose single
+    /// series is named `SeriesN`.
+    fn presentation_with_charts(drawn: &[u32]) -> Vec<u8> {
+        use std::io::{Cursor, Write};
+        use zip::write::SimpleFileOptions;
+
+        let frames: String = drawn
+            .iter()
+            .map(|n| {
+                format!(
+                    r#"<p:graphicFrame><a:graphic><a:graphicData><c:chart r:id="rId{n}"/></a:graphicData></a:graphic></p:graphicFrame>"#
+                )
+            })
+            .collect();
+        let slide_xml = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+       xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
+       xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+       xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart">
+  <p:cSld><p:spTree>{frames}</p:spTree></p:cSld>
+</p:sld>"#
+        );
+        let mut sorted = drawn.to_vec();
+        sorted.sort_unstable();
+        let slide_rels: String = sorted
+            .iter()
+            .map(|n| {
+                format!(
+                    r#"<Relationship Id="rId{n}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart" Target="../charts/chart{n}.xml"/>"#
+                )
+            })
+            .collect();
+
+        let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let options =
+            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        let mut put = |name: &str, body: &str| {
+            zip.start_file(name, options).unwrap();
+            zip.write_all(body.as_bytes()).unwrap();
+        };
+        put(
+            "[Content_Types].xml",
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>
+</Types>"#,
+        );
+        put(
+            "_rels/.rels",
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="ppt/presentation.xml"/>
+</Relationships>"#,
+        );
+        put(
+            "ppt/presentation.xml",
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
+                xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <p:sldIdLst><p:sldId id="256" r:id="rIdSlide"/></p:sldIdLst>
+</p:presentation>"#,
+        );
+        put(
+            "ppt/_rels/presentation.xml.rels",
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rIdSlide" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide1.xml"/>
+</Relationships>"#,
+        );
+        put("ppt/slides/slide1.xml", &slide_xml);
+        put(
+            "ppt/slides/_rels/slide1.xml.rels",
+            &format!(
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">{slide_rels}</Relationships>"#
+            ),
+        );
+        for n in &sorted {
+            put(
+                &format!("ppt/charts/chart{n}.xml"),
+                &format!(
+                    r#"<?xml version="1.0" encoding="UTF-8"?>
+<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart">
+  <c:chart><c:plotArea><c:lineChart>
+    <c:ser>
+      <c:tx><c:strRef><c:strCache><c:pt idx="0"><c:v>Series{n}</c:v></c:pt></c:strCache></c:strRef></c:tx>
+      <c:cat><c:strRef><c:strCache><c:pt idx="0"><c:v>Q1</c:v></c:pt></c:strCache></c:strRef></c:cat>
+      <c:val><c:numRef><c:numCache><c:pt idx="0"><c:v>{n}</c:v></c:pt></c:numCache></c:numRef></c:val>
+    </c:ser>
+  </c:lineChart></c:plotArea></c:chart>
+</c:chartSpace>"#
+                ),
+            );
+        }
+        zip.finish().unwrap().into_inner()
+    }
+
+    #[test]
+    fn test_charts_come_in_the_order_the_slide_draws_them() {
+        // Drawn 3, 1, 4, 2: not the order of their ids, and not any order a map of the
+        // relationships hands out — which differs from one run to the next, so the same file
+        // is read several times.
+        for _ in 0..8 {
+            let mut parser =
+                PptxParser::from_bytes(presentation_with_charts(&[3, 1, 4, 2])).unwrap();
+            let text = parser.parse().unwrap().plain_text();
+            let at = |n: u32| {
+                text.find(&format!("Series{n}"))
+                    .unwrap_or_else(|| panic!("Series{n} missing from: {text}"))
+            };
+            assert!(
+                at(3) < at(1) && at(1) < at(4) && at(4) < at(2),
+                "charts out of drawing order: {text}"
+            );
         }
     }
 
