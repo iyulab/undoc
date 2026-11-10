@@ -17,6 +17,9 @@ struct Para {
     row_end: bool,
     /// The column boundaries a row-end mark states (`sprmTDefTable`); empty for none.
     row_edges: &'static [i16],
+    /// The `vertMerge` of each of the row's cells (0 none, 1 continues the range above, 3 starts
+    /// one), written to the `TC80`s of the table definition; empty for none.
+    row_merges: &'static [u16],
     /// List level, in the document's one list.
     list_level: Option<u8>,
 }
@@ -29,6 +32,7 @@ fn p(text: &'static str) -> Para {
         in_table: false,
         row_end: false,
         row_edges: &[],
+        row_merges: &[],
         list_level: None,
     }
 }
@@ -66,6 +70,14 @@ fn row_end_with(edges: &'static [i16]) -> Para {
     Para {
         row_edges: edges,
         ..row_end()
+    }
+}
+
+/// A row-end mark that states where its cells end and how each takes part in a vertical merge.
+fn row_end_merged(edges: &'static [i16], merges: &'static [u16]) -> Para {
+    Para {
+        row_merges: merges,
+        ..row_end_with(edges)
     }
 }
 
@@ -222,7 +234,12 @@ fn build(paras: &[Para], opts: Options) -> Vec<u8> {
             for edge in para.row_edges {
                 operand.extend_from_slice(&edge.to_le_bytes());
             }
-            operand.extend(std::iter::repeat_n(0u8, 20 * columns));
+            // One 20-byte TC80 per column: `tcgrf` (vertMerge in bits 5 and 6), then zeros.
+            for column in 0..columns {
+                let merge = para.row_merges.get(column).copied().unwrap_or(0);
+                operand.extend_from_slice(&(merge << 5).to_le_bytes());
+                operand.extend_from_slice(&[0u8; 18]);
+            }
             body.extend_from_slice(&[0x08, 0xD6]);
             body.extend_from_slice(&((operand.len() + 1) as u16).to_le_bytes());
             body.extend_from_slice(&operand);
@@ -1248,4 +1265,186 @@ fn a_document_without_shapes_is_read_as_before() {
     let doc = parse(&[p("Plain \u{08}text")], Options::default()).unwrap();
     assert!(paragraph_images(&doc, 0).is_empty());
     assert_eq!(paragraphs(&doc), ["Plain text"]);
+}
+
+/// The table of a document: each row as its cells' (text, row span) in order.
+fn table_rows(doc: &crate::Document) -> Vec<Vec<(String, u32)>> {
+    let Some(Block::Table(table)) = doc.sections[0]
+        .content
+        .iter()
+        .find(|b| matches!(b, Block::Table(_)))
+    else {
+        panic!("no table")
+    };
+    table
+        .rows
+        .iter()
+        .map(|row| {
+            row.cells
+                .iter()
+                .map(|c| {
+                    let text: Vec<String> = c.content.iter().map(|p| p.plain_text()).collect();
+                    (text.join("|"), c.row_span)
+                })
+                .collect()
+        })
+        .collect()
+}
+
+#[test]
+fn a_vertically_merged_cell_spans_the_rows_that_continue_it() {
+    // Two columns; the second column's cell starts a range that the next two rows continue.
+    static EDGES: [i16; 3] = [0, 1000, 2000];
+    let doc = parse(
+        &[
+            cell("A"),
+            cell("B"),
+            row_end_merged(&EDGES, &[0, 3]),
+            cell("C"),
+            cell(""),
+            row_end_merged(&EDGES, &[0, 1]),
+            cell("D"),
+            cell(""),
+            row_end_merged(&EDGES, &[0, 1]),
+            cell("E"),
+            cell("F"),
+            row_end_merged(&EDGES, &[0, 0]),
+        ],
+        Options::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        table_rows(&doc),
+        [
+            vec![("A".to_string(), 1), ("B".to_string(), 3)],
+            vec![("C".to_string(), 1)],
+            vec![("D".to_string(), 1)],
+            vec![("E".to_string(), 1), ("F".to_string(), 1)],
+        ]
+    );
+}
+
+#[test]
+fn a_continuing_cell_is_matched_to_its_range_by_column_not_by_position() {
+    // Row 0 has two cells and starts a range in its second; row 1 splits the first column in
+    // two, so its continuing cell is the third — the one at the same left boundary, 7000.
+    static TWO: [i16; 3] = [0, 7000, 11000];
+    static THREE: [i16; 4] = [0, 1400, 7000, 11000];
+    let doc = parse(
+        &[
+            cell("Head"),
+            cell("Tall"),
+            row_end_merged(&TWO, &[0, 3]),
+            cell("Left"),
+            cell("Mid"),
+            cell(""),
+            row_end_merged(&THREE, &[0, 0, 1]),
+        ],
+        Options::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        table_rows(&doc),
+        [
+            vec![("Head".to_string(), 1), ("Tall".to_string(), 2)],
+            vec![("Left".to_string(), 1), ("Mid".to_string(), 1)],
+        ]
+    );
+}
+
+#[test]
+fn a_range_ends_at_the_first_row_that_does_not_continue_it() {
+    // Start, continue, a plain row, then a continuing cell with no range above it: that one is
+    // an ordinary cell, and the range keeps the two rows it had.
+    static EDGES: [i16; 2] = [0, 1000];
+    let doc = parse(
+        &[
+            cell("a"),
+            row_end_merged(&EDGES, &[3]),
+            cell(""),
+            row_end_merged(&EDGES, &[1]),
+            cell("b"),
+            row_end_merged(&EDGES, &[0]),
+            cell("c"),
+            row_end_merged(&EDGES, &[1]),
+        ],
+        Options::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        table_rows(&doc),
+        [
+            vec![("a".to_string(), 2)],
+            // The row the range covers keeps no cell of its own — and stays a row: the span
+            // counts it.
+            vec![],
+            vec![("b".to_string(), 1)],
+            vec![("c".to_string(), 1)],
+        ]
+    );
+}
+
+#[test]
+fn text_in_a_continuing_cell_is_not_lost() {
+    static EDGES: [i16; 2] = [0, 1000];
+    let doc = parse(
+        &[
+            cell("top"),
+            row_end_merged(&EDGES, &[3]),
+            cell("hidden text"),
+            row_end_merged(&EDGES, &[1]),
+        ],
+        Options::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        table_rows(&doc),
+        [vec![("top|hidden text".to_string(), 2)], vec![]]
+    );
+}
+
+#[test]
+fn a_start_nobody_continues_and_rows_without_boundaries_are_left_as_they_are() {
+    static EDGES: [i16; 3] = [0, 1000, 2000];
+    let doc = parse(
+        &[
+            cell("a"),
+            cell("b"),
+            row_end_merged(&EDGES, &[3, 0]),
+            // A row that states no boundaries cannot say which column its cells are in.
+            cell("c"),
+            cell(""),
+            row_end(),
+        ],
+        Options::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        table_rows(&doc),
+        [
+            vec![("a".to_string(), 1), ("b".to_string(), 1)],
+            vec![("c".to_string(), 1), ("".to_string(), 1)],
+        ]
+    );
+}
+
+#[test]
+fn a_vertical_merge_renders_as_a_row_span() {
+    static EDGES: [i16; 2] = [0, 1000];
+    let doc = parse(
+        &[
+            cell("Group"),
+            row_end_merged(&EDGES, &[3]),
+            cell(""),
+            row_end_merged(&EDGES, &[1]),
+        ],
+        Options::default(),
+    )
+    .unwrap();
+    let options = crate::render::RenderOptions {
+        table_fallback: crate::render::TableFallback::Html,
+        ..Default::default()
+    };
+    let md = crate::render::to_markdown(&doc, &options).unwrap();
+    assert!(md.contains("rowspan=\"2\""), "{md}");
 }

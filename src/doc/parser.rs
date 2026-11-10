@@ -7,7 +7,7 @@ use super::chars::{self, CharProps, ChpxIndex};
 use super::fib;
 use super::fib::FcLcb;
 use super::lists::{self, ListCounter, ListTable};
-use super::props::{self, PapxIndex, ParaProps, StyleInfo};
+use super::props::{self, PapxIndex, ParaProps, StyleInfo, VertMerge};
 use super::shapes::{self, Drawing};
 use super::symbol;
 use super::text::{self, DocChar};
@@ -329,6 +329,8 @@ struct Assembler<'a> {
     rows: Vec<Row>,
     /// The column boundaries of each row of `rows` (empty when the row carried none).
     row_edges: Vec<Vec<i16>>,
+    /// How each cell of each row of `rows` takes part in a vertical merge.
+    row_merges: Vec<Vec<VertMerge>>,
     cells: Vec<Cell>,
     cell: Vec<Paragraph>,
 }
@@ -365,6 +367,7 @@ impl<'a> Assembler<'a> {
             fields: Vec::new(),
             rows: Vec::new(),
             row_edges: Vec::new(),
+            row_merges: Vec::new(),
             cells: Vec::new(),
             cell: Vec::new(),
         }
@@ -650,8 +653,11 @@ impl<'a> Assembler<'a> {
                 let mut row = Row::new();
                 row.cells = cells;
                 self.rows.push(row);
-                self.row_edges
-                    .push(props.map(|p| p.row_edges).unwrap_or_default());
+                let (edges, merges) = props
+                    .map(|p| (p.row_edges, p.row_merges))
+                    .unwrap_or_default();
+                self.row_edges.push(edges);
+                self.row_merges.push(merges);
             }
             return;
         }
@@ -676,17 +682,78 @@ impl<'a> Assembler<'a> {
             row.cells = std::mem::take(&mut self.cells);
             self.rows.push(row);
             self.row_edges.push(Vec::new());
+            self.row_merges.push(Vec::new());
         }
         if self.rows.is_empty() {
             return;
         }
         let edges = std::mem::take(&mut self.row_edges);
+        let merges = std::mem::take(&mut self.row_merges);
         span_columns(&mut self.rows, &edges);
+        merge_rows(&mut self.rows, &edges, &merges);
         let mut table = Table::new();
         for row in std::mem::take(&mut self.rows) {
             table.add_row(row);
         }
         self.blocks.push(Block::Table(table));
+    }
+}
+
+/// Joins the cells of a vertical merge: a cell that continues the range above is dropped from
+/// its row, and the cell that started the range spans one more row for each.
+///
+/// Cells are matched by the left boundary of their column, not by their place in the row — a
+/// row may state more cells than the one that started the range. A range ends at the first row
+/// without a continuing cell in its column. A continuing cell with no range above it, or in a
+/// row whose boundaries were not read, is an ordinary cell; text a dropped cell holds moves to
+/// the cell that started the range. Must run after [`span_columns`], which needs every cell.
+fn merge_rows(rows: &mut [Row], edges: &[Vec<i16>], merges: &[Vec<VertMerge>]) {
+    // Left boundary of a column -> the (row, cell) that started the range open in it.
+    let mut open: HashMap<i16, (usize, usize)> = HashMap::new();
+    let mut dropped: Vec<(usize, usize)> = Vec::new();
+    for r in 0..rows.len() {
+        let cells = rows[r].cells.len();
+        let (Some(edges), Some(merges)) = (edges.get(r), merges.get(r)) else {
+            open.clear();
+            continue;
+        };
+        if edges.len() != cells + 1 || merges.len() != cells {
+            open.clear();
+            continue;
+        }
+        let lefts = &edges[..cells];
+        // A range whose column has no cell of its own boundary in this row is over.
+        open.retain(|left, _| lefts.contains(left));
+        for (i, (&left, merge)) in lefts.iter().zip(merges).enumerate() {
+            match merge {
+                VertMerge::Restart => {
+                    open.insert(left, (r, i));
+                }
+                VertMerge::Continue => match open.get(&left) {
+                    Some(&(origin_row, origin_cell)) => {
+                        let moved = std::mem::take(&mut rows[r].cells[i].content);
+                        let origin = &mut rows[origin_row].cells[origin_cell];
+                        origin.row_span += 1;
+                        origin.content.extend(
+                            moved
+                                .into_iter()
+                                .filter(|p| !p.plain_text().trim().is_empty()),
+                        );
+                        dropped.push((r, i));
+                    }
+                    None => {
+                        open.remove(&left);
+                    }
+                },
+                VertMerge::None => {
+                    open.remove(&left);
+                }
+            }
+        }
+    }
+    // Back to front, so removing a cell moves none that is still to be removed.
+    for &(r, i) in dropped.iter().rev() {
+        rows[r].cells.remove(i);
     }
 }
 

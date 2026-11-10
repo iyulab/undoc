@@ -17,6 +17,18 @@ const SPRM_P_ILVL: u16 = 0x260A;
 const SPRM_P_ILFO: u16 = 0x460B;
 const SPRM_T_DEF_TABLE: u16 = 0xD608;
 
+/// How a table cell takes part in a vertical merge (`TC80.tcgrf.vertMerge`, [MS-DOC] 2.9.328).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) enum VertMerge {
+    /// Not merged with the cell above or below.
+    #[default]
+    None,
+    /// Part of the merged range that began above: the cell shows nothing of its own.
+    Continue,
+    /// The first cell of a merged range.
+    Restart,
+}
+
 /// The structural properties of one paragraph.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(super) struct ParaProps {
@@ -32,6 +44,9 @@ pub(super) struct ParaProps {
     /// `sprmTDefTable`, one more than there are cells); empty when the mark carries none or
     /// carries damaged ones.
     pub row_edges: Vec<i16>,
+    /// How each of those cells takes part in a vertical merge; as many as there are cells when
+    /// `row_edges` is not empty.
+    pub row_merges: Vec<VertMerge>,
     /// Table nesting depth (0 outside tables, 1 in a top-level table).
     pub depth: u32,
     /// Outline level set on the paragraph itself (0 = level 1; 9 = body text).
@@ -131,13 +146,34 @@ fn row_edges(operand: &[u8]) -> Vec<i16> {
     }
 }
 
+/// The vertical merge of each cell of a `sprmTDefTable` operand: after the `columns + 1`
+/// boundaries come one 20-byte `TC80` per column, the first two bytes of which are `tcgrf` —
+/// `vertMerge` is its bits 5 and 6 (1: continues the range above, 3: starts one). A table
+/// definition that ends before its cells' `TC80`s leaves them unmerged.
+fn vertical_merges(operand: &[u8], columns: usize) -> Vec<VertMerge> {
+    let cells = operand.get(1 + (columns + 1) * 2..).unwrap_or_default();
+    (0..columns)
+        .map(|i| match cells.get(i * 20..i * 20 + 2) {
+            Some(&[lo, hi]) => match (u16::from_le_bytes([lo, hi]) >> 5) & 3 {
+                1 => VertMerge::Continue,
+                3 => VertMerge::Restart,
+                _ => VertMerge::None,
+            },
+            _ => VertMerge::None,
+        })
+        .collect()
+}
+
 fn apply_papx(props: &mut ParaProps, grpprl: &[u8]) {
     for_each_sprm(grpprl, |sprm, op| match sprm {
         SPRM_P_F_IN_TABLE => props.in_table = op[0] != 0,
         SPRM_P_F_TTP => props.row_end = op[0] != 0,
         SPRM_P_F_INNER_TTP => props.inner_row_end = op[0] != 0,
         SPRM_P_ITAP => props.depth = u32::from_le_bytes([op[0], op[1], op[2], op[3]]),
-        SPRM_T_DEF_TABLE => props.row_edges = row_edges(op),
+        SPRM_T_DEF_TABLE => {
+            props.row_edges = row_edges(op);
+            props.row_merges = vertical_merges(op, props.row_edges.len().saturating_sub(1));
+        }
         SPRM_P_OUT_LVL => props.outline_level = Some(op[0]),
         SPRM_P_ILVL => props.ilvl = op[0],
         SPRM_P_ILFO => props.ilfo = u16::from_le_bytes([op[0], op[1]]),

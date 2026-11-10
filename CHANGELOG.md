@@ -32,6 +32,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A Word 97-2003 table keeps its vertically merged cells.** A cell that Word merged with the cell
+  above it was read as an empty cell of its own, so a label spanning several rows sat in the first
+  row with blank cells under it. The cells a table definition marks as continuing a merged range are
+  now joined to the cell that started it, which spans one row more for each (`row_span`), the way a
+  `.docx` table reads. Cells are matched by the boundary of their column, not by their place in the
+  row, because a row can state more cells than the one that started the range; a range ends at the
+  first row that does not continue it, text a continuing cell holds is kept on the cell that started
+  the range, and rows that state no column boundaries are left as they were. Of 158 public sample
+  documents, 6 change; in each the number of cells removed equals the number of rows spanned and no
+  text is lost.
+
 - **A Word 97-2003 table whose rows have different numbers of cells keeps its columns.** Word marks no
   horizontal merge in a `.doc` table: each row states where its own cells end, so a row with fewer, wider
   cells has fewer boundaries. The reader took every row's cells as columns of their own, so a merged
