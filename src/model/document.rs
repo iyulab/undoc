@@ -3,7 +3,7 @@
 use super::{Paragraph, Resource, Table};
 use crate::detect::FormatType;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 /// Document metadata extracted from docProps/core.xml and docProps/app.xml.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -181,9 +181,11 @@ pub struct Document {
     #[serde(default)]
     pub sections: Vec<Section>,
 
-    /// Extracted resources (images, media)
-    #[serde(skip_serializing_if = "HashMap::is_empty", default)]
-    pub resources: HashMap<String, Resource>,
+    /// Extracted resources (images, media), by id. Ordered by id: the JSON, the list of ids a
+    /// binding reads, the order resources are extracted in — the same input gives the same
+    /// output on every run.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty", default)]
+    pub resources: BTreeMap<String, Resource>,
 }
 
 impl Document {
@@ -287,6 +289,32 @@ mod tests {
     use super::*;
     use crate::detect::FormatType;
     use crate::model::{Cell, RevisionType, Row, TextRun, TextStyle};
+
+    /// The same document gives the same JSON on every run: resources are listed by id, whatever
+    /// order they were added in.
+    #[test]
+    fn test_resources_are_listed_in_id_order() {
+        let ids = ["image9", "image10", "image1", "rId3", "rId2"];
+        let mut doc = Document::new();
+        for id in ids {
+            doc.add_resource(id, Resource::image(vec![1], Some(format!("{id}.png"))));
+        }
+        let listed: Vec<&str> = doc.resources.keys().map(String::as_str).collect();
+        assert_eq!(listed, ["image1", "image10", "image9", "rId2", "rId3"]);
+
+        let json = doc.to_json().unwrap();
+        let positions: Vec<usize> = [
+            "image1.png",
+            "image10.png",
+            "image9.png",
+            "rId2.png",
+            "rId3.png",
+        ]
+        .iter()
+        .map(|name| json.find(&format!("\"filename\": \"{name}\"")).expect(name))
+        .collect();
+        assert!(positions.windows(2).all(|w| w[0] < w[1]), "{json}");
+    }
 
     #[test]
     fn test_document_default_format_is_docx() {

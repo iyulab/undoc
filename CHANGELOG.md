@@ -43,6 +43,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`Document::resources` is a `BTreeMap`, so the same document gives the same output on every run.**
+  The resources were a `HashMap`, whose iteration order changes from one process to the next: the JSON
+  of a document with images listed them in a different order each time (59 of 1 298 public sample
+  documents were not byte-identical between two runs; Markdown was identical in all of them), and the
+  list of resource ids a binding reads, the order `ResourceExtracted` events stream in and the order
+  the CLI writes extracted files in varied the same way. They are now ordered by id. A caller that
+  names the map's type changes `HashMap<String, Resource>` to `BTreeMap<String, Resource>`; `get`,
+  `insert`, `keys`, `values` and `iter` are unchanged.
+
 - **A bulleted or numbered paragraph of a `.pptx` slide is a list item.** Only a picture bullet marked
   its paragraph as a list item (`list_info`); the ordinary bullet of a body placeholder -- the kind
   nearly every slide has -- and automatic numbering did not, so a bulleted slide came out as a run of
@@ -57,6 +66,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every deck keeps exactly its characters. A shape that is not a placeholder inherits nothing.
 
 ### Fixed
+
+- **A tie between font sizes no longer depends on the run.** The body font size of a document and the
+  dominant font size of a paragraph -- which decide whether a paragraph is read as a heading -- were
+  picked from a map by the largest count; when two sizes were equally frequent the one chosen was
+  whichever the map handed out last, so the same file could be read with different headings on two runs.
+  The smaller size is the body text, and a paragraph's dominant size is, of equal ones, the one it uses first.
 
 - **The charts of a `.pptx` slide come in the order the slide draws them, the same on every run.** A
   slide with several charts gave their data tables in the order a map of the slide's relationships

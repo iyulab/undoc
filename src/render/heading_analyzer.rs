@@ -197,11 +197,14 @@ pub struct DocumentStats {
 impl DocumentStats {
     /// Calculate the base (body) font size from the distribution.
     /// Uses the most frequent font size as the baseline.
+    ///
+    /// Of sizes equally frequent the smaller is the body text — the answer does not depend on
+    /// the order a map hands its entries out in, which differs from run to run.
     pub fn calculate_base_font_size(&mut self) {
         self.base_font_size = self
             .font_sizes
             .iter()
-            .max_by_key(|(_, count)| *count)
+            .max_by_key(|(size, count)| (**count, std::cmp::Reverse(**size)))
             .map(|(size, _)| *size);
     }
 
@@ -453,18 +456,25 @@ impl HeadingAnalyzer {
     }
 
     /// Get the dominant (most frequent) font size in a paragraph.
+    ///
+    /// Of sizes that weigh the same, the one the paragraph uses first.
     fn get_dominant_font_size(&self, para: &Paragraph) -> Option<u32> {
-        let mut sizes: HashMap<u32, usize> = HashMap::new();
+        let mut sizes: Vec<(u32, usize)> = Vec::new();
 
         for run in &para.runs {
             if let Some(size) = run.style.size {
                 let text_len = run.text.chars().count();
-                *sizes.entry(size).or_insert(0) += text_len;
+                match sizes.iter_mut().find(|(s, _)| *s == size) {
+                    Some((_, count)) => *count += text_len,
+                    None => sizes.push((size, text_len)),
+                }
             }
         }
 
+        // `max_by_key` keeps the last of equal maxima; the first one is wanted.
         sizes
             .into_iter()
+            .rev()
             .max_by_key(|(_, count)| *count)
             .map(|(size, _)| size)
     }
@@ -826,6 +836,44 @@ mod tests {
 
         let decision = analyzer.decide_heading(&para);
         assert_eq!(decision, HeadingDecision::None);
+    }
+
+    /// Equally frequent sizes: the body size is the smaller, the paragraph's dominant size the
+    /// one it uses first — on every call, not whichever a map hands out first.
+    #[test]
+    fn test_font_size_ties_are_decided_the_same_way_every_time() {
+        let run = |text: &str, size: u32| TextRun {
+            style: TextStyle {
+                size: Some(size),
+                ..Default::default()
+            },
+            ..TextRun::plain(text)
+        };
+        for _ in 0..64 {
+            let mut stats = DocumentStats::default();
+            for size in [32, 24, 20, 28] {
+                stats.font_sizes.insert(size, 300);
+            }
+            stats.font_sizes.insert(18, 20);
+            stats.calculate_base_font_size();
+            assert_eq!(stats.base_font_size, Some(20));
+
+            let analyzer = HeadingAnalyzer::new(HeadingConfig::default());
+            let para = Paragraph {
+                runs: vec![
+                    run("aaaaaaaaaa", 24),
+                    run("bbbbbbbbbb", 20),
+                    run("cccccccccc", 28),
+                ],
+                ..Default::default()
+            };
+            assert_eq!(analyzer.get_dominant_font_size(&para), Some(24));
+            let reversed = Paragraph {
+                runs: vec![run("cccccccccc", 28), run("bbbbbbbbbb", 20)],
+                ..Default::default()
+            };
+            assert_eq!(analyzer.get_dominant_font_size(&reversed), Some(28));
+        }
     }
 
     #[test]
