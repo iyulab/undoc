@@ -67,7 +67,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   counted in the new `SlideRasterGaps::approximated_charts`, and `charts` now counts only the charts
   that are not drawn: a kind this does not paint (scatter, bubble, radar, stock, surface) or one with no
   data. A series' data labels (value, percent and category name on a pie) are drawn, and the number
-  format of the value axis and of the labels (`0%`, `0.0`, `#,##0`, quoted text) is applied. Every bar,
+  format of the value axis and of the labels (`0%`, `0.0`, `#,##0`, quoted text) is applied. A chart
+  that puts some of its series on a second value axis (columns and a line on two scales) draws them on
+  that axis, with its labels on the right; a third pair of axes is not painted. Every bar,
   column, line and pie chart among the public sample presentations was drawn and compared by eye with
   its data. The count is in the C ABI's `out_info` JSON (`gaps.approximated_charts`),
   .NET's `RenderGaps.ApproximatedCharts` and Python's `gaps["approximated_charts"]`; `IsEmpty` is false

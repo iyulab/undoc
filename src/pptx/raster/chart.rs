@@ -96,6 +96,11 @@ struct Chart {
     max: Option<f64>,
     /// The value axis's number format.
     axis_format: Option<String>,
+    /// Plots on a second pair of axes, with that value axis's bounds and number format.
+    secondary: Vec<Plot>,
+    secondary_min: Option<f64>,
+    secondary_max: Option<f64>,
+    secondary_format: Option<String>,
     background: Option<Rgba>,
 }
 
@@ -299,6 +304,8 @@ fn read_chart(doc: &roxmltree::Document, colors: &Colors) -> Option<Chart> {
     let mut plots: Vec<Plot> = Vec::new();
     let mut categories: Vec<String> = Vec::new();
     let mut axes: Option<Vec<&str>> = None;
+    let mut second_axes: Option<Vec<&str>> = None;
+    let mut secondary_plots: Vec<Plot> = Vec::new();
     let mut index = 0usize;
     for node in area.children().filter(|n| n.is_element()) {
         let kind = match node.tag_name().name() {
@@ -314,11 +321,22 @@ fn read_chart(doc: &roxmltree::Document, colors: &Colors) -> Option<Chart> {
             .filter(|c| c.has_tag_name((C, "axId")))
             .filter_map(|c| c.attribute("val"))
             .collect();
-        match &axes {
-            None => axes = Some(ids),
-            Some(first) if *first != ids => continue,
-            Some(_) => {}
-        }
+        let second = match &axes {
+            None => {
+                axes = Some(ids);
+                false
+            }
+            Some(first) if *first == ids => false,
+            Some(_) => match &second_axes {
+                None => {
+                    second_axes = Some(ids);
+                    true
+                }
+                Some(s) if *s == ids => true,
+                // A third pair of axes is not painted.
+                Some(_) => continue,
+            },
+        };
         let mut series = Vec::new();
         for ser in node.children().filter(|c| c.has_tag_name((C, "ser"))) {
             let values: Vec<Option<f64>> = cnode(ser, "val")
@@ -395,7 +413,12 @@ fn read_chart(doc: &roxmltree::Document, colors: &Colors) -> Option<Chart> {
                 .and_then(|v| v.parse::<f32>().ok())
                 .unwrap_or(default)
         };
-        plots.push(Plot {
+        (if second {
+            &mut secondary_plots
+        } else {
+            &mut plots
+        })
+        .push(Plot {
             kind,
             horizontal: cval(node, "barDir") == Some("bar"),
             grouping: match cval(node, "grouping") {
@@ -469,6 +492,28 @@ fn read_chart(doc: &roxmltree::Document, colors: &Colors) -> Option<Chart> {
                 .flat_map(|p| p.series.iter())
                 .find_map(|s| s.source_format.clone())
         });
+    let second_ax = second_axes.as_ref().and_then(|ids| {
+        area.children()
+            .filter(|n| n.has_tag_name((C, "valAx")))
+            .find(|ax| cval(*ax, "axId").is_some_and(|id| ids.contains(&id)))
+    });
+    let second_bound = |name: &str| {
+        second_ax
+            .and_then(|ax| cnode(ax, "scaling"))
+            .and_then(|s| cval(s, name))
+            .and_then(|v| v.parse::<f64>().ok())
+            .filter(|v| v.is_finite())
+    };
+    let secondary_format = second_ax
+        .and_then(|ax| cnode(ax, "numFmt"))
+        .filter(|n| n.attribute("sourceLinked") != Some("1"))
+        .and_then(|n| n.attribute("formatCode").map(str::to_string))
+        .or_else(|| {
+            secondary_plots
+                .iter()
+                .flat_map(|p| p.series.iter())
+                .find_map(|s| s.source_format.clone())
+        });
     let background = cnode(space, "spPr")
         .and_then(|p| child(p, A, "solidFill"))
         .and_then(|f| color_child(f, colors, None));
@@ -480,8 +525,47 @@ fn read_chart(doc: &roxmltree::Document, colors: &Colors) -> Option<Chart> {
         min: bound("min"),
         max: bound("max"),
         axis_format,
+        secondary_min: second_bound("min"),
+        secondary_max: second_bound("max"),
+        secondary_format,
+        secondary: secondary_plots,
         background,
     })
+}
+
+/// The lowest and highest value the `plots` reach over `n` categories, stacked ones by their
+/// running totals; zero is always inside.
+fn extent(plots: &[Plot], n: usize) -> (f64, f64) {
+    let (mut lo, mut hi) = (0f64, 0f64);
+    for plot in plots {
+        for i in 0..n {
+            let value = |s: &Series| s.values.get(i).copied().flatten();
+            if plot.kind != Kind::Line && plot.grouping != Grouping::Clustered {
+                let (pos, neg) =
+                    plot.series
+                        .iter()
+                        .filter_map(value)
+                        .fold(
+                            (0.0, 0.0),
+                            |(p, n), v| {
+                                if v >= 0.0 {
+                                    (p + v, n)
+                                } else {
+                                    (p, n + v)
+                                }
+                            },
+                        );
+                hi = hi.max(pos);
+                lo = lo.min(neg);
+            } else {
+                for v in plot.series.iter().filter_map(value) {
+                    hi = hi.max(v);
+                    lo = lo.min(v);
+                }
+            }
+        }
+    }
+    (lo, hi)
 }
 
 /// A value axis from `lo` to `hi`: its ends and the ticks between, on 1, 2 or 5 times a power
@@ -695,6 +779,7 @@ impl<'a> Painter<'a> {
             chart
                 .plots
                 .iter()
+                .chain(&chart.secondary)
                 .flat_map(|p| p.series.iter())
                 .map(|s| (s.name.clone(), s.color))
                 .collect()
@@ -755,6 +840,7 @@ impl<'a> Painter<'a> {
                 chart
                     .plots
                     .iter()
+                    .chain(&chart.secondary)
                     .flat_map(|p| p.series.iter())
                     .map(|s| s.values.len())
                     .max()
@@ -765,35 +851,7 @@ impl<'a> Painter<'a> {
             .plots
             .iter()
             .any(|p| p.kind != Kind::Line && p.grouping == Grouping::Percent);
-        let (mut lo, mut hi) = (0f64, 0f64);
-        for plot in &chart.plots {
-            for i in 0..n {
-                let value = |s: &Series| s.values.get(i).copied().flatten();
-                if plot.kind != Kind::Line && plot.grouping != Grouping::Clustered {
-                    let (pos, neg) =
-                        plot.series
-                            .iter()
-                            .filter_map(value)
-                            .fold(
-                                (0.0, 0.0),
-                                |(p, n), v| {
-                                    if v >= 0.0 {
-                                        (p + v, n)
-                                    } else {
-                                        (p, n + v)
-                                    }
-                                },
-                            );
-                    hi = hi.max(pos);
-                    lo = lo.min(neg);
-                } else {
-                    for v in plot.series.iter().filter_map(value) {
-                        hi = hi.max(v);
-                        lo = lo.min(v);
-                    }
-                }
-            }
-        }
+        let (lo, hi) = extent(&chart.plots, n);
         let (min, max, ticks) = if percent {
             (0.0, 1.0, vec![0.0, 0.2, 0.4, 0.6, 0.8, 1.0])
         } else {
@@ -811,6 +869,21 @@ impl<'a> Painter<'a> {
         let cat_labels: Vec<String> = (0..n)
             .map(|i| chart.categories.get(i).cloned().unwrap_or_default())
             .collect();
+        // A second value axis stands on the right of a vertical chart.
+        let second = if chart.secondary.is_empty() || horizontal {
+            None
+        } else {
+            let (lo2, hi2) = extent(&chart.secondary, n);
+            let (min2, max2, ticks2) = scale(lo2, hi2, chart.secondary_min, chart.secondary_max);
+            let labels2: Vec<String> = ticks2
+                .iter()
+                .map(|v| match &chart.secondary_format {
+                    Some(code) => format_code(*v, code),
+                    None => format_value(*v, false),
+                })
+                .collect();
+            Some((min2, max2, ticks2, labels2))
+        };
         let tick_width = tick_labels
             .iter()
             .map(|s| self.text_width(s, size))
@@ -826,6 +899,17 @@ impl<'a> Painter<'a> {
             left += tick_width + size * 0.6;
             bottom -= size * 1.6;
         }
+        let second_width = second
+            .as_ref()
+            .map(|(_, _, _, labels)| {
+                labels
+                    .iter()
+                    .map(|s| self.text_width(s, size))
+                    .fold(0.0, f32::max)
+                    + size * 0.6
+            })
+            .unwrap_or(0.0);
+        right -= second_width;
         if right - left < size || bottom - top < size {
             return;
         }
@@ -848,6 +932,25 @@ impl<'a> Painter<'a> {
             }
         };
         let cell = (if horizontal { ph } else { pw }) / n as f32;
+        let (min2, span2) = second
+            .as_ref()
+            .map(|(lo2, hi2, _, _)| (*lo2, (hi2 - lo2).max(f64::MIN_POSITIVE)))
+            .unwrap_or((0.0, 1.0));
+        let val2 = move |v: f64| -> f32 { bottom - ((v - min2) / span2) as f32 * ph };
+        // The second axis's labels, at its own ticks.
+        if let Some((_, _, ticks2, labels2)) = &second {
+            for (tick, text) in ticks2.iter().zip(labels2) {
+                self.label(
+                    text,
+                    right + size * 0.4,
+                    val2(*tick) - size * 0.55,
+                    size,
+                    INK,
+                    Align::Left,
+                    t,
+                );
+            }
+        }
 
         // Gridlines and the value labels.
         for (tick, text) in ticks.iter().zip(&tick_labels) {
@@ -904,6 +1007,13 @@ impl<'a> Painter<'a> {
             match plot.kind {
                 Kind::Bar => self.draw_bars(plot, n, percent, &val, &cat, horizontal, t),
                 Kind::Line | Kind::Area => self.draw_lines(plot, n, percent, &val, &cat, t),
+                Kind::Pie => {}
+            }
+        }
+        for plot in &chart.secondary {
+            match plot.kind {
+                Kind::Bar => self.draw_bars(plot, n, false, &val2, &cat, false, t),
+                Kind::Line | Kind::Area => self.draw_lines(plot, n, false, &val2, &cat, t),
                 Kind::Pie => {}
             }
         }
@@ -1405,6 +1515,32 @@ mod tests {
         // A flat line at 10 of 0 to 10 sits at the top of the plot, between the two points.
         let top_row: Vec<[u8; 3]> = (0..8).map(|dy| pixel(&slide, 58, 4 + dy)).collect();
         assert!(top_row.contains(&ACCENT1), "{top_row:?}");
+    }
+
+    #[test]
+    fn a_line_on_a_second_axis_is_drawn_on_its_own_scale() {
+        // Columns of 10 and 20 on the first axis; a line of 1000 and 2000 on a second one, whose
+        // own scale puts the line's last point at the top of the plot, where the second column
+        // also ends.
+        let part = chart_part(
+            &format!(
+                r#"<c:barChart><c:barDir val="col"/><c:grouping val="clustered"/>{}<c:axId val="1"/><c:axId val="2"/></c:barChart><c:lineChart><c:grouping val="standard"/>{}<c:marker val="1"/><c:axId val="3"/><c:axId val="4"/></c:lineChart><c:valAx><c:axId val="2"/><c:scaling/></c:valAx><c:valAx><c:axId val="4"/><c:scaling><c:max val="2000"/></c:scaling><c:crosses val="max"/></c:valAx>"#,
+                series(0, "Columns", &["A", "B"], &[10.0, 20.0]),
+                series(1, "Line", &["A", "B"], &[1000.0, 2000.0])
+            ),
+            "",
+        );
+        let doc = roxmltree::Document::parse(&part).unwrap();
+        let colors = Colors {
+            scheme: HashMap::new(),
+            map: HashMap::new(),
+        };
+        let chart = read_chart(&doc, &colors).unwrap();
+        assert_eq!((chart.plots.len(), chart.secondary.len()), (1, 1));
+        assert_eq!(chart.secondary_max, Some(2000.0));
+        let slide = chart_slide(&part);
+        assert_eq!(pixel(&slide, 56, 6), ACCENT2, "the line's last point");
+        assert_eq!(slide.gaps.approximated_charts, 1);
     }
 
     #[test]
