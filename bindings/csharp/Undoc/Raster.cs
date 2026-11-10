@@ -43,9 +43,19 @@ public sealed class RenderGaps
     [JsonPropertyName("text_runs")]
     public uint TextRuns { get; init; }
 
-    /// <summary>Charts not drawn.</summary>
+    /// <summary>
+    /// Charts not drawn: a kind the renderer does not paint (scatter, bubble, radar, stock,
+    /// surface), or one with no data.
+    /// </summary>
     [JsonPropertyName("charts")]
     public uint Charts { get; init; }
+
+    /// <summary>
+    /// Charts drawn from their data as a plain chart -- columns, bars, lines, areas, pies --
+    /// without the layout, data labels, secondary axes or effects PowerPoint draws.
+    /// </summary>
+    [JsonPropertyName("approximated_charts")]
+    public uint ApproximatedCharts { get; init; }
 
     /// <summary>
     /// Graphic frames not drawn: embedded objects, and SmartArt PowerPoint left no drawing for.
@@ -65,7 +75,7 @@ public sealed class RenderGaps
     [JsonIgnore]
     public bool IsEmpty =>
         Shapes == 0 && Images == 0 && TextRuns == 0 && Charts == 0 && GraphicFrames == 0
-        && ApproximatedFills == 0;
+        && ApproximatedCharts == 0 && ApproximatedFills == 0;
 }
 
 /// <summary>A rendered section: a PNG, its size in pixels, and what it could not show.</summary>

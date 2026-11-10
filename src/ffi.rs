@@ -806,8 +806,11 @@ struct FfiSlideRasterOptions {
 /// text is reported as a gap.
 ///
 /// `out_info`, when not null, receives `{"width":N,"height":N,"gaps":{"shapes":N,
-/// "images":N,"text_runs":N,"charts":N,"graphic_frames":N,"approximated_fills":N},
-/// "substituted_text_runs":N}` — free it with `undoc_free_string`. `approximated_fills`
+/// "images":N,"text_runs":N,"charts":N,"approximated_charts":N,"graphic_frames":N,
+/// "approximated_fills":N},"substituted_text_runs":N}` — free it with `undoc_free_string`.
+/// `charts` counts charts not drawn (a kind that is not painted, or no data);
+/// `approximated_charts` counts charts drawn as a plain chart from their data (no PowerPoint
+/// layout, data labels or secondary axes); `approximated_fills`
 /// counts fills drawn as a stand-in (a pattern in its foreground color, a rectangular
 /// gradient as a radial one, a tiled picture stretched);
 /// `substituted_text_runs` counts text drawn in a face standing in for the one it asks
@@ -875,6 +878,7 @@ pub unsafe extern "C" fn undoc_render_section(
                 "images": g.images,
                 "text_runs": g.text_runs,
                 "charts": g.charts,
+                "approximated_charts": g.approximated_charts,
                 "graphic_frames": g.graphic_frames,
                 "approximated_fills": g.approximated_fills,
             },
@@ -1529,6 +1533,7 @@ mod tests {
             "images",
             "text_runs",
             "charts",
+            "approximated_charts",
             "graphic_frames",
             "approximated_fills",
         ] {

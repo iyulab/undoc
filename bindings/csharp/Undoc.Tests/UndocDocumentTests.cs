@@ -465,6 +465,7 @@ public class RenderSectionTests
         Assert.Equal(1u, section.Gaps.TextRuns);
         Assert.False(section.Gaps.IsEmpty);
         Assert.Equal(0u, section.Gaps.Shapes);
+        Assert.Equal(0u, section.Gaps.ApproximatedCharts);
         Assert.Equal(0u, section.SubstitutedTextRuns);
     }
 

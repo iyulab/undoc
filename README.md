@@ -564,14 +564,17 @@ let parser = PptxParser::open("deck.pptx")?;
 let slide = parser.render_slide(0, &SlideRasterOptions::default())?; // 150 dpi
 std::fs::write("slide1.png", slide.to_png())?;
 if !slide.gaps.is_empty() {
-    eprintln!("not painted: {:?}", slide.gaps); // charts, embedded objects, custom geometry, …
+    eprintln!("not painted: {:?}", slide.gaps); // embedded objects, custom geometry, …
 }
 # Ok::<(), undoc::Error>(())
 ```
 
-What the renderer cannot paint yet — charts, embedded objects and other graphic frames, custom geometry,
-pictures other than PNG and JPEG, text in a script that needs shaping — is left out and counted
-in `gaps`; the rest of the slide is painted. Fills drawn as a stand-in — a pattern in its
+What the renderer cannot paint yet — embedded objects and other graphic frames, charts of a kind it does
+not draw (scatter, bubble, radar, stock, surface), custom geometry, pictures other than PNG and JPEG,
+text in a script that needs shaping — is left out and counted in `gaps`; the rest of the slide is
+painted. Column, bar, line, area and pie charts are drawn from their data as a plain chart (title,
+legend, axes, series colors) — a stand-in without PowerPoint's layout, data labels or secondary
+axes, counted as `approximated_charts`. Fills drawn as a stand-in — a pattern in its
 foreground color, a rectangular or shape-following gradient as a radial one, a tiled picture
 stretched — are counted as approximated. No font is bundled. Text is drawn in the faces you pass,
 then those in the directories you name, then the system's. A Linux container without fonts draws no text — install a font

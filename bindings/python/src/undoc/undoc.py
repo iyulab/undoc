@@ -177,8 +177,10 @@ class RenderedSection:
 
     ``gaps`` counts, by kind, what the renderer left out — ``shapes`` (custom geometry),
     ``images`` (pictures other than PNG and JPEG), ``text_runs`` (text no face covers, in a
-    script that needs shaping, or vertical), ``charts``, ``graphic_frames`` (embedded objects, SmartArt with no drawing)
-    and ``approximated_fills`` (fills drawn as a stand-in: a pattern in its foreground color,
+    script that needs shaping, or vertical), ``charts`` (a kind not painted — scatter, bubble, radar,
+    stock, surface — or no data), ``graphic_frames`` (embedded objects, SmartArt with no drawing),
+    ``approximated_charts`` (charts drawn from their data as a plain chart, without PowerPoint's layout,
+    data labels or secondary axes) and ``approximated_fills`` (fills drawn as a stand-in: a pattern in its foreground color,
     a rectangular or shape-following gradient as a radial one, a tiled picture stretched). All
     zero means everything was painted; otherwise the rest of the slide still was.
 

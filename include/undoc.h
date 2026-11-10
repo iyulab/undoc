@@ -288,7 +288,8 @@ uint8_t* undoc_get_resource_data(const UndocDocument* doc, const char* resource_
  * @param out_len Receives the PNG length in bytes (0 on error). Left untouched when doc or
  *                out_len is NULL.
  * @param out_info NULL, or receives {"width":N,"height":N,"gaps":{"shapes":N,"images":N,
- *        "text_runs":N,"charts":N,"graphic_frames":N,"approximated_fills":N},
+ *        "text_runs":N,"charts":N,"approximated_charts":N,"graphic_frames":N,
+ *        "approximated_fills":N},
  *        "substituted_text_runs":N} (must be freed with undoc_free_string).
  * @return PNG bytes (must be freed with undoc_free_bytes() together with *out_len), or
  *         NULL on error (UNDOC_ERROR_SECTION_OUT_OF_RANGE, UNDOC_ERROR_UNSUPPORTED_FORMAT

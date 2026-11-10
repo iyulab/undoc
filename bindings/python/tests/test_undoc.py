@@ -751,6 +751,7 @@ class TestRenderSection:
         # System fonts off and none passed: the one run has no face to draw in.
         assert section.gaps["text_runs"] == 1
         assert section.gaps["shapes"] == 0
+        assert section.gaps["approximated_charts"] == 0
         assert section.substituted_text_runs == 0
 
     def test_defaults_to_150_dpi(self):

@@ -67,7 +67,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   counted in the new `SlideRasterGaps::approximated_charts`, and `charts` now counts only the charts
   that are not drawn: a kind this does not paint (scatter, bubble, radar, stock, surface) or one with no
   data. Every bar, column, line and pie chart among the public sample presentations was drawn and
-  compared by eye with its data.
+  compared by eye with its data. The count is in the C ABI's `out_info` JSON (`gaps.approximated_charts`),
+  .NET's `RenderGaps.ApproximatedCharts` and Python's `gaps["approximated_charts"]`; `IsEmpty` is false
+  for a slide with an approximated chart.
 
 ### Changed
 
