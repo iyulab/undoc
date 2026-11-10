@@ -570,9 +570,9 @@ if !slide.gaps.is_empty() {
 ```
 
 What the renderer cannot paint yet — embedded objects and other graphic frames, charts of a kind it does
-not draw (scatter, bubble, radar, stock, surface), custom geometry, pictures other than PNG and JPEG,
+not draw (bubble, radar, stock, surface), custom geometry, pictures other than PNG and JPEG,
 text in a script that needs shaping — is left out and counted in `gaps`; the rest of the slide is
-painted. Column, bar, line, area and pie charts are drawn from their data as a plain chart (title,
+painted. Column, bar, line, area, scatter and pie charts are drawn from their data as a plain chart (title,
 legend, axes, series colors) — a stand-in without PowerPoint's layout, data labels or secondary
 axes, counted as `approximated_charts`. Fills drawn as a stand-in — a pattern in its
 foreground color, a rectangular or shape-following gradient as a radial one, a tiled picture

@@ -37,6 +37,7 @@ enum Kind {
     Line,
     Area,
     Pie,
+    Scatter,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -59,6 +60,10 @@ struct Labels {
 struct Series {
     name: String,
     values: Vec<Option<f64>>,
+    /// A scatter series' x values, by point.
+    xs: Vec<Option<f64>>,
+    /// A scatter series draws a line through its points.
+    line: bool,
     labels: Labels,
     /// The number format the cached values carry (`General` is none).
     source_format: Option<String>,
@@ -289,7 +294,7 @@ fn auto_color(colors: &Colors, index: usize) -> Rgba {
 /// The fill a series element names in `c:spPr`: its solid fill, or for a line its line's.
 fn explicit_color(sp_pr: Option<Node>, kind: Kind, colors: &Colors) -> Option<Rgba> {
     let sp_pr = sp_pr?;
-    let fill = if kind == Kind::Line {
+    let fill = if matches!(kind, Kind::Line | Kind::Scatter) {
         child(child(sp_pr, A, "ln")?, A, "solidFill")?
     } else {
         child(sp_pr, A, "solidFill")?
@@ -313,6 +318,7 @@ fn read_chart(doc: &roxmltree::Document, colors: &Colors) -> Option<Chart> {
             "lineChart" | "line3DChart" => Kind::Line,
             "areaChart" | "area3DChart" => Kind::Area,
             "pieChart" | "pie3DChart" | "doughnutChart" => Kind::Pie,
+            "scatterChart" => Kind::Scatter,
             _ => continue,
         };
         // Plots on a second pair of axes are not painted: their scale is another one.
@@ -339,7 +345,8 @@ fn read_chart(doc: &roxmltree::Document, colors: &Colors) -> Option<Chart> {
         };
         let mut series = Vec::new();
         for ser in node.children().filter(|c| c.has_tag_name((C, "ser"))) {
-            let values: Vec<Option<f64>> = cnode(ser, "val")
+            let value_node = cnode(ser, if kind == Kind::Scatter { "yVal" } else { "val" });
+            let values: Vec<Option<f64>> = value_node
                 .map(points)
                 .unwrap_or_default()
                 .into_iter()
@@ -368,6 +375,10 @@ fn read_chart(doc: &roxmltree::Document, colors: &Colors) -> Option<Chart> {
                 .unwrap_or_else(|| format!("Series {}", index + 1));
             let sp_pr = cnode(ser, "spPr");
             let color = explicit_color(sp_pr, kind, colors)
+                .or_else(|| {
+                    cnode(ser, "marker")
+                        .and_then(|m| explicit_color(cnode(m, "spPr"), Kind::Area, colors))
+                })
                 .unwrap_or_else(|| auto_color(colors, if kind == Kind::Pie { 0 } else { index }));
             let slices = if kind == Kind::Pie {
                 (0..values.len())
@@ -385,7 +396,27 @@ fn read_chart(doc: &roxmltree::Document, colors: &Colors) -> Option<Chart> {
             let marker = cnode(ser, "marker")
                 .and_then(|m| cval(m, "symbol"))
                 .is_none_or(|s| s != "none");
-            let source_format = cnode(ser, "val")
+            let xs: Vec<Option<f64>> = if kind == Kind::Scatter {
+                cnode(ser, "xVal")
+                    .map(points)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|v| {
+                        v.and_then(|t| t.parse::<f64>().ok())
+                            .filter(|v| v.is_finite())
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            let ln_hidden = cnode(ser, "spPr")
+                .and_then(|s| child(s, A, "ln"))
+                .is_some_and(|ln| child(ln, A, "noFill").is_some());
+            let line = kind == Kind::Scatter
+                && !ln_hidden
+                && cval(node, "scatterStyle")
+                    .is_some_and(|s| s.contains("ine") || s.contains("mooth"));
+            let source_format = value_node
                 .and_then(|v| {
                     v.descendants()
                         .find(|n| n.has_tag_name((C, "formatCode")))
@@ -400,6 +431,8 @@ fn read_chart(doc: &roxmltree::Document, colors: &Colors) -> Option<Chart> {
             series.push(Series {
                 name,
                 values,
+                xs,
+                line,
                 labels,
                 source_format,
                 color,
@@ -571,8 +604,20 @@ fn extent(plots: &[Plot], n: usize) -> (f64, f64) {
 /// A value axis from `lo` to `hi`: its ends and the ticks between, on 1, 2 or 5 times a power
 /// of ten, honoring a bound the chart fixes.
 fn scale(lo: f64, hi: f64, fixed_min: Option<f64>, fixed_max: Option<f64>) -> (f64, f64, Vec<f64>) {
-    let mut lo = fixed_min.unwrap_or(lo.min(0.0));
-    let mut hi = fixed_max.unwrap_or(hi.max(0.0));
+    scale_from(lo, hi, fixed_min, fixed_max, true)
+}
+
+/// [`scale`], with the axis starting at the lowest value instead of at zero when `from_zero` is
+/// false.
+fn scale_from(
+    lo: f64,
+    hi: f64,
+    fixed_min: Option<f64>,
+    fixed_max: Option<f64>,
+    from_zero: bool,
+) -> (f64, f64, Vec<f64>) {
+    let mut lo = fixed_min.unwrap_or(if from_zero { lo.min(0.0) } else { lo });
+    let mut hi = fixed_max.unwrap_or(if from_zero { hi.max(0.0) } else { hi });
     if hi <= lo {
         hi = lo + 1.0;
     }
@@ -831,6 +876,10 @@ impl<'a> Painter<'a> {
             self.draw_pie(first, &chart.categories, (left, top, right, bottom), t);
             return;
         }
+        if first.kind == Kind::Scatter {
+            self.draw_scatter(chart, (left, top, right, bottom), t);
+            return;
+        }
 
         // The value range over every plot, stacked ones by their running totals.
         let n = chart
@@ -1007,14 +1056,14 @@ impl<'a> Painter<'a> {
             match plot.kind {
                 Kind::Bar => self.draw_bars(plot, n, percent, &val, &cat, horizontal, t),
                 Kind::Line | Kind::Area => self.draw_lines(plot, n, percent, &val, &cat, t),
-                Kind::Pie => {}
+                Kind::Pie | Kind::Scatter => {}
             }
         }
-        for plot in &chart.secondary {
+        for plot in chart.secondary.iter().filter(|_| !horizontal) {
             match plot.kind {
                 Kind::Bar => self.draw_bars(plot, n, false, &val2, &cat, false, t),
                 Kind::Line | Kind::Area => self.draw_lines(plot, n, false, &val2, &cat, t),
-                Kind::Pie => {}
+                Kind::Pie | Kind::Scatter => {}
             }
         }
         let zero = val(0.0f64.clamp(min, max));
@@ -1224,6 +1273,118 @@ impl<'a> Painter<'a> {
                 }
             }
         }
+    }
+
+    /// Scatter series: a numeric x axis under a numeric y axis, markers at the points and, for
+    /// the styles that have them, a line through them.
+    fn draw_scatter(&mut self, chart: &Chart, rect: (f32, f32, f32, f32), t: Transform) {
+        let pt = EMU_PER_PT;
+        let size = 10.0 * pt;
+        let (mut left, top, right, mut bottom) = rect;
+        let series: Vec<&Series> = chart
+            .plots
+            .iter()
+            .filter(|p| p.kind == Kind::Scatter)
+            .flat_map(|p| p.series.iter())
+            .collect();
+        let points: Vec<Vec<(f64, f64)>> = series
+            .iter()
+            .map(|s| {
+                s.values
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, y)| {
+                        let x = s.xs.get(i).copied().flatten().unwrap_or(i as f64 + 1.0);
+                        Some((x, (*y)?))
+                    })
+                    .collect()
+            })
+            .collect();
+        let (mut xlo, mut xhi, mut ylo, mut yhi) = (f64::MAX, f64::MIN, f64::MAX, f64::MIN);
+        for (x, y) in points.iter().flatten() {
+            xlo = xlo.min(*x);
+            xhi = xhi.max(*x);
+            ylo = ylo.min(*y);
+            yhi = yhi.max(*y);
+        }
+        if xlo > xhi {
+            return;
+        }
+        // Excel starts an axis at zero unless the values sit in the top sixth of their range.
+        let from_zero = |lo: f64, hi: f64| !(lo > 0.0 && lo >= hi * 5.0 / 6.0);
+        let (x0, x1, x_ticks) = scale_from(xlo, xhi, None, None, from_zero(xlo, xhi));
+        let (y0, y1, y_ticks) = scale_from(ylo, yhi, None, None, from_zero(ylo, yhi));
+        let y_labels: Vec<String> = y_ticks.iter().map(|v| format_value(*v, false)).collect();
+        let label_width = y_labels
+            .iter()
+            .map(|s| self.text_width(s, size))
+            .fold(0.0, f32::max);
+        left += label_width + size * 0.6;
+        bottom -= size * 1.6;
+        if right - left < size || bottom - top < size {
+            return;
+        }
+        let (pw, ph) = (right - left, bottom - top);
+        let sx = move |x: f64| left + ((x - x0) / (x1 - x0).max(f64::MIN_POSITIVE)) as f32 * pw;
+        let sy = move |y: f64| bottom - ((y - y0) / (y1 - y0).max(f64::MIN_POSITIVE)) as f32 * ph;
+        for (tick, text) in y_ticks.iter().zip(&y_labels) {
+            let y = sy(*tick);
+            self.line((left, y), (right, y), pt * 0.75, GRID, t);
+            self.label(
+                text,
+                left - size * 0.4,
+                y - size * 0.55,
+                size,
+                INK,
+                Align::Right,
+                t,
+            );
+        }
+        for tick in &x_ticks {
+            let text = format_value(*tick, false);
+            self.label(
+                &text,
+                sx(*tick),
+                bottom + size * 0.3,
+                size,
+                INK,
+                Align::Center,
+                t,
+            );
+        }
+        for (series, run) in series.iter().zip(&points) {
+            if series.line && run.len() > 1 {
+                let mut pb = PathBuilder::new();
+                pb.move_to(sx(run[0].0), sy(run[0].1));
+                for (x, y) in &run[1..] {
+                    pb.line_to(sx(*x), sy(*y));
+                }
+                if let Some(path) = pb.finish() {
+                    self.stroke(&path, 2.25 * pt, series.color, t);
+                }
+            }
+            if series.marker {
+                for (x, y) in run {
+                    if let Some(dot) = PathBuilder::from_circle(sx(*x), sy(*y), 3.5 * pt) {
+                        self.fill_with(&dot, series.color, t);
+                    }
+                }
+            }
+        }
+        self.line(
+            (left, sy(0.0f64.clamp(y0, y1))),
+            (right, sy(0.0f64.clamp(y0, y1))),
+            pt,
+            INK,
+            t,
+        );
+        self.line(
+            (sx(0.0f64.clamp(x0, x1)), top),
+            (sx(0.0f64.clamp(x0, x1)), bottom),
+            pt,
+            INK,
+            t,
+        );
     }
 
     fn draw_pie(
@@ -1544,9 +1705,26 @@ mod tests {
     }
 
     #[test]
+    fn a_scatter_chart_marks_its_points_and_joins_them() {
+        let part = chart_part(
+            r#"<c:scatterChart><c:scatterStyle val="lineMarker"/><c:ser><c:idx val="0"/><c:order val="0"/><c:xVal><c:numRef><c:numCache><c:ptCount val="2"/><c:pt idx="0"><c:v>0</c:v></c:pt><c:pt idx="1"><c:v>10</c:v></c:pt></c:numCache></c:numRef></c:xVal><c:yVal><c:numRef><c:numCache><c:ptCount val="2"/><c:pt idx="0"><c:v>0</c:v></c:pt><c:pt idx="1"><c:v>10</c:v></c:pt></c:numCache></c:numRef></c:yVal></c:ser><c:axId val="1"/><c:axId val="2"/></c:scatterChart>"#,
+            "",
+        );
+        let slide = chart_slide(&part);
+        assert_eq!(pixel(&slide, 92, 7), ACCENT1, "the point at (10, 10)");
+        assert_eq!(
+            pixel(&slide, 58, 17),
+            ACCENT1,
+            "the line between the points"
+        );
+        assert_eq!(pixel(&slide, 40, 8), WHITE);
+        assert_eq!((slide.gaps.charts, slide.gaps.approximated_charts), (0, 1));
+    }
+
+    #[test]
     fn a_chart_of_a_kind_that_is_not_painted_counts_as_not_drawn() {
         let part = chart_part(
-            r#"<c:scatterChart><c:scatterStyle val="lineMarker"/><c:axId val="1"/><c:axId val="2"/></c:scatterChart>"#,
+            r#"<c:radarChart><c:radarStyle val="marker"/><c:axId val="1"/><c:axId val="2"/></c:radarChart>"#,
             "",
         );
         let slide = chart_slide(&part);

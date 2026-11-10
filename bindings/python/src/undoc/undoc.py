@@ -177,7 +177,7 @@ class RenderedSection:
 
     ``gaps`` counts, by kind, what the renderer left out — ``shapes`` (custom geometry),
     ``images`` (pictures other than PNG and JPEG), ``text_runs`` (text no face covers, in a
-    script that needs shaping, or vertical), ``charts`` (a kind not painted — scatter, bubble, radar,
+    script that needs shaping, or vertical), ``charts`` (a kind not painted — bubble, radar,
     stock, surface — or no data), ``graphic_frames`` (embedded objects, SmartArt with no drawing),
     ``approximated_charts`` (charts drawn from their data as a plain chart, without PowerPoint's layout,
     data labels or secondary axes) and ``approximated_fills`` (fills drawn as a stand-in: a pattern in its foreground color,

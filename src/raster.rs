@@ -46,7 +46,7 @@ pub struct SlideRasterGaps {
     /// Text runs not painted, or painted only in part: no face has their characters, their
     /// script needs shaping, or the text is vertical.
     pub text_runs: u32,
-    /// Charts not drawn: a kind this does not paint (scatter, bubble, radar, stock, surface), or
+    /// Charts not drawn: a kind this does not paint (bubble, radar, stock, surface), or
     /// one with no data to paint.
     pub charts: u32,
     /// Charts drawn from their data as a plain chart -- columns, bars, lines, areas, pies --

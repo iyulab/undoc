@@ -44,7 +44,7 @@ public sealed class RenderGaps
     public uint TextRuns { get; init; }
 
     /// <summary>
-    /// Charts not drawn: a kind the renderer does not paint (scatter, bubble, radar, stock,
+    /// Charts not drawn: a kind the renderer does not paint (bubble, radar, stock,
     /// surface), or one with no data.
     /// </summary>
     [JsonPropertyName("charts")]
