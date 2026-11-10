@@ -28,6 +28,10 @@ pub(super) struct ParaProps {
     pub row_end: bool,
     /// The paragraph is the row-end mark of a table nested in a cell.
     pub inner_row_end: bool,
+    /// The column boundaries of the row this row-end mark closes, in twips (`rgdxaCenter` of
+    /// `sprmTDefTable`, one more than there are cells); empty when the mark carries none or
+    /// carries damaged ones.
+    pub row_edges: Vec<i16>,
     /// Table nesting depth (0 outside tables, 1 in a top-level table).
     pub depth: u32,
     /// Outline level set on the paragraph itself (0 = level 1; 9 = body text).
@@ -104,12 +108,36 @@ pub(super) fn for_each_sprm(grpprl: &[u8], mut visit: impl FnMut(u16, &[u8])) {
     }
 }
 
+/// The `rgdxaCenter` of a `sprmTDefTable` operand ([MS-DOC] `TDefTableOperand`): a column count
+/// (`u8`), then that count plus one little-endian `i16` boundaries. Boundaries that do not
+/// strictly increase are damage, and read as none.
+fn row_edges(operand: &[u8]) -> Vec<i16> {
+    let Some((&count, rest)) = operand.split_first() else {
+        return Vec::new();
+    };
+    let Some(bytes) = rest.get(..(usize::from(count) + 1) * 2) else {
+        return Vec::new();
+    };
+    let edges: Vec<i16> = bytes
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|&b| i16::from_le_bytes(b))
+        .collect();
+    if edges.windows(2).all(|w| w[0] < w[1]) {
+        edges
+    } else {
+        Vec::new()
+    }
+}
+
 fn apply_papx(props: &mut ParaProps, grpprl: &[u8]) {
     for_each_sprm(grpprl, |sprm, op| match sprm {
         SPRM_P_F_IN_TABLE => props.in_table = op[0] != 0,
         SPRM_P_F_TTP => props.row_end = op[0] != 0,
         SPRM_P_F_INNER_TTP => props.inner_row_end = op[0] != 0,
         SPRM_P_ITAP => props.depth = u32::from_le_bytes([op[0], op[1], op[2], op[3]]),
+        SPRM_T_DEF_TABLE => props.row_edges = row_edges(op),
         SPRM_P_OUT_LVL => props.outline_level = Some(op[0]),
         SPRM_P_ILVL => props.ilvl = op[0],
         SPRM_P_ILFO => props.ilfo = u16::from_le_bytes([op[0], op[1]]),

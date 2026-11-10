@@ -316,6 +316,8 @@ struct Assembler<'a> {
     fields: Vec<OpenField>,
     /// The table being read: finished rows, the row being read, the cell being read.
     rows: Vec<Row>,
+    /// The column boundaries of each row of `rows` (empty when the row carried none).
+    row_edges: Vec<Vec<i16>>,
     cells: Vec<Cell>,
     cell: Vec<Paragraph>,
 }
@@ -349,6 +351,7 @@ impl<'a> Assembler<'a> {
             in_link: false,
             fields: Vec::new(),
             rows: Vec::new(),
+            row_edges: Vec::new(),
             cells: Vec::new(),
             cell: Vec::new(),
         }
@@ -596,6 +599,8 @@ impl<'a> Assembler<'a> {
                 let mut row = Row::new();
                 row.cells = cells;
                 self.rows.push(row);
+                self.row_edges
+                    .push(props.map(|p| p.row_edges).unwrap_or_default());
             }
             return;
         }
@@ -619,14 +624,52 @@ impl<'a> Assembler<'a> {
             let mut row = Row::new();
             row.cells = std::mem::take(&mut self.cells);
             self.rows.push(row);
+            self.row_edges.push(Vec::new());
         }
         if self.rows.is_empty() {
             return;
         }
+        let edges = std::mem::take(&mut self.row_edges);
+        span_columns(&mut self.rows, &edges);
         let mut table = Table::new();
         for row in std::mem::take(&mut self.rows) {
             table.add_row(row);
         }
         self.blocks.push(Block::Table(table));
+    }
+}
+
+/// Gives each cell the number of columns it covers.
+///
+/// A horizontal merge is not marked in a Word 97-2003 table: each row states where its own
+/// cells end (`rgdxaCenter`), so a row with fewer, wider cells simply has fewer boundaries.
+/// The table's columns are every boundary any row states; a cell covers the columns between
+/// its two boundaries -- how Apache POI's HTML converter reads it. A row whose boundaries do
+/// not match its cells (damage, a row-end mark that stated none) is left as it was.
+fn span_columns(rows: &mut [Row], edges: &[Vec<i16>]) {
+    let usable = |row: &Row, edges: &[i16]| edges.len() == row.cells.len() + 1;
+    let mut columns: Vec<i16> = rows
+        .iter()
+        .zip(edges)
+        .filter(|(row, edges)| usable(row, edges))
+        .flat_map(|(_, edges)| edges.iter().copied())
+        .collect();
+    columns.sort_unstable();
+    columns.dedup();
+    for (row, edges) in rows.iter_mut().zip(edges) {
+        if !usable(row, edges) {
+            continue;
+        }
+        for (cell, bounds) in row.cells.iter_mut().zip(edges.windows(2)) {
+            let (Ok(left), Ok(right)) = (
+                columns.binary_search(&bounds[0]),
+                columns.binary_search(&bounds[1]),
+            ) else {
+                continue;
+            };
+            if right > left + 1 {
+                cell.col_span = u32::try_from(right - left).unwrap_or(1);
+            }
+        }
     }
 }

@@ -14,6 +14,8 @@ struct Para {
     istd: u16,
     in_table: bool,
     row_end: bool,
+    /// The column boundaries a row-end mark states (`sprmTDefTable`); empty for none.
+    row_edges: &'static [i16],
     /// List level, in the document's one list.
     list_level: Option<u8>,
 }
@@ -25,6 +27,7 @@ fn p(text: &'static str) -> Para {
         istd: 0,
         in_table: false,
         row_end: false,
+        row_edges: &[],
         list_level: None,
     }
 }
@@ -54,6 +57,14 @@ fn row_end() -> Para {
         in_table: true,
         row_end: true,
         ..p("")
+    }
+}
+
+/// A row-end mark that states where each of its row's cells ends.
+fn row_end_with(edges: &'static [i16]) -> Para {
+    Para {
+        row_edges: edges,
+        ..row_end()
     }
 }
 
@@ -163,6 +174,19 @@ fn build(paras: &[Para], opts: Options) -> Vec<u8> {
         }
         if para.row_end {
             body.extend_from_slice(&[0x17, 0x24, 0x01]); // sprmPFTtp
+        }
+        if !para.row_edges.is_empty() {
+            // sprmTDefTable: a 16-bit size (operand + 1), the column count, the boundaries,
+            // then one 20-byte TC80 per column.
+            let columns = para.row_edges.len() - 1;
+            let mut operand = vec![columns as u8];
+            for edge in para.row_edges {
+                operand.extend_from_slice(&edge.to_le_bytes());
+            }
+            operand.extend(std::iter::repeat_n(0u8, 20 * columns));
+            body.extend_from_slice(&[0x08, 0xD6]);
+            body.extend_from_slice(&((operand.len() + 1) as u16).to_le_bytes());
+            body.extend_from_slice(&operand);
         }
         if let Some(level) = para.list_level {
             body.extend_from_slice(&[0x0B, 0x46, 0x01, 0x00]); // sprmPIlfo 1
@@ -938,4 +962,90 @@ fn an_inline_picture_becomes_a_resource_the_paragraph_references() {
     assert_eq!(resource.data, png);
     assert_eq!(resource.filename.as_deref(), Some("image1.png"));
     assert_eq!(resource.mime_type.as_deref(), Some("image/png"));
+}
+
+#[test]
+fn a_row_with_fewer_wider_cells_spans_the_columns_the_other_rows_state() {
+    // Word marks no merge: each row states where its own cells end. The first row's two cells
+    // end at 6872 and 9302, the others' four at 1062, 5738, 8148, 9302 -- the layout of the
+    // public sample `table-merges.doc` -- so the table has five columns and the first row's
+    // cells cover three and two of them.
+    static WIDE: [i16; 3] = [0, 6872, 9302];
+    static NARROW: [i16; 5] = [0, 1062, 5738, 8148, 9302];
+    let doc = parse(
+        &[
+            cell("A"),
+            cell("B"),
+            row_end_with(&WIDE),
+            cell("C"),
+            cell("D"),
+            cell("E"),
+            cell("F"),
+            row_end_with(&NARROW),
+        ],
+        Options::default(),
+    )
+    .unwrap();
+    let Block::Table(table) = &doc.sections[0].content[0] else {
+        panic!("{:?}", doc.sections[0].content)
+    };
+    let spans: Vec<Vec<u32>> = table
+        .rows
+        .iter()
+        .map(|r| r.cells.iter().map(|c| c.col_span).collect())
+        .collect();
+    assert_eq!(spans, [vec![3, 2], vec![1, 1, 2, 1]]);
+}
+
+#[test]
+fn rows_that_state_the_same_boundaries_span_nothing() {
+    static EDGES: [i16; 3] = [0, 4000, 9000];
+    let doc = parse(
+        &[
+            cell("A"),
+            cell("B"),
+            row_end_with(&EDGES),
+            cell("C"),
+            cell("D"),
+            row_end_with(&EDGES),
+        ],
+        Options::default(),
+    )
+    .unwrap();
+    let Block::Table(table) = &doc.sections[0].content[0] else {
+        panic!()
+    };
+    assert!(table
+        .rows
+        .iter()
+        .all(|r| r.cells.iter().all(|c| c.col_span == 1)));
+}
+
+#[test]
+fn a_row_whose_boundaries_do_not_match_its_cells_is_left_as_read() {
+    // Two boundaries for a row of three cells (four are expected): damage; the row keeps its
+    // cells unspanned and the well-formed row after it is still read.
+    static BAD: [i16; 2] = [0, 9000];
+    static GOOD: [i16; 4] = [0, 3000, 6000, 9000];
+    let doc = parse(
+        &[
+            cell("A"),
+            cell("B"),
+            cell("C"),
+            row_end_with(&BAD),
+            cell("D"),
+            cell("E"),
+            cell("F"),
+            row_end_with(&GOOD),
+        ],
+        Options::default(),
+    )
+    .unwrap();
+    let Block::Table(table) = &doc.sections[0].content[0] else {
+        panic!()
+    };
+    assert!(table
+        .rows
+        .iter()
+        .all(|r| r.cells.iter().all(|c| c.col_span == 1)));
 }

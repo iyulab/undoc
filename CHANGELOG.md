@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A Word 97-2003 table whose rows have different numbers of cells keeps its columns.** Word marks no
+  horizontal merge in a `.doc` table: each row states where its own cells end, so a row with fewer, wider
+  cells has fewer boundaries. The reader took every row's cells as columns of their own, so a merged
+  cell sat above the wrong columns and the row was padded at the end. The table's columns are now every
+  boundary any row states, and a cell covers the columns between its two boundaries (`col_span`) --
+  how Apache POI's HTML converter reads it. A row whose boundaries do not match its cells is left as
+  it was; rows that state the same boundaries are unchanged. Of 150 public sample documents, 7 change.
 - **Converting a presentation or workbook no longer reports files it did not write.** The CLI converts
   these section by section and discarded the result of every write -- the JSON preamble, each
   section, each extracted picture or media file -- and counted a picture as written all the same, so
