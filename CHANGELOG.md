@@ -81,6 +81,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the deck is the same: of 83 public sample presentations, 27 change, 12 list items become 1 094, and
   every deck keeps exactly its characters. A shape that is not a placeholder inherits nothing.
 
+- **A `.pptx` slide is read in the order its shapes are listed.** The text of all shapes came first,
+  then every table, every chart and every picture, so a picture landed after all the text of its slide
+  and a caption was cut off from it. Each kind is still read by its own reader, but each block now
+  carries where it sits in the slide's XML, and the slide's blocks follow that: a picture between the
+  title and the text drawn after it, a table between the paragraphs on either side of it, a chart
+  where the slide draws it. Charts already followed the order they are drawn in among themselves. Of 95
+  public sample presentations, 15 change and none gains or loses a character (checked as an equal
+  multiset of the characters of each file's Markdown).
+
 - **A table cell's list items keep their markers.** A table cell's paragraph was a list item only when
   its bullet was a picture: `a:buChar` and `a:buAutoNum` in a `.pptx` cell were ignored, and the
   Markdown of any table -- `.docx`, `.doc` and `.pptx` alike -- wrote a cell's list items as plain

@@ -304,43 +304,42 @@ impl PptxParser {
         inherited_phs: &HashMap<String, Vec<Paragraph>>,
         inherited_bullets: &InheritedBullets,
     ) -> Result<Vec<Block>> {
-        let mut blocks = Vec::new();
+        // Each kind of content is read on its own, with the position in the slide's XML where
+        // it is drawn; the blocks then follow the slide's own order -- the order its shapes are
+        // listed in, the one Apache POI's slide shows give. A caption comes before or after
+        // its picture, a chart after the text that introduces it, as on the slide.
+        let mut placed: Vec<(u64, Block)> = Vec::new();
 
-        // Parse text content first (title, headings usually come before tables)
-        let paragraphs = self.parse_text_content_excluding_tables_with_rels(
+        for (at, para) in self.parse_text_content_excluding_tables_at(
             xml,
             rels,
             inherited_phs,
             inherited_bullets,
-        )?;
-        for para in paragraphs {
-            blocks.push(Block::Paragraph(para));
+        )? {
+            placed.push((at, Block::Paragraph(para)));
         }
 
-        // Parse tables after text content
-        let tables = self.parse_tables_with_rels(xml, rels)?;
-        for table in tables {
-            blocks.push(Block::Table(table));
+        for (at, table) in self.parse_tables_at(xml, rels)? {
+            placed.push((at, Block::Table(table)));
         }
 
-        // Parse charts and convert to tables for RAG-ready output
-        let chart_tables = self.parse_charts(xml, rels, slide_path)?;
-        for table in chart_tables {
-            blocks.push(Block::Table(table));
+        // Charts are converted to tables for RAG-ready output.
+        for (at, table) in self.parse_charts(xml, rels, slide_path)? {
+            placed.push((at, Block::Table(table)));
         }
 
-        // Parse images (p:pic elements)
-        let images = self.parse_images(xml, rels)?;
-        for image in images {
-            blocks.push(image);
-        }
+        // Pictures (p:pic elements and picture-filled shapes).
+        placed.extend(self.parse_images(xml, rels)?);
 
-        Ok(blocks)
+        // Stable: blocks at one position (the paragraphs a placeholder inherits) keep their order.
+        placed.sort_by_key(|(at, _)| *at);
+        Ok(placed.into_iter().map(|(_, block)| block).collect())
     }
 
     /// Parse images from slide XML.
     /// Images are in <p:pic> elements with <a:blip r:embed="rIdN"> referencing relationships.
-    fn parse_images(&self, xml: &str, rels: &HashMap<String, String>) -> Result<Vec<Block>> {
+    /// Each image comes with the position in `xml` where its shape ends.
+    fn parse_images(&self, xml: &str, rels: &HashMap<String, String>) -> Result<Vec<(u64, Block)>> {
         let mut images = Vec::new();
         let mut reader = crate::decode::reader_for(xml);
         reader.config_mut().trim_text(true);
@@ -471,12 +470,15 @@ impl PptxParser {
                                     let filename =
                                         target.rsplit('/').next().unwrap_or(target).to_string();
 
-                                    images.push(Block::Image {
-                                        resource_id: filename,
-                                        alt_text: current_descr.take(),
-                                        width: current_width.take(),
-                                        height: current_height.take(),
-                                    });
+                                    images.push((
+                                        reader.buffer_position(),
+                                        Block::Image {
+                                            resource_id: filename,
+                                            alt_text: current_descr.take(),
+                                            width: current_width.take(),
+                                            height: current_height.take(),
+                                        },
+                                    ));
                                 }
                             }
                             in_pic = false;
@@ -514,7 +516,7 @@ impl PptxParser {
         xml: &str,
         rels: &HashMap<String, String>,
         slide_path: &str,
-    ) -> Result<Vec<Table>> {
+    ) -> Result<Vec<(u64, Table)>> {
         let mut tables = Vec::new();
 
         // Find chart relationships (target contains "chart")
@@ -524,7 +526,11 @@ impl PptxParser {
             .collect();
         chart_rels
             .sort_by_key(|(id, _)| (xml.find(&format!("\"{id}\"")).unwrap_or(usize::MAX), *id));
-        for (_, target) in chart_rels {
+        for (id, target) in chart_rels {
+            // Where the slide draws the chart: its frame names the relationship.
+            let at = xml
+                .find(&format!("\"{id}\""))
+                .map_or(u64::MAX, |at| at as u64);
             // Resolve chart path relative to slide
             // Relationship target is like "../charts/chart1.xml"
             let chart_path = if let Some(stripped) = target.strip_prefix("../") {
@@ -567,7 +573,7 @@ impl PptxParser {
                         }
                     }
                 }
-                tables.push(table);
+                tables.push((at, table));
             }
         }
 
@@ -601,6 +607,19 @@ impl PptxParser {
         xml: &str,
         rels: &HashMap<String, String>,
     ) -> Result<Vec<Table>> {
+        Ok(self
+            .parse_tables_at(xml, rels)?
+            .into_iter()
+            .map(|(_, table)| table)
+            .collect())
+    }
+
+    /// The slide's tables, each with the position in `xml` where it ends.
+    fn parse_tables_at(
+        &self,
+        xml: &str,
+        rels: &HashMap<String, String>,
+    ) -> Result<Vec<(u64, Table)>> {
         let mut tables = Vec::new();
         let mut reader = crate::decode::reader_for(xml);
         // Don't trim text - preserve whitespace from xml:space="preserve" elements
@@ -789,7 +808,7 @@ impl PptxParser {
                         }
                         "tbl" => {
                             if !current_table.is_empty() {
-                                tables.push(current_table.clone());
+                                tables.push((reader.buffer_position(), current_table.clone()));
                             }
                             in_table = false;
                         }
@@ -826,7 +845,23 @@ impl PptxParser {
         inherited_phs: &HashMap<String, Vec<Paragraph>>,
         inherited_bullets: &InheritedBullets,
     ) -> Result<Vec<Paragraph>> {
-        let mut paragraphs = Vec::new();
+        Ok(self
+            .parse_text_content_excluding_tables_at(xml, rels, inherited_phs, inherited_bullets)?
+            .into_iter()
+            .map(|(_, paragraph)| paragraph)
+            .collect())
+    }
+
+    /// The paragraphs of the slide's shapes, each with the position in `xml` where it ends --
+    /// what a slide's other contents are placed against to put the slide in the order it draws.
+    fn parse_text_content_excluding_tables_at(
+        &self,
+        xml: &str,
+        rels: &HashMap<String, String>,
+        inherited_phs: &HashMap<String, Vec<Paragraph>>,
+        inherited_bullets: &InheritedBullets,
+    ) -> Result<Vec<(u64, Paragraph)>> {
+        let mut paragraphs: Vec<(u64, Paragraph)> = Vec::new();
         let mut reader = crate::decode::reader_for(xml);
         // Don't trim text - preserve whitespace from xml:space="preserve" elements
         reader.config_mut().trim_text(false);
@@ -1036,12 +1071,15 @@ impl PptxParser {
                                     }
                                 });
                                 let list_info = numbering.list_info(marker, current_level);
-                                paragraphs.push(Paragraph {
-                                    runs,
-                                    heading: current_heading,
-                                    list_info,
-                                    ..Default::default()
-                                });
+                                paragraphs.push((
+                                    reader.buffer_position(),
+                                    Paragraph {
+                                        runs,
+                                        heading: current_heading,
+                                        list_info,
+                                        ..Default::default()
+                                    },
+                                ));
                             }
                             in_paragraph = false;
                             in_ppr = false;
@@ -1055,7 +1093,8 @@ impl PptxParser {
                             if paragraphs.len() == shape_para_start {
                                 if let Some(ref ph_key) = current_ph_key {
                                     if let Some(fallback) = inherited_phs.get(ph_key) {
-                                        paragraphs.extend_from_slice(fallback);
+                                        let at = reader.buffer_position();
+                                        paragraphs.extend(fallback.iter().map(|p| (at, p.clone())));
                                     }
                                 }
                             }
@@ -3438,6 +3477,64 @@ mod tests {
                 "charts out of drawing order: {text}"
             );
         }
+    }
+
+    /// A slide's text, pictures and tables follow the order its shapes are listed in, not one
+    /// kind after another: the caption sits next to its picture and the text drawn after a
+    /// table stays after it.
+    #[test]
+    fn test_slide_content_follows_the_drawing_order_of_its_shapes() {
+        let shape = |id: u32, text: &str| {
+            format!(
+                r#"<p:sp><p:nvSpPr><p:cNvPr id="{id}" name="S{id}"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr/><p:txBody><a:bodyPr/><a:p><a:r><a:t>{text}</a:t></a:r></a:p></p:txBody></p:sp>"#
+            )
+        };
+        let pic = |id: u32, rel: &str| {
+            format!(
+                r#"<p:pic><p:nvPicPr><p:cNvPr id="{id}" name="P{id}" descr="pic {rel}"/><p:cNvPicPr/><p:nvPr/></p:nvPicPr><p:blipFill><a:blip r:embed="{rel}"/></p:blipFill><p:spPr/></p:pic>"#
+            )
+        };
+        let table = r#"<p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="9" name="T"/><p:cNvGraphicFramePr/><p:nvPr/></p:nvGraphicFramePr><a:graphic><a:graphicData><a:tbl><a:tblGrid><a:gridCol w="100"/></a:tblGrid><a:tr h="10"><a:tc><a:txBody><a:bodyPr/><a:p><a:r><a:t>Cell</a:t></a:r></a:p></a:txBody></a:tc></a:tr></a:tbl></a:graphicData></a:graphic></p:graphicFrame>"#;
+        // Listed: text, picture, text, table, text, picture.
+        let shapes = [
+            shape(2, "Title"),
+            pic(3, "rIdA"),
+            shape(4, "Caption"),
+            table.to_string(),
+            shape(5, "After"),
+            pic(6, "rIdB"),
+        ]
+        .concat();
+        let rels = rels_xml(&[
+            ("rIdA", IMAGE_REL, "../media/a.png"),
+            ("rIdB", IMAGE_REL, "../media/b.png"),
+        ]);
+        let data = deck(
+            &[(&slide(&shapes), &rels)],
+            &[("ppt/media/a.png", PNG), ("ppt/media/b.png", PNG)],
+        );
+        let doc = PptxParser::from_bytes(data).unwrap().parse().unwrap();
+        let order: Vec<String> = doc.sections[0]
+            .content
+            .iter()
+            .map(|block| match block {
+                Block::Paragraph(p) => p.plain_text(),
+                Block::Table(t) => format!("table:{}", t.rows[0].cells[0].plain_text()),
+                Block::Image { resource_id, .. } => format!("image:{resource_id}"),
+                other => panic!("unexpected block: {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            order,
+            [
+                "Title",
+                "image:a.png",
+                "Caption",
+                "table:Cell",
+                "After",
+                "image:b.png"
+            ]
+        );
     }
 
     #[test]
