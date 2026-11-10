@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A PowerPoint 97-2003 slide keeps its pictures.** The reader returned a slide's text only, so every
+  picture on a `.ppt` slide was dropped without a trace. A picture shape is now an image block in drawing
+  order -- between the texts drawn before and after it -- with the shape's alternative text, and its
+  bytes are a resource: PNG, JPEG, BMP and TIFF as stored, EMF and WMF inflated, the way Apache POI's
+  HSLF reads the presentation's `Pictures` stream through the drawing group's blip store. A picture
+  shown on several slides is one resource. Not extracted: Macintosh PICT pictures, picture fills and
+  slide backgrounds, and the pictures of the slide master (they are not drawn by the slide's own
+  shapes). Of 120 readable public sample presentations, 48 now yield pictures (512 image blocks, 320
+  files); every extracted file starts with its format's signature, and 154 of the 155 PNG and JPEG
+  files decode (the remaining one's own data is not decodable).
+
 ### Fixed
 
 - **A Word 97-2003 table whose rows have different numbers of cells keeps its columns.** Word marks no

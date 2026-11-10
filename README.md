@@ -14,7 +14,7 @@ A high-performance Rust library for extracting content from Microsoft Office doc
 - **Multi-format support**: DOCX (Word), XLSX (Excel), PPTX (PowerPoint), and the 97-2003
   binary formats DOC, XLS and PPT — paragraphs, headings, tables, lists, notes and hyperlinks
   from DOC; every worksheet's cells, dates, links and comments from XLS; every slide's text,
-  links and notes from PPT (encrypted files report `Encrypted`). Word 6.0/95 `.doc` files are
+  pictures, links and notes from PPT (encrypted files report `Encrypted`). Word 6.0/95 `.doc` files are
   read for their text — paragraphs, headings, tables, character formatting, breaks and field
   results, in the document's code page — without notes, headers or pictures. XLS covers every binary
   Excel version: 97-2003, 5.0/95 and the 2.x–4.0 files, reading pre-97 text in the workbook's

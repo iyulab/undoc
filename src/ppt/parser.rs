@@ -5,7 +5,8 @@ use std::io::{Cursor as IoCursor, Read};
 
 use crate::detect::FormatType;
 use crate::error::{Error, Result};
-use crate::model::{Document, HeadingLevel, Paragraph, Section, TextRun};
+use crate::model::{Block, Document, HeadingLevel, Paragraph, Resource, Section, TextRun};
+use crate::officeart::{self, ShapePicture};
 
 /// Record types ([MS-PPT] 2.13.24 `RecordType`).
 const RT_DOCUMENT: u16 = 0x03E8;
@@ -21,6 +22,12 @@ const RT_TEXT_HEADER_ATOM: u16 = 0x0F9F;
 const RT_TEXT_CHARS_ATOM: u16 = 0x0FA0;
 const RT_TEXT_BYTES_ATOM: u16 = 0x0FA8;
 const RT_EX_OBJ_LIST: u16 = 0x0409;
+/// `PPDrawingGroup`: the drawing group, whose blip store lists the presentation's pictures.
+const RT_DRAWING_GROUP: u16 = 0x040B;
+/// OfficeArt containers on the way to the blip store ([MS-ODRAW] `OfficeArtDggContainer`,
+/// `OfficeArtBStoreContainer`).
+const RT_DGG_CONTAINER: u16 = 0xF000;
+const RT_BSTORE_CONTAINER: u16 = 0xF001;
 const RT_EX_HYPERLINK: u16 = 0x0FD7;
 const RT_EX_HYPERLINK_ATOM: u16 = 0x0FD3;
 const RT_CSTRING: u16 = 0x0FBA;
@@ -212,6 +219,10 @@ impl PptParser {
             .ok_or_else(|| invalid("the document container is missing"))?;
 
         let urls = hyperlink_targets(&stream, document);
+        // The `Pictures` stream is absent from a presentation without delayed pictures.
+        let pictures_stream = read(&mut container, "/Pictures").ok();
+        let store = blip_store(&stream, document);
+        let mut pictures = PictureIds::default();
 
         // The slide and notes lists: each SlidePersistAtom, then that slide's outline texts.
         let mut slides: Vec<(u32, Vec<Text>)> = Vec::new();
@@ -266,8 +277,30 @@ impl PptParser {
                 doc.add_section(section);
                 continue;
             };
-            for text in slide_texts(&stream, slide, outline) {
-                add_text(&mut section, &text, &urls);
+            for item in slide_items(&stream, slide, outline) {
+                match item {
+                    Item::Text(text) => add_text(&mut section, &text, &urls),
+                    Item::Picture(shape) => {
+                        let blip = shape.blip.and_then(|blip| {
+                            pictures.resolve(&mut doc, blip, |blip| {
+                                let entry = blip
+                                    .checked_sub(1)
+                                    .and_then(|i| store.get(i as usize))
+                                    .copied()
+                                    .flatten()?;
+                                officeart::blip_in_fbse(&stream, &entry, pictures_stream.as_deref())
+                            })
+                        });
+                        if let Some(id) = blip {
+                            section.add_block(Block::Image {
+                                resource_id: id,
+                                alt_text: shape.alt_text,
+                                width: None,
+                                height: None,
+                            });
+                        }
+                    }
+                }
             }
 
             // The notes page this slide names, through the notes list.
@@ -406,35 +439,132 @@ fn drawing_texts(stream: &[u8], container: Header) -> Vec<Text> {
     texts_in(stream, &atoms_in(stream, container))
 }
 
-/// A slide's text in reading order: its shapes as drawn, each outline reference resolved to
-/// the outline text it points at, then any outline text no shape referenced.
-fn slide_texts(stream: &[u8], slide: Header, outline: &[Text]) -> Vec<Text> {
+/// What a slide shows, in reading order.
+enum Item {
+    Text(Text),
+    Picture(ShapePicture),
+}
+
+/// A shape's property table, as the atom it is read from.
+fn art_record(atom: Header) -> officeart::Record {
+    officeart::Record {
+        instance: atom.instance,
+        kind: atom.kind,
+        start: atom.start,
+        end: atom.end,
+    }
+}
+
+/// A slide's content in reading order: its shapes as drawn — text, and the pictures that name
+/// a blip — each outline reference resolved to the outline text it points at, then any
+/// outline text no shape referenced.
+fn slide_items(stream: &[u8], slide: Header, outline: &[Text]) -> Vec<Item> {
+    /// Close the shape being read: a picture goes after the text drawn before it.
+    fn end_shape(
+        out: &mut Vec<Item>,
+        pending: &mut Vec<Header>,
+        stream: &[u8],
+        shape: &mut ShapePicture,
+    ) {
+        let done = std::mem::take(shape);
+        if done.blip.is_some() {
+            out.extend(texts_in(stream, pending).into_iter().map(Item::Text));
+            pending.clear();
+            out.push(Item::Picture(done));
+        }
+    }
+
     let mut out = Vec::new();
     let mut used = vec![false; outline.len()];
     let mut pending: Vec<Header> = Vec::new();
+    let mut shape = ShapePicture::default();
     for atom in atoms_in(stream, slide) {
-        if atom.kind == RT_OUTLINE_TEXT_REF_ATOM {
-            out.extend(texts_in(stream, &pending));
-            pending.clear();
-            if let Some(index) = u32_at(stream, atom.start).map(|i| i as usize) {
-                if let Some(text) = outline.get(index) {
-                    used[index] = true;
-                    out.push(text.clone());
+        match atom.kind {
+            RT_OUTLINE_TEXT_REF_ATOM => {
+                out.extend(texts_in(stream, &pending).into_iter().map(Item::Text));
+                pending.clear();
+                if let Some(index) = u32_at(stream, atom.start).map(|i| i as usize) {
+                    if let Some(text) = outline.get(index) {
+                        used[index] = true;
+                        out.push(Item::Text(text.clone()));
+                    }
                 }
             }
-        } else {
-            pending.push(atom);
+            // A shape starts with its `OfficeArtFSP`.
+            officeart::RT_FSP => end_shape(&mut out, &mut pending, stream, &mut shape),
+            officeart::RT_FOPT | officeart::RT_TERTIARY_FOPT => {
+                let found = officeart::picture_properties(stream, &art_record(atom));
+                shape.blip = shape.blip.or(found.blip);
+                shape.alt_text = shape.alt_text.take().or(found.alt_text);
+            }
+            _ => pending.push(atom),
         }
     }
-    out.extend(texts_in(stream, &pending));
+    end_shape(&mut out, &mut pending, stream, &mut shape);
+    out.extend(texts_in(stream, &pending).into_iter().map(Item::Text));
     out.extend(
         outline
             .iter()
             .zip(&used)
             .filter(|(_, used)| !**used)
-            .map(|(t, _)| t.clone()),
+            .map(|(t, _)| Item::Text(t.clone())),
     );
     out
+}
+
+/// The blip store of the document's drawing group: one entry per picture, in order — a shape's
+/// `pib` is a 1-based index into it. An entry that is not a blip store entry stays as a gap so
+/// the indices hold.
+fn blip_store(stream: &[u8], document: Header) -> Vec<Option<officeart::Record>> {
+    let child = |parent: Header, kind: u16| {
+        children(stream, parent.start, parent.end)
+            .into_iter()
+            .find(|h| h.kind == kind)
+    };
+    let Some(store) = children(stream, document.start, document.end)
+        .into_iter()
+        .filter(|h| h.kind == RT_DRAWING_GROUP)
+        .filter_map(|group| child(group, RT_DGG_CONTAINER))
+        .find_map(|dgg| child(dgg, RT_BSTORE_CONTAINER))
+    else {
+        return Vec::new();
+    };
+    children(stream, store.start, store.end)
+        .into_iter()
+        .map(|h| (h.kind == officeart::RT_FBSE).then(|| art_record(h)))
+        .collect()
+}
+
+/// The resources the slides' pictures became, by blip store index: a picture shown on several
+/// slides is one resource.
+#[derive(Default)]
+struct PictureIds {
+    ids: HashMap<u32, Option<String>>,
+}
+
+impl PictureIds {
+    /// The resource id of picture `blip`, adding it to `doc` on first use. None when the entry
+    /// holds no picture this reader turns into a file.
+    fn resolve(
+        &mut self,
+        doc: &mut Document,
+        blip: u32,
+        read: impl FnOnce(u32) -> Option<(Vec<u8>, &'static str)>,
+    ) -> Option<String> {
+        if let Some(known) = self.ids.get(&blip) {
+            return known.clone();
+        }
+        let id = read(blip).map(|(data, extension)| {
+            let id = format!("image{}", doc.resources.len() + 1);
+            doc.add_resource(
+                id.clone(),
+                Resource::image(data, Some(format!("{id}.{extension}"))),
+            );
+            id
+        });
+        self.ids.insert(blip, id.clone());
+        id
+    }
 }
 
 /// A text atom's paragraphs: `\r` separates paragraphs, `\v` breaks a line within one, and

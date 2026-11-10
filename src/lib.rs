@@ -65,9 +65,12 @@ pub mod detect;
 #[cfg(any(feature = "docx", feature = "xlsx", feature = "pptx"))]
 mod drawing;
 pub mod error;
+// OfficeArt records: the pictures of Word and PowerPoint 97-2003 files.
 #[cfg(feature = "raster")]
 mod geometry;
 pub mod model;
+#[cfg(any(feature = "doc", feature = "ppt"))]
+mod officeart;
 #[cfg(feature = "raster")]
 pub mod raster;
 #[cfg(any(feature = "xlsx", feature = "xls"))]

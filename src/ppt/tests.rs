@@ -5,6 +5,7 @@
 use super::PptParser;
 use crate::error::Error;
 use crate::model::{Block, HeadingLevel};
+use crate::officeart::tests::{fbse, fopt, png_blip};
 
 fn record(ver: u8, instance: u16, kind: u16, data: &[u8]) -> Vec<u8> {
     let mut out = ((instance << 4) | ver as u16).to_le_bytes().to_vec();
@@ -51,9 +52,37 @@ struct Slide {
 enum Shape {
     Outline(u32),
     TextBox(&'static str),
+    /// A picture shape: its `pib` (1-based blip store index) and alternative text.
+    Picture(u32, Option<&'static str>),
+}
+
+/// An entry of the blip store the document's drawing group lists.
+enum Entry {
+    /// A picture kept in the `Pictures` stream, found through `foDelay`.
+    Png(&'static [u8]),
+    /// A slot the presentation emptied.
+    Empty,
 }
 
 fn build(slides: &[Slide], encrypted: bool) -> Vec<u8> {
+    build_with(slides, encrypted, &[])
+}
+
+/// The presentation, with a drawing group whose blip store holds `store` and the `Pictures`
+/// stream the entries point into.
+fn build_with(slides: &[Slide], encrypted: bool, store: &[Entry]) -> Vec<u8> {
+    let mut pictures = Vec::new();
+    let mut fbses = Vec::new();
+    for entry in store {
+        match entry {
+            Entry::Png(png) => {
+                let blip = png_blip(png);
+                fbses.push(fbse(blip.len() as u32, pictures.len() as u32, &[]));
+                pictures.extend(blip);
+            }
+            Entry::Empty => fbses.push(fbse(0, 0, &[])),
+        }
+    }
     // Persist ids: 1 document, then for slide i: 2 + 2i (slide), 3 + 2i (notes).
     let mut objects: Vec<(u32, Vec<u8>)> = Vec::new();
     let mut hyperlinks = Vec::new();
@@ -93,11 +122,30 @@ fn build(slides: &[Slide], encrypted: bool) -> Vec<u8> {
         let shapes: Vec<Vec<u8>> = slide
             .shapes
             .iter()
-            .map(|shape| match shape {
-                Shape::Outline(i) => {
-                    container(0xF00D, 0, &[record(0, 0, 0x0F9E, &i.to_le_bytes())])
+            .map(|shape| {
+                // A shape is a container that starts with its `FSP` (type 75: a picture frame).
+                let fsp = |kind| record(2, kind, 0xF00A, &[0; 8]);
+                match shape {
+                    Shape::Outline(i) => container(
+                        0xF004,
+                        0,
+                        &[
+                            fsp(202),
+                            container(0xF00D, 0, &[record(0, 0, 0x0F9E, &i.to_le_bytes())]),
+                        ],
+                    ),
+                    Shape::TextBox(text) => container(
+                        0xF004,
+                        0,
+                        &[
+                            fsp(202),
+                            container(0xF00D, 0, &[text_header(4), chars(text)]),
+                        ],
+                    ),
+                    Shape::Picture(pib, alt) => {
+                        container(0xF004, 0, &[fsp(75), fopt(Some(*pib), *alt)])
+                    }
                 }
-                Shape::TextBox(text) => container(0xF00D, 0, &[text_header(4), chars(text)]),
             })
             .collect();
         let drawing = container(0xF004, 0, &shapes);
@@ -110,15 +158,16 @@ fn build(slides: &[Slide], encrypted: bool) -> Vec<u8> {
             objects.push((notes_ref, container(0x03F0, 0, &[body])));
         }
     }
-    let document = container(
-        0x03E8,
-        0,
-        &[
-            container(0x0409, 0, &hyperlinks),
-            container(0x0FF0, 0, &slide_list),
-            container(0x0FF0, 2, &notes_list),
-        ],
-    );
+    let mut parts = vec![
+        container(0x0409, 0, &hyperlinks),
+        container(0x0FF0, 0, &slide_list),
+        container(0x0FF0, 2, &notes_list),
+    ];
+    if !store.is_empty() {
+        let bstore = container(0xF001, store.len() as u16, &fbses);
+        parts.push(container(0x040B, 0, &[container(0xF000, 0, &[bstore])]));
+    }
+    let document = container(0x03E8, 0, &parts);
     objects.insert(0, (1, document));
 
     let mut stream = Vec::new();
@@ -160,10 +209,14 @@ fn build(slides: &[Slide], encrypted: bool) -> Vec<u8> {
     let current_user = record(0, 0, 0x0FF6, &user);
 
     let mut cfb = cfb::CompoundFile::create(std::io::Cursor::new(Vec::new())).unwrap();
-    for (name, data) in [
+    let mut streams = vec![
         ("/Current User", &current_user),
         ("/PowerPoint Document", &stream),
-    ] {
+    ];
+    if !pictures.is_empty() {
+        streams.push(("/Pictures", &pictures));
+    }
+    for (name, data) in streams {
         let mut s = cfb.create_stream(name).unwrap();
         std::io::Write::write_all(&mut s, data).unwrap();
     }
@@ -331,4 +384,132 @@ fn a_linked_range_becomes_a_link_run() {
         ]
     );
     assert_eq!(texts(&doc.sections[0])[1].0, "Next");
+}
+
+const PNG_A: &[u8] = b"\x89PNG\r\n\x1a\nfirst";
+const PNG_B: &[u8] = b"\x89PNG\r\n\x1a\nsecond";
+
+/// The image blocks of a section: (resource id, alt text).
+fn images(section: &crate::Section) -> Vec<(String, Option<String>)> {
+    section
+        .content
+        .iter()
+        .filter_map(|b| match b {
+            Block::Image {
+                resource_id,
+                alt_text,
+                ..
+            } => Some((resource_id.clone(), alt_text.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_picture_shape_becomes_an_image_between_the_texts_drawn_around_it() {
+    let doc = PptParser::from_bytes(build_with(
+        &[Slide {
+            outline: vec![],
+            shapes: vec![
+                Shape::TextBox("before"),
+                Shape::Picture(2, Some("A bar chart")),
+                Shape::TextBox("after"),
+            ],
+            notes: None,
+            links: vec![],
+        }],
+        false,
+        &[Entry::Png(PNG_A), Entry::Png(PNG_B)],
+    ))
+    .unwrap()
+    .parse()
+    .unwrap();
+
+    let kinds: Vec<&str> = doc.sections[0]
+        .content
+        .iter()
+        .map(|b| match b {
+            Block::Paragraph(_) => "text",
+            Block::Image { .. } => "image",
+            _ => "other",
+        })
+        .collect();
+    assert_eq!(kinds, ["text", "image", "text"]);
+    // `pib` 2 is the second entry of the store.
+    let [(id, alt)] = &images(&doc.sections[0])[..] else {
+        panic!()
+    };
+    assert_eq!(alt.as_deref(), Some("A bar chart"));
+    let resource = doc.resources.get(id).expect("the resource");
+    assert_eq!(resource.data, PNG_B);
+    assert_eq!(resource.filename.as_deref(), Some("image1.png"));
+}
+
+#[test]
+fn a_picture_on_several_slides_is_one_resource() {
+    let slide = |alt| Slide {
+        outline: vec![],
+        shapes: vec![Shape::Picture(1, alt)],
+        notes: None,
+        links: vec![],
+    };
+    let doc = PptParser::from_bytes(build_with(
+        &[slide(Some("Logo")), slide(None)],
+        false,
+        &[Entry::Png(PNG_A)],
+    ))
+    .unwrap()
+    .parse()
+    .unwrap();
+    let (first, second) = (images(&doc.sections[0]), images(&doc.sections[1]));
+    assert_eq!(first[0].0, second[0].0);
+    assert_eq!(doc.resources.len(), 1);
+    // The alternative text belongs to the shape, not to the picture.
+    assert_eq!(
+        (first[0].1.as_deref(), second[0].1.as_deref()),
+        (Some("Logo"), None)
+    );
+}
+
+#[test]
+fn an_emptied_slot_or_a_missing_entry_shows_no_picture() {
+    // `pib` 1 is an emptied slot (not the first blip), 3 is past the store, 0 names nothing.
+    let doc = PptParser::from_bytes(build_with(
+        &[Slide {
+            outline: vec![],
+            shapes: vec![
+                Shape::Picture(1, None),
+                Shape::Picture(3, None),
+                Shape::Picture(0, None),
+                Shape::TextBox("still read"),
+            ],
+            notes: None,
+            links: vec![],
+        }],
+        false,
+        &[Entry::Empty, Entry::Png(PNG_A)],
+    ))
+    .unwrap()
+    .parse()
+    .unwrap();
+    assert!(images(&doc.sections[0]).is_empty());
+    assert!(doc.resources.is_empty());
+    assert_eq!(texts(&doc.sections[0])[0].0, "still read");
+}
+
+#[test]
+fn a_picture_renders_as_an_image_in_markdown() {
+    let bytes = build_with(
+        &[Slide {
+            outline: vec![],
+            shapes: vec![Shape::Picture(1, Some("Org chart"))],
+            notes: None,
+            links: vec![],
+        }],
+        false,
+        &[Entry::Png(PNG_A)],
+    );
+    let doc = crate::parse_bytes(&bytes).unwrap();
+    let md = crate::render::to_markdown(&doc, &crate::render::RenderOptions::default()).unwrap();
+    assert!(md.contains("![Org chart](image1.png)"), "{md}");
 }
