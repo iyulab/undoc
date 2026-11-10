@@ -44,15 +44,15 @@ public sealed class RenderGaps
     public uint TextRuns { get; init; }
 
     /// <summary>
-    /// Charts not drawn: a kind the renderer does not paint (bubble, radar, stock,
+    /// Charts not drawn: a kind the renderer does not paint (bubble, stock,
     /// surface), or one with no data.
     /// </summary>
     [JsonPropertyName("charts")]
     public uint Charts { get; init; }
 
     /// <summary>
-    /// Charts drawn from their data as a plain chart -- columns, bars, lines, areas, pies --
-    /// without the layout, data labels, secondary axes or effects PowerPoint draws.
+    /// Charts drawn from their data as a plain chart -- columns, bars, lines, areas, scatter, radar, pies --
+    /// without the layout, fonts, trend lines or effects PowerPoint draws.
     /// </summary>
     [JsonPropertyName("approximated_charts")]
     public uint ApproximatedCharts { get; init; }

@@ -60,12 +60,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A rendered slide draws its charts.** The slide rasterizer (feature `raster`) left every chart as a
   hole and counted it in `SlideRasterGaps::charts`. It now paints the data of a chart part as the plain
   chart it describes, inside the chart's frame: clustered, stacked and percent-stacked columns and
-  bars, lines with markers, areas, scatter plots, and pies and doughnuts, with the title, the legend, the gridlines,
+  bars, lines with markers, areas, scatter and radar plots, and pies and doughnuts, with the title, the legend, the gridlines,
   the value axis (on round numbers, or the bounds the chart fixes) and the category labels, in the
   series' own colors or the theme's accents. It is a stand-in, not PowerPoint's drawing -- layout,
-  fonts, data labels, secondary axes and effects are not reproduced -- so a chart painted this way is
+  fonts, trend lines and effects are not reproduced -- so a chart painted this way is
   counted in the new `SlideRasterGaps::approximated_charts`, and `charts` now counts only the charts
-  that are not drawn: a kind this does not paint (bubble, radar, stock, surface) or one with no
+  that are not drawn: a kind this does not paint (bubble, stock, surface) or one with no
   data. A series' data labels (value, percent and category name on a pie) are drawn, and the number
   format of the value axis and of the labels (`0%`, `0.0`, `#,##0`, quoted text) is applied. A chart
   that puts some of its series on a second value axis (columns and a line on two scales) draws them on

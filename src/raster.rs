@@ -46,11 +46,11 @@ pub struct SlideRasterGaps {
     /// Text runs not painted, or painted only in part: no face has their characters, their
     /// script needs shaping, or the text is vertical.
     pub text_runs: u32,
-    /// Charts not drawn: a kind this does not paint (bubble, radar, stock, surface), or
+    /// Charts not drawn: a kind this does not paint (bubble, stock, surface), or
     /// one with no data to paint.
     pub charts: u32,
-    /// Charts drawn from their data as a plain chart -- columns, bars, lines, areas, pies --
-    /// without the layout, data labels, secondary axes or effects PowerPoint draws.
+    /// Charts drawn from their data as a plain chart -- columns, bars, lines, areas, scatter, radar, pies --
+    /// without the layout, fonts, trend lines or effects PowerPoint draws.
     pub approximated_charts: u32,
     /// Graphic frames not drawn: embedded objects, and SmartArt PowerPoint left no drawing for.
     /// Tables and SmartArt are drawn.

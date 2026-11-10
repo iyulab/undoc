@@ -570,11 +570,11 @@ if !slide.gaps.is_empty() {
 ```
 
 What the renderer cannot paint yet — embedded objects and other graphic frames, charts of a kind it does
-not draw (bubble, radar, stock, surface), custom geometry, pictures other than PNG and JPEG,
+not draw (bubble, stock, surface), custom geometry, pictures other than PNG and JPEG,
 text in a script that needs shaping — is left out and counted in `gaps`; the rest of the slide is
-painted. Column, bar, line, area, scatter and pie charts are drawn from their data as a plain chart (title,
-legend, axes, series colors) — a stand-in without PowerPoint's layout, data labels or secondary
-axes, counted as `approximated_charts`. Fills drawn as a stand-in — a pattern in its
+painted. Column, bar, line, area, scatter, radar and pie charts are drawn from their data as a plain chart (title,
+legend, axes, series colors) — a stand-in without PowerPoint's layout, fonts, trend lines or
+effects, counted as `approximated_charts`. Fills drawn as a stand-in — a pattern in its
 foreground color, a rectangular or shape-following gradient as a radial one, a tiled picture
 stretched — are counted as approximated. No font is bundled. Text is drawn in the faces you pass,
 then those in the directories you name, then the system's. A Linux container without fonts draws no text — install a font

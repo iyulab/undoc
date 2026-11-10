@@ -2,10 +2,10 @@
 //! (clustered, stacked, percent-stacked), lines with markers, areas, and pies and doughnuts --
 //! inside the chart's frame, with its title, legend, value axis and category labels.
 //!
-//! It is a stand-in, not PowerPoint's drawing: layout, fonts, data labels, secondary axes,
-//! trend lines and effects are not reproduced, so a chart painted here counts as approximated
-//! (`approximated_charts`). A chart of a kind this does not paint (scatter, bubble, radar,
-//! stock, surface) or one without data counts as not drawn (`charts`).
+//! It is a stand-in, not PowerPoint's drawing: layout, fonts, trend lines and
+//! effects are not reproduced, so a chart painted here counts as approximated
+//! (`approximated_charts`). A chart of a kind this does not paint (bubble, stock,
+//! surface) or one without data counts as not drawn (`charts`).
 
 use super::*;
 
@@ -38,6 +38,7 @@ enum Kind {
     Area,
     Pie,
     Scatter,
+    Radar,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -81,8 +82,10 @@ struct Plot {
     /// Bars: the gap between categories and the overlap of a category's bars, in percent.
     gap: f32,
     overlap: f32,
-    /// Lines: whether markers are drawn.
+    /// Lines and radar: whether markers are drawn.
     markers: bool,
+    /// Radar: the areas are filled.
+    filled: bool,
     /// A doughnut's hole as a fraction of the radius; 0 for a pie.
     hole: f32,
     /// Degrees clockwise from twelve o'clock the first slice starts at.
@@ -319,6 +322,7 @@ fn read_chart(doc: &roxmltree::Document, colors: &Colors) -> Option<Chart> {
             "areaChart" | "area3DChart" => Kind::Area,
             "pieChart" | "pie3DChart" | "doughnutChart" => Kind::Pie,
             "scatterChart" => Kind::Scatter,
+            "radarChart" => Kind::Radar,
             _ => continue,
         };
         // Plots on a second pair of axes are not painted: their scale is another one.
@@ -461,7 +465,12 @@ fn read_chart(doc: &roxmltree::Document, colors: &Colors) -> Option<Chart> {
             },
             gap: number("gapWidth", 150.0),
             overlap: number("overlap", 0.0),
-            markers: cval(node, "marker") != Some("0"),
+            markers: if kind == Kind::Radar {
+                cval(node, "radarStyle") == Some("marker")
+            } else {
+                cval(node, "marker") != Some("0")
+            },
+            filled: kind == Kind::Radar && cval(node, "radarStyle") == Some("filled"),
             hole: if node.tag_name().name() == "doughnutChart" {
                 number("holeSize", 50.0) / 100.0
             } else {
@@ -880,6 +889,10 @@ impl<'a> Painter<'a> {
             self.draw_scatter(chart, (left, top, right, bottom), t);
             return;
         }
+        if first.kind == Kind::Radar {
+            self.draw_radar(chart, (left, top, right, bottom), t);
+            return;
+        }
 
         // The value range over every plot, stacked ones by their running totals.
         let n = chart
@@ -1056,14 +1069,14 @@ impl<'a> Painter<'a> {
             match plot.kind {
                 Kind::Bar => self.draw_bars(plot, n, percent, &val, &cat, horizontal, t),
                 Kind::Line | Kind::Area => self.draw_lines(plot, n, percent, &val, &cat, t),
-                Kind::Pie | Kind::Scatter => {}
+                Kind::Pie | Kind::Scatter | Kind::Radar => {}
             }
         }
         for plot in chart.secondary.iter().filter(|_| !horizontal) {
             match plot.kind {
                 Kind::Bar => self.draw_bars(plot, n, false, &val2, &cat, false, t),
                 Kind::Line | Kind::Area => self.draw_lines(plot, n, false, &val2, &cat, t),
-                Kind::Pie | Kind::Scatter => {}
+                Kind::Pie | Kind::Scatter | Kind::Radar => {}
             }
         }
         let zero = val(0.0f64.clamp(min, max));
@@ -1269,6 +1282,127 @@ impl<'a> Painter<'a> {
                     for p in run {
                         let text = series.labels.render(p.3);
                         self.label(&text, p.0, p.1 - size * 1.9, size, INK, Align::Center, t);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Radar series: one spoke per category from twelve o'clock, clockwise; a value is how far
+    /// along its spoke the series' polygon reaches, on webs at the value axis's ticks.
+    fn draw_radar(&mut self, chart: &Chart, rect: (f32, f32, f32, f32), t: Transform) {
+        let pt = EMU_PER_PT;
+        let size = 10.0 * pt;
+        let series: Vec<(&Plot, &Series)> = chart
+            .plots
+            .iter()
+            .filter(|p| p.kind == Kind::Radar)
+            .flat_map(|p| p.series.iter().map(move |s| (p, s)))
+            .collect();
+        let n = chart.categories.len().max(
+            series
+                .iter()
+                .map(|(_, s)| s.values.len())
+                .max()
+                .unwrap_or(0),
+        );
+        if n < 3 {
+            return;
+        }
+        let (lo, hi) = extent(&chart.plots, n);
+        let (min, max, ticks) = scale(lo, hi, chart.min, chart.max);
+        let span = (max - min).max(f64::MIN_POSITIVE);
+        let (cx, cy) = ((rect.0 + rect.2) / 2.0, (rect.1 + rect.3) / 2.0);
+        let half = (rect.2 - rect.0).min(rect.3 - rect.1) / 2.0;
+        // Room for the category labels around the web, but never less than a sixth of it.
+        let radius = (half - size * 1.8).max(half * 0.3);
+        if radius <= 0.0 {
+            return;
+        }
+        let angle = |i: usize| i as f32 / n as f32 * std::f32::consts::TAU;
+        let at = |i: usize, r: f32| (cx + r * angle(i).sin(), cy - r * angle(i).cos());
+        for tick in ticks.iter().filter(|v| **v > min) {
+            let r = radius * ((*tick - min) / span) as f32;
+            let mut pb = PathBuilder::new();
+            let first = at(0, r);
+            pb.move_to(first.0, first.1);
+            for i in 1..n {
+                let p = at(i, r);
+                pb.line_to(p.0, p.1);
+            }
+            pb.close();
+            if let Some(path) = pb.finish() {
+                self.stroke(&path, pt * 0.75, GRID, t);
+            }
+        }
+        for i in 0..n {
+            let end = at(i, radius);
+            self.line((cx, cy), end, pt * 0.75, GRID, t);
+        }
+        // The value labels run up the first spoke.
+        for tick in ticks.iter().filter(|v| **v > min) {
+            let r = radius * ((*tick - min) / span) as f32;
+            let text = match &chart.axis_format {
+                Some(code) => format_code(*tick, code),
+                None => format_value(*tick, false),
+            };
+            self.label(
+                &text,
+                cx - size * 0.3,
+                cy - r - size * 0.55,
+                size,
+                INK,
+                Align::Right,
+                t,
+            );
+        }
+        for i in 0..n {
+            let name = chart.categories.get(i).cloned().unwrap_or_default();
+            let (x, y) = at(i, radius + size * 0.7);
+            let (s, c) = (angle(i).sin(), angle(i).cos());
+            let align = if s > 0.3 {
+                Align::Left
+            } else if s < -0.3 {
+                Align::Right
+            } else {
+                Align::Center
+            };
+            let top = if c > 0.5 {
+                y - size * 1.1
+            } else if c < -0.5 {
+                y
+            } else {
+                y - size * 0.55
+            };
+            self.label(&name, x, top, size, INK, align, t);
+        }
+        for (plot, series) in series {
+            let points: Vec<(f32, f32)> = (0..n)
+                .map(|i| {
+                    let v = series.values.get(i).copied().flatten().unwrap_or(min);
+                    at(i, radius * ((v - min) / span).clamp(0.0, 1.0) as f32)
+                })
+                .collect();
+            let mut pb = PathBuilder::new();
+            pb.move_to(points[0].0, points[0].1);
+            for p in &points[1..] {
+                pb.line_to(p.0, p.1);
+            }
+            pb.close();
+            if let Some(path) = pb.finish() {
+                if plot.filled {
+                    let wash = Rgba {
+                        a: 0.4,
+                        ..series.color
+                    };
+                    self.fill_with(&path, wash, t);
+                }
+                self.stroke(&path, 2.25 * pt, series.color, t);
+            }
+            if plot.markers && series.marker {
+                for p in &points {
+                    if let Some(dot) = PathBuilder::from_circle(p.0, p.1, 3.5 * pt) {
+                        self.fill_with(&dot, series.color, t);
                     }
                 }
             }
@@ -1722,9 +1856,27 @@ mod tests {
     }
 
     #[test]
+    fn a_radar_chart_puts_each_value_on_its_spoke() {
+        // Three categories of 10 on an axis that ends at 10: the first vertex is straight above
+        // the center, and its marker is drawn there.
+        let part = chart_part(
+            &format!(
+                r#"<c:radarChart><c:radarStyle val="marker"/>{}<c:axId val="1"/><c:axId val="2"/></c:radarChart>"#,
+                series(0, "S", &["A", "B", "C"], &[10.0, 10.0, 10.0])
+            ),
+            "",
+        );
+        let slide = chart_slide(&part);
+        let column: Vec<[u8; 3]> = (12..26).map(|y| pixel(&slide, 50, y)).collect();
+        assert!(column.contains(&ACCENT1), "{column:?}");
+        assert_eq!(pixel(&slide, 4, 25), WHITE);
+        assert_eq!((slide.gaps.charts, slide.gaps.approximated_charts), (0, 1));
+    }
+
+    #[test]
     fn a_chart_of_a_kind_that_is_not_painted_counts_as_not_drawn() {
         let part = chart_part(
-            r#"<c:radarChart><c:radarStyle val="marker"/><c:axId val="1"/><c:axId val="2"/></c:radarChart>"#,
+            r#"<c:bubbleChart><c:axId val="1"/><c:axId val="2"/></c:bubbleChart>"#,
             "",
         );
         let slide = chart_slide(&part);

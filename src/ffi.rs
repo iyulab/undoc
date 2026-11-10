@@ -810,7 +810,7 @@ struct FfiSlideRasterOptions {
 /// "approximated_fills":N},"substituted_text_runs":N}` — free it with `undoc_free_string`.
 /// `charts` counts charts not drawn (a kind that is not painted, or no data);
 /// `approximated_charts` counts charts drawn as a plain chart from their data (no PowerPoint
-/// layout, data labels or secondary axes); `approximated_fills`
+/// layout, fonts, trend lines or effects); `approximated_fills`
 /// counts fills drawn as a stand-in (a pattern in its foreground color, a rectangular
 /// gradient as a radial one, a tiled picture stretched);
 /// `substituted_text_runs` counts text drawn in a face standing in for the one it asks
