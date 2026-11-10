@@ -122,6 +122,62 @@ pub(crate) fn property<'a>(data: &'a [u8], fopt: &Record, id: u16) -> Option<Pro
     None
 }
 
+/// How deep shape groups are followed — real documents nest a handful.
+#[cfg(any(feature = "doc", feature = "xls"))]
+const MAX_GROUP_DEPTH: u8 = 16;
+
+/// The shapes within `container` (a drawing, or a group) that show a picture, in drawing order,
+/// as (shape id, what their property tables say about the picture): a shape is an
+/// `OfficeArtSpContainer`, possibly inside groups.
+#[cfg(any(feature = "doc", feature = "xls"))]
+pub(crate) fn picture_shapes(
+    data: &[u8],
+    container: &Record,
+    depth: u8,
+    out: &mut Vec<(u32, ShapePicture)>,
+) {
+    const RT_DG_CONTAINER: u16 = 0xF002;
+    const RT_SPGR_CONTAINER: u16 = 0xF003;
+    let mut at = container.start;
+    while let Some(r) = record(data, at, container.end) {
+        at = r.end;
+        match r.kind {
+            RT_DG_CONTAINER | RT_SPGR_CONTAINER if depth < MAX_GROUP_DEPTH => {
+                picture_shapes(data, &r, depth + 1, out)
+            }
+            RT_SP_CONTAINER => {
+                if let Some(shape) = picture_shape(data, &r) {
+                    out.push(shape);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// A shape's id and what its property tables say about its picture — only a shape that names
+/// a picture.
+#[cfg(any(feature = "doc", feature = "xls"))]
+fn picture_shape(data: &[u8], container: &Record) -> Option<(u32, ShapePicture)> {
+    let mut id = None;
+    let mut picture = ShapePicture::default();
+    let mut at = container.start;
+    while let Some(r) = record(data, at, container.end) {
+        at = r.end;
+        match r.kind {
+            RT_FSP => id = u32_at(data, r.start),
+            RT_FOPT | RT_TERTIARY_FOPT => {
+                let found = picture_properties(data, &r);
+                picture.blip = picture.blip.or(found.blip);
+                picture.alt_text = picture.alt_text.take().or(found.alt_text);
+            }
+            _ => {}
+        }
+    }
+    picture.blip?;
+    Some((id?, picture))
+}
+
 /// The shape container's alternative text, from its property tables.
 #[cfg(feature = "doc")]
 pub(crate) fn description(data: &[u8], container: &Record) -> Option<String> {
@@ -181,6 +237,12 @@ pub(crate) fn blip_at(data: &[u8], at: usize, limit: usize) -> Option<(Vec<u8>, 
     if extension == "bmp" {
         return Some((bmp_from_dib(bytes)?, extension));
     }
+    // Office keeps a GIF in a PNG blip: the file is what its first bytes say, not the blip type.
+    let extension = if extension == "png" && bytes.starts_with(b"GIF8") {
+        "gif"
+    } else {
+        extension
+    };
     Some((bytes.to_vec(), extension))
 }
 
@@ -333,6 +395,18 @@ pub(crate) mod tests {
         let data = fbse(0, 0, &[]);
         let entry = record(&data, 0, data.len()).unwrap();
         assert_eq!(blip_in_fbse(&data, &entry, Some(&delay)), None);
+    }
+
+    #[test]
+    fn a_gif_kept_in_a_png_blip_is_named_for_what_it_is() {
+        let gif = b"GIF89a\x01\x00\x01\x00";
+        let blip = png_blip(gif);
+        let data = fbse(blip.len() as u32, 0, &blip);
+        let entry = record(&data, 0, data.len()).unwrap();
+        assert_eq!(
+            blip_in_fbse(&data, &entry, None),
+            Some((gif.to_vec(), "gif"))
+        );
     }
 
     #[test]

@@ -69,7 +69,7 @@ pub mod error;
 #[cfg(feature = "raster")]
 mod geometry;
 pub mod model;
-#[cfg(any(feature = "doc", feature = "ppt"))]
+#[cfg(any(feature = "doc", feature = "ppt", feature = "xls"))]
 mod officeart;
 #[cfg(feature = "raster")]
 pub mod raster;

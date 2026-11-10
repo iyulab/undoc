@@ -4,7 +4,8 @@
 //! [MS-XLS]) and Excel 5.0/95 (BIFF5/BIFF7) in a compound file, and the bare streams of
 //! Excel 2.x, 3.0 and 4.0 (BIFF2–BIFF4, including the BIFF4 multi-sheet workbook). The
 //! workbook globals (sheets, shared strings, number formats) and each worksheet's cell
-//! records are assembled into one table per sheet by the same rules as the .xlsx reader.
+//! records are assembled into one table per sheet by the same rules as the .xlsx reader. The
+//! pictures of an Excel 97-2003 workbook follow the table of the sheet they are drawn on.
 //!
 //! Text before BIFF8 is stored in the workbook's code page: the one its `CODEPAGE` record
 //! names, else the character set of its fonts, else Windows-1252. Encrypted workbooks are
@@ -24,6 +25,7 @@
 //! ```
 
 mod parser;
+mod pictures;
 mod records;
 
 pub use parser::XlsParser;

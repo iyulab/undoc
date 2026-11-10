@@ -4,6 +4,7 @@
 use super::XlsParser;
 use crate::error::Error;
 use crate::model::Block;
+use crate::officeart::tests::{fbse, fopt, png_blip};
 
 pub(super) fn rec(out: &mut Vec<u8>, kind: u16, data: &[u8]) {
     out.extend_from_slice(&kind.to_le_bytes());
@@ -64,8 +65,57 @@ struct Sheet {
     cells: Vec<C>,
 }
 
+/// The pictures of a workbook: the blip store (a PNG kept in an entry, or an emptied slot), and
+/// for each sheet the shapes its drawing has — `(picture index, alternative text)`.
+struct Pictures {
+    store: Vec<Option<&'static [u8]>>,
+    drawings: Vec<Vec<(u32, Option<&'static str>)>>,
+    /// Write the drawing group as two consecutive `MsoDrawingGroup` records, and each drawing
+    /// spread over the records Excel spreads it over: an `MsoDrawing`, the continuation after an
+    /// `Obj`, a text box's `TXO` with its own text and formatting and then more of the drawing,
+    /// and a last `MsoDrawing`.
+    spread: bool,
+}
+
+fn art(version: u8, instance: u16, kind: u16, data: &[u8]) -> Vec<u8> {
+    let mut out = ((instance << 4) | version as u16).to_le_bytes().to_vec();
+    out.extend(kind.to_le_bytes());
+    out.extend((data.len() as u32).to_le_bytes());
+    out.extend(data);
+    out
+}
+
+/// A sheet's drawing: a group shape of its own, then one picture shape per `(pib, alt)`.
+fn escher_drawing(shapes: &[(u32, Option<&'static str>)]) -> Vec<u8> {
+    let fsp = |kind: u16, id: u32| {
+        let mut d = id.to_le_bytes().to_vec();
+        d.extend([0u8; 4]);
+        art(2, kind, 0xF00A, &d)
+    };
+    let mut parts = vec![art(0xF, 0, 0xF004, &fsp(0, 1024))];
+    for (i, (pib, alt)) in shapes.iter().enumerate() {
+        parts.push(art(
+            0xF,
+            0,
+            0xF004,
+            &[fsp(75, 1025 + i as u32), fopt(Some(*pib), *alt)].concat(),
+        ));
+    }
+    art(
+        0xF,
+        0,
+        0xF002,
+        &[
+            art(0, 1, 0xF008, &[0u8; 8]),
+            art(0xF, 0, 0xF003, &parts.concat()),
+        ]
+        .concat(),
+    )
+}
+
 #[derive(Default)]
 struct Book {
+    pictures: Option<Pictures>,
     sheets: Vec<Sheet>,
     strings: Vec<&'static str>,
     /// Split the shared string table into a CONTINUE after this many bytes of its data.
@@ -118,6 +168,32 @@ fn build(book: Book) -> Vec<u8> {
             rec(&mut globals, 0x003C, &[&[0x01][..], &sst[at..]].concat());
         }
         None => rec(&mut globals, 0x00FC, &sst),
+    }
+    if let Some(pictures) = &book.pictures {
+        let entries: Vec<u8> = pictures
+            .store
+            .iter()
+            .flat_map(|entry| match entry {
+                Some(png) => {
+                    let blip = png_blip(png);
+                    fbse(blip.len() as u32, 0, &blip)
+                }
+                None => fbse(0, 0, &[]),
+            })
+            .collect();
+        let group = art(
+            0xF,
+            0,
+            0xF000,
+            &art(0xF, pictures.store.len() as u16, 0xF001, &entries),
+        );
+        if pictures.spread {
+            let cut = group.len() / 3;
+            rec(&mut globals, 0x00EB, &group[..cut]);
+            rec(&mut globals, 0x00EB, &group[cut..]);
+        } else {
+            rec(&mut globals, 0x00EB, &group);
+        }
     }
     rec(&mut globals, 0x000A, &[]);
 
@@ -227,6 +303,29 @@ fn build(book: Book) -> Vec<u8> {
                 .collect();
             d.extend(xl_string("A. Author"));
             rec(&mut stream, 0x001C, &d);
+        }
+        if let Some(pictures) = &book.pictures {
+            let shapes = pictures.drawings.get(i).map(Vec::as_slice).unwrap_or(&[]);
+            if !shapes.is_empty() {
+                let whole = escher_drawing(shapes);
+                if pictures.spread {
+                    let q = whole.len() / 4;
+                    rec(&mut stream, 0x00EC, &whole[..q]);
+                    rec(&mut stream, 0x005D, &[0u8; 26]);
+                    rec(&mut stream, 0x003C, &whole[q..2 * q]);
+                    // A text box: 3 characters, 8 bytes of formatting runs — then the drawing again.
+                    let mut txo = vec![0u8; 18];
+                    txo[10..12].copy_from_slice(&3u16.to_le_bytes());
+                    txo[12..14].copy_from_slice(&8u16.to_le_bytes());
+                    rec(&mut stream, 0x01B6, &txo);
+                    rec(&mut stream, 0x003C, b"\0abc");
+                    rec(&mut stream, 0x003C, &[0u8; 8]);
+                    rec(&mut stream, 0x003C, &whole[2 * q..3 * q]);
+                    rec(&mut stream, 0x00EC, &whole[3 * q..]);
+                } else {
+                    rec(&mut stream, 0x00EC, &whole);
+                }
+            }
         }
         if !merges.is_empty() {
             let mut d = (merges.len() as u16).to_le_bytes().to_vec();
@@ -509,4 +608,135 @@ fn hyperlinks_and_comments_attach_to_their_cells() {
     assert_eq!(note[1].text, " [Comment: A. Author:\ncheck this]");
     assert!(note[1].style.italic);
     assert_eq!(runs(1, 0)[1].text, " [Comment: on an empty cell]");
+}
+
+const PNG_A: &[u8] = b"\x89PNG\r\n\x1a\nfirst";
+const PNG_B: &[u8] = b"\x89PNG\r\n\x1a\nsecond";
+
+fn sheet(name: &'static str) -> Sheet {
+    Sheet {
+        name,
+        kind: 0,
+        cells: vec![C::Sst(0, 0, 0)],
+    }
+}
+
+/// The image blocks of a sheet: (resource id, alt text).
+fn sheet_images(doc: &crate::Document, sheet: usize) -> Vec<(String, Option<String>)> {
+    doc.sections[sheet]
+        .content
+        .iter()
+        .filter_map(|b| match b {
+            Block::Image {
+                resource_id,
+                alt_text,
+                ..
+            } => Some((resource_id.clone(), alt_text.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_picture_shape_is_an_image_after_the_table_of_its_sheet() {
+    let doc = parse(Book {
+        strings: vec!["Logo"],
+        sheets: vec![sheet("Report")],
+        pictures: Some(Pictures {
+            store: vec![Some(PNG_A), Some(PNG_B)],
+            drawings: vec![vec![(2, Some("Company logo")), (1, None)]],
+            spread: false,
+        }),
+        ..Default::default()
+    })
+    .unwrap();
+    assert!(matches!(doc.sections[0].content[0], Block::Table(_)));
+    let images = sheet_images(&doc, 0);
+    assert_eq!(images.len(), 2);
+    // Picture index 2 is the second entry of the store.
+    assert_eq!(images[0].1.as_deref(), Some("Company logo"));
+    assert_eq!(doc.resources[&images[0].0].data, PNG_B);
+    assert_eq!(doc.resources[&images[1].0].data, PNG_A);
+    assert_eq!(
+        doc.resources[&images[0].0].filename.as_deref(),
+        Some("image1.png")
+    );
+}
+
+#[test]
+fn a_drawing_spread_over_obj_and_text_box_continuations_is_read_whole() {
+    // The drawing group in two consecutive records; the drawing in an `MsoDrawing`, the
+    // continuation after an `Obj`, a text box's own text and formatting and what follows it, and
+    // a last `MsoDrawing`: the third and fourth pictures are in the bytes that follow the text.
+    let doc = parse(Book {
+        strings: vec!["x"],
+        sheets: vec![sheet("S")],
+        pictures: Some(Pictures {
+            store: vec![Some(PNG_A), Some(PNG_B)],
+            drawings: vec![vec![
+                (1, Some("one")),
+                (2, Some("two")),
+                (1, Some("three")),
+                (2, Some("four")),
+            ]],
+            spread: true,
+        }),
+        ..Default::default()
+    })
+    .unwrap();
+    let alts: Vec<Option<String>> = sheet_images(&doc, 0).into_iter().map(|i| i.1).collect();
+    let want: Vec<Option<String>> = ["one", "two", "three", "four"]
+        .iter()
+        .map(|s| Some(s.to_string()))
+        .collect();
+    assert_eq!(alts, want);
+}
+
+#[test]
+fn a_picture_drawn_on_two_sheets_is_one_resource() {
+    let doc = parse(Book {
+        strings: vec!["x"],
+        sheets: vec![sheet("One"), sheet("Two")],
+        pictures: Some(Pictures {
+            store: vec![Some(PNG_A)],
+            drawings: vec![vec![(1, None)], vec![(1, Some("again"))]],
+            spread: false,
+        }),
+        ..Default::default()
+    })
+    .unwrap();
+    assert_eq!(doc.resources.len(), 1);
+    assert_eq!(sheet_images(&doc, 0)[0].0, sheet_images(&doc, 1)[0].0);
+    assert_eq!(sheet_images(&doc, 1)[0].1.as_deref(), Some("again"));
+}
+
+#[test]
+fn an_emptied_slot_and_a_missing_entry_show_no_picture() {
+    let doc = parse(Book {
+        strings: vec!["x"],
+        sheets: vec![sheet("S")],
+        pictures: Some(Pictures {
+            store: vec![None, Some(PNG_A)],
+            // Index 1 is an emptied slot, 5 is past the store, 0 names nothing.
+            drawings: vec![vec![(1, None), (5, None), (0, None), (2, Some("kept"))]],
+            spread: false,
+        }),
+        ..Default::default()
+    })
+    .unwrap();
+    assert_eq!(grid(&doc, 0), [vec!["x"]]);
+    assert_eq!(sheet_images(&doc, 0).len(), 1);
+    assert_eq!(doc.resources.len(), 1);
+}
+
+#[test]
+fn a_workbook_without_a_drawing_is_read_as_before() {
+    let doc = parse(Book {
+        strings: vec!["x"],
+        sheets: vec![sheet("S")],
+        ..Default::default()
+    })
+    .unwrap();
+    assert!(sheet_images(&doc, 0).is_empty());
+    assert!(doc.resources.is_empty());
 }

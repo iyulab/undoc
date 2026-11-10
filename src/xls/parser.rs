@@ -3,12 +3,16 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::{Cursor as IoCursor, Read};
+use std::sync::Arc;
 
+use super::pictures::{self, DrawingGroup};
 use super::records::{self as rec, rk_value, Cursor, Record, Records};
 use crate::codepage;
 use crate::detect::FormatType;
 use crate::error::{Error, Result};
-use crate::model::{Block, Cell, Document, Metadata, Paragraph, Section, TextRun, TextStyle};
+use crate::model::{
+    Block, Cell, Document, Metadata, Paragraph, Resource, Section, TextRun, TextStyle,
+};
 use crate::sheet::{self, MergeRange, SheetTableBuilder};
 
 /// The BIFF generation a stream is written in. Each one changed the record layouts the reader
@@ -89,6 +93,8 @@ struct Globals {
     date1904: bool,
     /// The code page of byte strings (BIFF2–BIFF7).
     codepage: u16,
+    /// The pictures the workbook keeps (BIFF8), shared by every sheet's copy of the globals.
+    drawing_group: Option<Arc<DrawingGroup>>,
 }
 
 /// Where a cell's number format comes from: its XF record (BIFF3 and later), or for BIFF2 the
@@ -215,12 +221,37 @@ impl XlsParser {
             }
         };
 
+        // The resource a picture of the workbook's blip store became, by its index: a picture
+        // drawn on several sheets is one resource.
+        let mut resources: HashMap<u32, Option<String>> = HashMap::new();
         for (index, (name, globals, offset)) in sheets.into_iter().enumerate() {
             let mut section = Section::new(index);
             section.name = name;
             let table = read_sheet(stream, offset, &globals)?;
             if !table.rows.is_empty() {
                 section.add_block(Block::Table(table));
+            }
+            if let Some(group) = &globals.drawing_group {
+                for shape in pictures::sheet_pictures(stream, offset) {
+                    let Some(blip) = shape.blip else {
+                        continue;
+                    };
+                    let id = resources.entry(blip).or_insert_with(|| {
+                        let (data, extension) = group.picture(blip)?;
+                        let id = format!("image{}", doc.resources.len() + 1);
+                        let name = Some(format!("{id}.{extension}"));
+                        doc.add_resource(id.clone(), Resource::image(data, name));
+                        Some(id)
+                    });
+                    if let Some(id) = id.clone() {
+                        section.add_block(Block::Image {
+                            resource_id: id,
+                            alt_text: shape.alt_text,
+                            width: None,
+                            height: None,
+                        });
+                    }
+                }
             }
             doc.add_section(section);
         }
@@ -255,6 +286,7 @@ fn scan(stream: &[u8], offset: usize, biff: Biff, inherited: Option<u16>) -> Res
     let mut charsets: Vec<u8> = Vec::new();
     let mut sheets: Vec<(Text, usize)> = Vec::new();
     let mut formats: Vec<(u16, Text)> = Vec::new();
+    let mut drawing_group: Vec<u8> = Vec::new();
     let mut globals = Globals {
         biff,
         sheets: Vec::new(),
@@ -263,6 +295,7 @@ fn scan(stream: &[u8], offset: usize, biff: Biff, inherited: Option<u16>) -> Res
         formats: HashMap::new(),
         date1904: false,
         codepage: 0,
+        drawing_group: None,
     };
     let mut records = Records::new(stream, offset);
     let _bof = records.next(); // this substream's BOF
@@ -311,6 +344,13 @@ fn scan(stream: &[u8], offset: usize, biff: Biff, inherited: Option<u16>) -> Res
                 let name = Text::Bytes(c.byte_string8()?);
                 sheets.push((name, records.position()));
             }
+            // The drawing group's data runs on across the records that continue it — and across
+            // consecutive `MsoDrawingGroup` records of its own.
+            pictures::MSO_DRAWING_GROUP if biff == Biff::V8 => {
+                for segment in &record.segments {
+                    drawing_group.extend_from_slice(segment);
+                }
+            }
             rec::SST if biff == Biff::V8 => {
                 let _total = c.u32()?;
                 let unique = c.u32()? as usize;
@@ -348,6 +388,11 @@ fn scan(stream: &[u8], offset: usize, biff: Biff, inherited: Option<u16>) -> Res
             _ => {}
         }
     }
+
+    globals.drawing_group = (!drawing_group.is_empty())
+        .then(|| DrawingGroup::new(drawing_group))
+        .flatten()
+        .map(Arc::new);
 
     // A workbook that names no code page writes in its fonts' character set; failing that,
     // in Windows-1252, the code page of the Excel versions that left it out.

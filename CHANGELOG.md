@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **An Excel 97-2003 workbook keeps its pictures.** The reader returned each sheet's cells only, so the
+  logos, photographs and drawings of a `.xls` were dropped. The workbook's drawing group (its blip store:
+  PNG, JPEG, GIF, EMF, WMF and bitmap pictures) is read, and each sheet's shapes that show a picture
+  follow the sheet's table as image blocks in drawing order, with the shape's alternative text; a picture
+  drawn on several sheets is one resource. Two layouts of the file are handled as Excel writes them: a
+  large drawing group is spread over several consecutive records and their continuations, and a sheet's
+  drawing carries on in the continuation records that follow an object record and a text box's own text
+  and formatting, so a sheet with text boxes keeps the pictures that come after them. Not extracted:
+  Macintosh PICT pictures. A GIF that Office keeps in a PNG-typed picture is named `.gif`, as its first
+  bytes say, in `.xls`, `.doc` and `.ppt` alike. Of 409 readable public sample workbooks, 36 hold
+  pictures (340 image blocks, 217 files); four more keep pictures in the picture store that no sheet
+  shape shows (two of them fuzzer files). The number of pictures each file shows was recounted from the
+  file's own records by an independent reader, with no difference except the Macintosh pictures; every
+  extracted file has its format's signature and all but two decode (one fuzzer file, one whose own data
+  is damaged).
+
 - **A PowerPoint 97-2003 slide keeps its pictures.** The reader returned a slide's text only, so every
   picture on a `.ppt` slide was dropped without a trace. A picture shape is now an image block in drawing
   order -- between the texts drawn before and after it -- with the shape's alternative text, and its

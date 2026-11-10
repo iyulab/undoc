@@ -7,22 +7,16 @@
 use std::collections::HashMap;
 
 use super::fib::FcLcb;
-use crate::officeart::{
-    self, picture_properties, record, u32_at, Record, ShapePicture, RT_FBSE, RT_FOPT, RT_FSP,
-    RT_SP_CONTAINER, RT_TERTIARY_FOPT,
-};
+use crate::officeart::{self, picture_shapes, record, u32_at, Record, ShapePicture, RT_FBSE};
 
 const RT_DGG_CONTAINER: u16 = 0xF000;
 const RT_BSTORE_CONTAINER: u16 = 0xF001;
 const RT_DG_CONTAINER: u16 = 0xF002;
-const RT_SPGR_CONTAINER: u16 = 0xF003;
 
 /// `OfficeArtWordDrawing.dgglbl` of the main document's drawing; the headers' is 1.
 const DGGLBL_MAIN: u8 = 0;
 /// Size of a `Spa`: the shape id, the anchor's rectangle, flags and the text box count.
 const SPA_SIZE: usize = 26;
-/// How deep shape groups are followed — real documents nest a handful.
-const MAX_DEPTH: u8 = 16;
 
 /// A picture a drawn-object character shows.
 #[derive(Debug, PartialEq, Eq)]
@@ -87,7 +81,7 @@ fn read_in(word_document: &[u8], table: &[u8], spa: FcLcb, dgg: FcLcb) -> Option
     // The drawing group data, then the drawings, each led by a byte that says whose it is.
     let group = record(content, 0, content.len()).filter(|r| r.kind == RT_DGG_CONTAINER)?;
     let store = blip_store(content, &group);
-    let mut shapes = HashMap::new();
+    let mut shapes: HashMap<u32, ShapePicture> = HashMap::new();
     let mut at = group.end;
     while let Some(label) = content.get(at) {
         let Some(drawing) =
@@ -96,7 +90,9 @@ fn read_in(word_document: &[u8], table: &[u8], spa: FcLcb, dgg: FcLcb) -> Option
             break;
         };
         if *label == DGGLBL_MAIN {
-            collect(content, &drawing, 0, &mut shapes);
+            let mut found = Vec::new();
+            picture_shapes(content, &drawing, 0, &mut found);
+            shapes.extend(found);
         }
         at = drawing.end;
     }
@@ -147,46 +143,4 @@ fn blip_store(content: &[u8], group: &Record) -> Vec<Option<Record>> {
         return entries;
     }
     Vec::new()
-}
-
-/// The shapes of a drawing that show a picture, by shape id: a shape is an `OfficeArtSpContainer`,
-/// possibly inside groups.
-fn collect(data: &[u8], container: &Record, depth: u8, out: &mut HashMap<u32, ShapePicture>) {
-    let mut at = container.start;
-    while let Some(r) = record(data, at, container.end) {
-        at = r.end;
-        match r.kind {
-            RT_DG_CONTAINER | RT_SPGR_CONTAINER if depth < MAX_DEPTH => {
-                collect(data, &r, depth + 1, out)
-            }
-            RT_SP_CONTAINER => {
-                if let Some((id, picture)) = shape(data, &r) {
-                    out.insert(id, picture);
-                }
-            }
-            _ => {}
-        }
-    }
-}
-
-/// A shape's id and what its property tables say about its picture — only a shape that names
-/// a picture.
-fn shape(data: &[u8], container: &Record) -> Option<(u32, ShapePicture)> {
-    let mut id = None;
-    let mut picture = ShapePicture::default();
-    let mut at = container.start;
-    while let Some(r) = record(data, at, container.end) {
-        at = r.end;
-        match r.kind {
-            RT_FSP => id = u32_at(data, r.start),
-            RT_FOPT | RT_TERTIARY_FOPT => {
-                let found = picture_properties(data, &r);
-                picture.blip = picture.blip.or(found.blip);
-                picture.alt_text = picture.alt_text.take().or(found.alt_text);
-            }
-            _ => {}
-        }
-    }
-    picture.blip?;
-    Some((id?, picture))
 }
