@@ -295,7 +295,8 @@ pub fn detect_format_from_reader<R: Read + Seek>(reader: R) -> Result<FormatType
     let mut archive = zip::ZipArchive::new(reader)?;
 
     // Try to read [Content_Types].xml
-    let content_types = match archive.by_name("[Content_Types].xml") {
+    let name = crate::container::part_name(&archive, "[Content_Types].xml");
+    let content_types = match archive.by_name(&name) {
         Ok(file) => {
             let compressed = file.compressed_size();
             let bytes = crate::container::read_entry("[Content_Types].xml", file, compressed)?;

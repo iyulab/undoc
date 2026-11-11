@@ -142,6 +142,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   container. They are now opened with the missing sectors added, only when nothing in the file points
   past its end; a truncated file stays an error.
 
+- **An Office Open XML package whose part names differ in case, or use backslashes for slashes, is read.**
+  Part names compare without regard to ASCII case (ECMA-376 Part 2, 9.1.1.1), but a package that wrote
+  `[content_types].xml` and `xl/sharedstrings.xml` was reported as missing `[Content_Types].xml`, and one
+  that wrote `xl\workbook.xml` as missing its workbook. A part is now found by its exact name, and failing
+  that by the one entry that differs only in the case of ASCII letters or in backslashes for slashes
+  (Apache POI's bug 49609 package, a two-sheet workbook of 269 KB per sheet, is one of the public
+  samples that read now). The names `list_files` reports have slashes.
+
 - **A tie between font sizes no longer depends on the run.** The body font size of a document and the
   dominant font size of a paragraph -- which decide whether a paragraph is read as a heading -- were
   picked from a map by the largest count; when two sizes were equally frequent the one chosen was

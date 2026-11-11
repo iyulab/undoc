@@ -249,10 +249,40 @@ fn decode_utf16_be(bytes: &[u8]) -> Result<String> {
 /// `zip` reports each name as a result because it decodes it: as UTF-8, and otherwise as
 /// CP437. CP437 maps every byte, so decoding cannot fail — a name it could not decode would
 /// not be one a part could be read by either.
+///
+/// A name written with backslashes for slashes (`xl\workbook.xml`, which some writers produce --
+/// Apache POI's bug 49609 file has them) is reported with the slashes it means.
 fn entry_names<R: Read + Seek>(
     archive: &zip::ZipArchive<R>,
 ) -> impl Iterator<Item = std::borrow::Cow<'_, str>> {
-    archive.file_names().filter_map(|name| name.ok())
+    archive
+        .file_names()
+        .filter_map(|name| name.ok())
+        .map(slashed)
+}
+
+/// `name` with backslashes read as slashes.
+fn slashed(name: std::borrow::Cow<'_, str>) -> std::borrow::Cow<'_, str> {
+    if name.contains('\\') {
+        std::borrow::Cow::Owned(name.replace('\\', "/"))
+    } else {
+        name
+    }
+}
+
+/// The name the archive gives the part `path`: `path` itself, or the one entry that differs from it
+/// only in the case of ASCII letters or in writing backslashes for slashes. OPC compares part names without regard to ASCII case
+/// (ECMA-376 Part 2, 9.1.1.1), and some writers do not keep the conventional case
+/// (`[content_types].xml`, `xl/sharedstrings.xml`); a package of that kind is Apache POI bug 49609.
+pub(crate) fn part_name<R: Read + Seek>(archive: &zip::ZipArchive<R>, path: &str) -> String {
+    if archive.index_for_name(path).is_some() {
+        return path.to_string();
+    }
+    archive
+        .file_names()
+        .filter_map(|name| name.ok())
+        .find(|name| slashed(name.clone()).eq_ignore_ascii_case(path))
+        .map_or_else(|| path.to_string(), |name| name.into_owned())
 }
 
 impl OoxmlContainer {
@@ -314,7 +344,8 @@ impl OoxmlContainer {
     /// - UTF-16 BE (with BOM: FE FF)
     pub fn read_xml(&self, path: &str) -> Result<String> {
         let mut archive = self.archive.borrow_mut();
-        let file = archive.by_name(path).map_err(|e| entry_error(path, e))?;
+        let name = part_name(&archive, path);
+        let file = archive.by_name(&name).map_err(|e| entry_error(path, e))?;
         let compressed = file.compressed_size();
         let bytes = read_entry(path, file, compressed)?;
 
@@ -342,7 +373,8 @@ impl OoxmlContainer {
     /// Read a binary file from the archive.
     pub fn read_binary(&self, path: &str) -> Result<Vec<u8>> {
         let mut archive = self.archive.borrow_mut();
-        let file = archive.by_name(path).map_err(|e| entry_error(path, e))?;
+        let name = part_name(&archive, path);
+        let file = archive.by_name(&name).map_err(|e| entry_error(path, e))?;
         let compressed = file.compressed_size();
         read_entry(path, file, compressed)
     }
@@ -350,7 +382,7 @@ impl OoxmlContainer {
     /// Check if a file exists in the archive.
     pub fn exists(&self, path: &str) -> bool {
         let archive = self.archive.borrow();
-        let result = entry_names(&archive).any(|n| n == path);
+        let result = entry_names(&archive).any(|n| n.eq_ignore_ascii_case(path));
         result
     }
 
@@ -748,6 +780,49 @@ mod tests {
 
     /// The listing and the package relationships are what a caller walks to find the main
     /// part, so both are pinned to exact values rather than "not empty".
+    #[test]
+    fn a_part_is_found_whatever_the_case_of_its_name() {
+        // Part names compare without regard to ASCII case (ECMA-376 Part 2, 9.1.1.1): a package
+        // that writes `xl/sharedstrings.xml` has the part `xl/sharedStrings.xml`.
+        let container = create_container_with_files(&[
+            ("[content_types].xml", "<Types/>"),
+            ("xl/sharedstrings.xml", "<sst/>"),
+            ("xl/Media/Pic.PNG", "png"),
+        ]);
+        assert_eq!(
+            container.read_xml("xl/sharedStrings.xml").unwrap(),
+            "<sst/>"
+        );
+        assert_eq!(
+            container.read_xml("[Content_Types].xml").unwrap(),
+            "<Types/>"
+        );
+        assert_eq!(container.read_binary("xl/media/pic.png").unwrap(), b"png");
+        assert!(container.exists("XL/SHAREDSTRINGS.XML"));
+        assert!(!container.exists("xl/styles.xml"));
+        assert!(matches!(
+            container.read_xml("xl/styles.xml"),
+            Err(Error::MissingComponent(_))
+        ));
+        // Backslashes written for slashes (Apache POI's bug 49609 package) are slashes.
+        let slashes = create_container_with_files(&[
+            ("[content_types].xml", "<Types/>"),
+            ("xl\\workbook.xml", "<workbook/>"),
+            ("xl\\_rels\\workbook.xml.rels", "<rels/>"),
+        ]);
+        assert_eq!(slashes.read_xml("xl/workbook.xml").unwrap(), "<workbook/>");
+        assert_eq!(
+            slashes.read_xml("xl/_rels/workbook.xml.rels").unwrap(),
+            "<rels/>"
+        );
+        assert!(slashes.exists("xl/workbook.xml"));
+        assert_eq!(slashes.list_files_with_prefix("xl/").len(), 2);
+        // A name that is there exactly is the one read, whatever else differs only in case.
+        let both = create_container_with_files(&[("a.xml", "<exact/>"), ("A.xml", "<other/>")]);
+        assert_eq!(both.read_xml("a.xml").unwrap(), "<exact/>");
+        assert_eq!(both.read_xml("A.xml").unwrap(), "<other/>");
+    }
+
     #[test]
     fn test_package_listing_and_relationships() {
         let container = create_container_with_files(&[
