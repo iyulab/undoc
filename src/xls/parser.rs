@@ -2,7 +2,7 @@
 //! document model.
 
 use std::collections::{BTreeMap, HashMap};
-use std::io::{Cursor as IoCursor, Read};
+use std::io::Read;
 use std::sync::Arc;
 
 use super::pictures::{self, DrawingGroup};
@@ -262,7 +262,7 @@ impl XlsParser {
 /// The workbook stream of a compound file — `Workbook` from Excel 97 on, `Book` before — and
 /// the document properties beside it.
 fn open_container(data: &[u8]) -> Result<(Vec<u8>, Metadata)> {
-    let mut container = cfb::CompoundFile::open(IoCursor::new(data))
+    let mut container = crate::cfb_open::open(data)
         .map_err(|e| Error::InvalidData(format!("Excel workbook: unreadable container: {e}")))?;
     let name = ["/Workbook", "/Book"]
         .into_iter()

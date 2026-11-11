@@ -134,6 +134,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   four-billion-byte path length its record may name. Of 1,298 public sample files the output of every
   other file is unchanged.
 
+- **A Word, Excel or PowerPoint 97-2003 file whose allocation table lists more sectors than the file
+  holds is read.** The `cfb` crate refuses such a file (`Malformed FAT (FAT has 128 entries, but file
+  has only 52 sectors)`) when the unused entries are `ENDOFCHAIN` rather than free, though nothing
+  points at them and Apache POI, `olefile` and Microsoft's own readers open it; the three Word
+  documents of that kind among the public samples (POI bug 47950) were reported as an unreadable
+  container. They are now opened with the missing sectors added, only when nothing in the file points
+  past its end; a truncated file stays an error.
+
 - **A tie between font sizes no longer depends on the run.** The body font size of a document and the
   dominant font size of a paragraph -- which decide whether a paragraph is read as a heading -- were
   picked from a map by the largest count; when two sizes were equally frequent the one chosen was

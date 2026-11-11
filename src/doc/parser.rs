@@ -1,7 +1,7 @@
 //! Assembles the main document text of a Word 97-2003 file into the document model.
 
 use std::collections::HashMap;
-use std::io::{Cursor, Read};
+use std::io::Read;
 
 use super::chars::{self, CharProps, ChpxIndex};
 use super::fib;
@@ -63,7 +63,7 @@ impl DocParser {
 
     /// Parse the document.
     pub fn parse(&mut self) -> Result<Document> {
-        let mut container = cfb::CompoundFile::open(Cursor::new(&self.data[..]))
+        let mut container = crate::cfb_open::open(&self.data)
             .map_err(|e| Error::InvalidData(format!("Word document: unreadable container: {e}")))?;
         let word_document = read_stream(&mut container, "/WordDocument")?;
         match fib::parse(&word_document)? {
@@ -77,7 +77,7 @@ impl DocParser {
     /// heading styles) and the character formatting Markdown carries. Its notes, headers and
     /// pictures are not read.
     fn parse_word6(
-        mut container: cfb::CompoundFile<Cursor<&[u8]>>,
+        mut container: crate::cfb_open::Container<'_>,
         word_document: Vec<u8>,
         fib: fib::Word6Fib,
     ) -> Result<Document> {
@@ -110,7 +110,7 @@ impl DocParser {
     }
 
     fn parse_word97(
-        mut container: cfb::CompoundFile<Cursor<&[u8]>>,
+        mut container: crate::cfb_open::Container<'_>,
         word_document: Vec<u8>,
         fib: fib::Fib,
     ) -> Result<Document> {
@@ -204,7 +204,7 @@ impl DocParser {
     }
 }
 
-fn read_stream(container: &mut cfb::CompoundFile<Cursor<&[u8]>>, name: &str) -> Result<Vec<u8>> {
+fn read_stream(container: &mut crate::cfb_open::Container<'_>, name: &str) -> Result<Vec<u8>> {
     let mut stream = container.open_stream(name).map_err(|_| {
         Error::InvalidData(format!(
             "Word document: the {} stream is missing",

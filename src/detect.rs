@@ -212,19 +212,31 @@ fn classify_container_magic<R: Read + Seek>(reader: &mut R) -> Result<Option<For
 /// an unrecognised CFB, are reported as unsupported — naming the format where the directory
 /// shows which it is, which is what the header proved.
 fn classify_cfb_container<R: Read + Seek>(reader: &mut R) -> Result<FormatType> {
-    let container = match cfb::CompoundFile::open(reader) {
-        Ok(container) => container,
-        // A CFB header whose directory will not parse. Still an Office container, still
-        // unopenable; guessing which kind would claim more than was established.
+    // A file whose FAT lists more sectors than it holds is not one the `cfb` crate opens as it
+    // is; its bytes are read for the tolerant opening only once it has refused the reader.
+    match cfb::CompoundFile::open(&mut *reader) {
+        Ok(container) => classify_opened_container(&container),
         Err(_) => {
-            return Err(Error::UnsupportedFormat(
-                "OLE/CFB container whose directory could not be read — a legacy binary \
-                 Office format (.doc/.xls/.ppt) or an ECMA-376 encrypted document"
-                    .to_string(),
-            ))
+            let mut bytes = Vec::new();
+            reader.seek(std::io::SeekFrom::Start(0))?;
+            reader.read_to_end(&mut bytes)?;
+            match crate::cfb_open::open(&bytes) {
+                Ok(container) => classify_opened_container(&container),
+                // A CFB header whose directory will not parse. Still an Office container, still
+                // unopenable; guessing which kind would claim more than was established.
+                Err(_) => Err(Error::UnsupportedFormat(
+                    "OLE/CFB container whose directory could not be read — a legacy binary                      Office format (.doc/.xls/.ppt) or an ECMA-376 encrypted document"
+                        .to_string(),
+                )),
+            }
         }
-    };
+    }
+}
 
+/// [`classify_cfb_container`] once the container is open.
+fn classify_opened_container<F: Read + Seek>(
+    container: &cfb::CompoundFile<F>,
+) -> Result<FormatType> {
     if container.exists(ENCRYPTED_PACKAGE_STREAM) {
         return Err(Error::Encrypted);
     }

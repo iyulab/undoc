@@ -56,6 +56,7 @@
 //! - `ffi`: C-ABI bindings for foreign language integration
 
 #[cfg(any(feature = "docx", feature = "pptx"))]
+mod cfb_open;
 mod charts;
 #[cfg(any(feature = "doc", feature = "xls", feature = "ppt"))]
 mod codepage;
