@@ -100,7 +100,9 @@ pub(super) fn read_chars(
     from: u32,
     to: u32,
 ) -> Result<Vec<DocChar>> {
-    let mut out = Vec::with_capacity(to.saturating_sub(from) as usize);
+    // Each character is at least one byte of the stream, so the stream bounds what a range can
+    // yield however large the range a file asks for.
+    let mut out = Vec::with_capacity((to.saturating_sub(from) as usize).min(word_document.len()));
     for piece in pieces {
         let start = piece.cp_start.max(from);
         let end = piece.cp_end.min(to);
@@ -150,6 +152,22 @@ pub(super) fn read_chars(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_range_far_past_the_stream_does_not_reserve_what_it_names() {
+        // A file can ask for a story of four billion characters; the characters come from the
+        // stream, so the reservation is bounded by the stream, not the range.
+        let stream = b"abc".to_vec();
+        let pieces = [Piece {
+            cp_start: 0,
+            cp_end: 3,
+            fc: 0,
+            compressed: true,
+        }];
+        let chars = read_chars(&stream, &pieces, 0, u32::MAX).unwrap();
+        assert_eq!(chars.len(), 3);
+        assert!(chars.capacity() <= 3 * 2, "reserved {}", chars.capacity());
+    }
 
     fn clx(pieces: &[(u32, u32, u32, bool)]) -> Vec<u8> {
         let mut plc = Vec::new();

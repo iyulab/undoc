@@ -5,6 +5,12 @@ use std::borrow::Cow;
 use crate::decode::{decode_text_lossy, normalize_line_endings, resolve_general_ref};
 use crate::error::Result;
 
+/// The most characters Excel lets a cell hold (Excel specifications and limits: 32,767). A shared
+/// string is read once and then shown by every cell that points at it, so without a bound a
+/// million-character string used by thousands of cells makes an output that is a thousand times the
+/// file; a string longer than a cell can hold is not one Excel wrote.
+const MAX_CELL_CHARS: usize = 32_767;
+
 /// Shared strings table.
 #[derive(Debug, Clone, Default)]
 pub struct SharedStrings {
@@ -52,9 +58,12 @@ impl SharedStrings {
                         // Collapse CR that re-entered via &#13;/&#xD; refs (Excel
                         // in-cell breaks); a CRLF pair arrives as two refs, so the
                         // whole accumulated string is normalized once here.
-                        strings.push(
-                            normalize_line_endings(Cow::Borrowed(&current_text)).into_owned(),
-                        );
+                        let mut text =
+                            normalize_line_endings(Cow::Borrowed(&current_text)).into_owned();
+                        if let Some((end, _)) = text.char_indices().nth(MAX_CELL_CHARS) {
+                            text.truncate(end);
+                        }
+                        strings.push(text);
                         in_si = false;
                     }
                     "t" => {
@@ -109,6 +118,21 @@ mod tests {
         assert_eq!(ss.get(1), Some("World"));
         assert_eq!(ss.get(2), Some("Test"));
         assert_eq!(ss.get(3), None);
+    }
+
+    #[test]
+    fn a_shared_string_is_kept_to_what_a_cell_can_hold() {
+        // Excel's limit is 32,767 characters, counted in characters (here two-byte ones), and a
+        // string at the limit is kept whole.
+        let at_limit = "가".repeat(MAX_CELL_CHARS);
+        let over = "가".repeat(MAX_CELL_CHARS + 10);
+        let xml = format!(
+            r#"<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><si><t>{at_limit}</t></si><si><t>{over}</t></si></sst>"#
+        );
+        let ss = SharedStrings::parse(&xml).unwrap();
+        assert_eq!(ss.get(0).unwrap().chars().count(), MAX_CELL_CHARS);
+        assert_eq!(ss.get(1).unwrap().chars().count(), MAX_CELL_CHARS);
+        assert_eq!(ss.get(1), Some(at_limit.as_str()));
     }
 
     #[test]

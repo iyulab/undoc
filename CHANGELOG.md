@@ -120,6 +120,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Three files that crashed the reader no longer do.** Reading each of them ended the process -- the
+  kind of failure a caller cannot catch. A `.xlsx` whose one million-character shared string is used by
+  twelve thousand cells made an output of billions of bytes and died allocating it; a shared string is
+  now kept to the 32,767 characters Excel lets a cell hold, which a file written by Excel never
+  exceeds. A `.docx` that nests five thousand tables inside table cells overflowed the stack, one
+  level per table; tables are now read to a depth of 64 (the deepest of 130 public sample
+  documents nests four) and a table nested deeper is not read. A `.doc` whose header and footer
+  positions sum past the range of a 32-bit integer panicked in a debug build and read a wrong range in a
+  release build; the positions are now added without overflow, and the reservation for a story's
+  characters is bounded by the stream they come from, not by the length the file names (a four-billion
+  character story asked for fifty gigabytes); an `.xls` hyperlink to a file no longer reserves the
+  four-billion-byte path length its record may name. Of 1,298 public sample files the output of every
+  other file is unchanged.
+
 - **A tie between font sizes no longer depends on the run.** The body font size of a document and the
   dominant font size of a paragraph -- which decide whether a paragraph is read as a heading -- were
   picked from a map by the largest count; when two sizes were equally frequent the one chosen was

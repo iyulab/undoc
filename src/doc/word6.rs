@@ -64,7 +64,7 @@ pub(super) fn read_chars(
     ccp_text: u32,
     codepage: u16,
 ) -> Result<Vec<DocChar>> {
-    let mut out = Vec::with_capacity(ccp_text as usize);
+    let mut out = Vec::with_capacity((ccp_text as usize).min(word_document.len()));
     for piece in pieces {
         let (start, end) = (piece.cp_start, piece.cp_end.min(ccp_text));
         if start >= end {

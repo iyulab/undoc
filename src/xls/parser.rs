@@ -754,7 +754,9 @@ fn hyperlink_target(c: &mut Cursor<'_>) -> Result<Option<String>> {
     if class == FILE_MONIKER {
         let _anti = c.u16()?;
         let ansi_len = c.u32()? as usize;
-        let mut ansi = Vec::with_capacity(ansi_len);
+        // The length is the file's: nothing is reserved for it, so a length of four billion
+        // costs the bytes that are there before it fails, not four gigabytes.
+        let mut ansi = Vec::new();
         for _ in 0..ansi_len {
             ansi.push(c.u8()?);
         }
@@ -788,4 +790,40 @@ fn bool_text(value: bool) -> String {
 /// In-cell line breaks are stored as CR LF or LF; the model uses LF.
 fn normalize_breaks(text: &str) -> String {
     text.replace("\r\n", "\n").replace('\r', "\n")
+}
+
+#[cfg(test)]
+mod hyperlink_tests {
+    use super::*;
+
+    /// A `Hyperlink` object that holds a file moniker whose ANSI path claims `ansi_len` bytes.
+    fn file_link(ansi_len: u32, ansi: &[u8]) -> Vec<u8> {
+        let mut body = vec![0u8; 16]; // the class id of the object itself
+        body.extend_from_slice(&2u32.to_le_bytes()); // version
+        body.extend_from_slice(&0x01u32.to_le_bytes()); // has a moniker
+        body.extend_from_slice(&FILE_MONIKER);
+        body.extend_from_slice(&0u16.to_le_bytes()); // anti-moniker count
+        body.extend_from_slice(&ansi_len.to_le_bytes());
+        body.extend_from_slice(ansi);
+        body
+    }
+
+    #[test]
+    fn a_file_moniker_path_longer_than_the_record_is_truncated_not_reserved() {
+        // The length is four billion; the record holds three bytes of it. Reading fails where the
+        // bytes run out; it must not first reserve what the length names.
+        let body = file_link(u32::MAX, b"a:/");
+        let segments = [&body[..]];
+        let error = hyperlink_target(&mut Cursor::new(&segments)).unwrap_err();
+        assert!(matches!(error, Error::InvalidData(_)), "{error:?}");
+        // A path that is all there is read.
+        let mut body = file_link(5, b"a:/b\0");
+        body.extend_from_slice(&[0u8; 2 + 2 + 20]);
+        body.extend_from_slice(&0u32.to_le_bytes());
+        let segments = [&body[..]];
+        assert_eq!(
+            hyperlink_target(&mut Cursor::new(&segments)).unwrap(),
+            Some("a:/b".to_string())
+        );
+    }
 }

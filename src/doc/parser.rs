@@ -142,8 +142,8 @@ impl DocParser {
                 let text = note_text(&text::read_chars(
                     &word_document,
                     &pieces,
-                    story + from,
-                    story + to.max(from),
+                    story.saturating_add(from),
+                    story.saturating_add(to.max(from)),
                 )?);
                 notes.push(Note {
                     cp,
@@ -154,7 +154,9 @@ impl DocParser {
             Ok(notes)
         };
         let footnotes = read_notes(fib.plcffnd_ref, fib.plcffnd_txt, fib.ccp_text, "")?;
-        let endnote_story = fib.ccp_text + fib.ccp_ftn + fib.ccp_hdd + fib.ccp_atn;
+        let endnote_story = [fib.ccp_ftn, fib.ccp_hdd, fib.ccp_atn]
+            .into_iter()
+            .fold(fib.ccp_text, u32::saturating_add);
         let endnotes = read_notes(fib.plcfend_ref, fib.plcfend_txt, endnote_story, "e")?;
 
         let mut doc = Document::new();
@@ -181,13 +183,17 @@ impl DocParser {
         // The first section's headers and footers — the stories Word shows on odd pages,
         // which are every page's unless the document asks for different ones.
         let hdd = plc_positions(&table, fib.plcf_hdd, 0);
-        let story = fib.ccp_text + fib.ccp_ftn;
+        let story = fib.ccp_text.saturating_add(fib.ccp_ftn);
         let read_story = |index: usize| -> Result<Option<Vec<Paragraph>>> {
             let (Some(&from), Some(&to)) = (hdd.get(index), hdd.get(index + 1)) else {
                 return Ok(None);
             };
-            let chars =
-                text::read_chars(&word_document, &pieces, story + from, story + to.max(from))?;
+            let chars = text::read_chars(
+                &word_document,
+                &pieces,
+                story.saturating_add(from),
+                story.saturating_add(to.max(from)),
+            )?;
             let paragraphs = story_paragraphs(&chars);
             Ok((!paragraphs.is_empty()).then_some(paragraphs))
         };
@@ -265,7 +271,10 @@ struct Note {
 /// empty: notes are read where they can be, never at the cost of the body text.
 fn plc_positions(table: &[u8], plc: FcLcb, data_size: usize) -> Vec<u32> {
     let start = plc.fc as usize;
-    let Some(data) = table.get(start..start + plc.lcb as usize) else {
+    let Some(data) = start
+        .checked_add(plc.lcb as usize)
+        .and_then(|end| table.get(start..end))
+    else {
         return Vec::new();
     };
     if data.len() < 4 || (data.len() - 4) % (4 + data_size) != 0 {

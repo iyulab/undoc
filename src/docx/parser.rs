@@ -1312,11 +1312,21 @@ impl DocxParser {
     }
 
     /// Parse a table element.
-    #[allow(clippy::only_used_in_recursion)] // &self needed for recursive nested table parsing
     /// Parse a table: its rows and cells, each cell's paragraphs read by [`Self::parse_paragraph`]
     /// -- the same reading the body's paragraphs get, links, tracked changes, notes and all -- and
     /// its nested tables recursively.
     fn parse_table(&mut self, xml: &str) -> Result<Table> {
+        self.parse_table_at(xml, 0)
+    }
+
+    /// [`Self::parse_table`] for a table nested `depth` tables deep.
+    #[allow(clippy::only_used_in_recursion)] // &self needed for recursive nested table parsing
+    fn parse_table_at(&mut self, xml: &str, depth: u32) -> Result<Table> {
+        if depth > MAX_TABLE_NESTING {
+            return Err(Error::InvalidData(format!(
+                "tables are nested more than {MAX_TABLE_NESTING} deep"
+            )));
+        }
         let mut table = Table::new();
         let mut reader = crate::decode::reader_for(xml);
         // Don't trim text - preserve whitespace from xml:space="preserve" elements
@@ -1474,7 +1484,9 @@ impl DocxParser {
                             if nested_table_depth == 0 {
                                 // Finished collecting nested table - parse recursively
                                 let nested_xml = std::mem::take(&mut nested_table_xml);
-                                if let Ok(nested_table) = self.parse_table(&nested_xml) {
+                                if let Ok(nested_table) =
+                                    self.parse_table_at(&nested_xml, depth + 1)
+                                {
                                     cell_nested_tables.push(nested_table);
                                 }
                             }
@@ -1653,6 +1665,13 @@ fn link_state(element: &Option<Option<String>>, fields: &[WordField]) -> (bool, 
 
 /// Character styles that set text as code: pandoc writes `VerbatimChar`, Word names its
 /// built-in ones `HTML Code`, `HTML Keyboard`, `HTML Sample` and `HTML Typewriter`.
+/// How deep tables may nest inside table cells. A table is read by reading its nested tables the
+/// same way, so the depth a file asks for is the depth of the call stack (and of every later walk
+/// over the result): a file that nests thousands of tables overflows the stack. Documents nest a
+/// few (the deepest of 130 public sample documents nests four); a table deeper than this is not
+/// read.
+const MAX_TABLE_NESTING: u32 = 64;
+
 const CODE_CHARACTER_STYLES: &[&str] = &[
     "VerbatimChar",
     "HTMLCode",
@@ -3077,6 +3096,41 @@ mod tests {
             table.rows[0].cells[0].nested_tables[0].rows[0].cells[0].plain_text(),
             "Inner &bogus; table"
         );
+    }
+
+    #[test]
+    fn tables_nested_thousands_deep_are_read_to_a_bounded_depth() {
+        // A table inside a table cell, 5000 deep, with a word at every level. Reading it used to
+        // recurse once per level and overflow the stack.
+        let depth = 5000;
+        let mut xml = String::from(
+            r#"<w:tbl xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">"#,
+        );
+        for level in 0..depth {
+            xml.push_str(&format!(
+                "<w:tr><w:tc><w:p><w:r><w:t>L{level}</w:t></w:r></w:p>"
+            ));
+            xml.push_str("<w:tbl>");
+        }
+        for _ in 0..depth {
+            xml.push_str("</w:tbl></w:tc></w:tr>");
+        }
+        xml.push_str("</w:tbl>");
+        // The nesting runs in a thread of its own, small, as a stack overflow is not recoverable.
+        let table = std::thread::Builder::new()
+            .stack_size(2 << 20)
+            .spawn(move || empty_test_parser().parse_table(&xml).unwrap())
+            .unwrap()
+            .join()
+            .expect("the deeply nested table is read without overflowing the stack");
+        let mut levels = 0;
+        let mut at = &table;
+        while let Some(inner) = at.rows[0].cells[0].nested_tables.first() {
+            levels += 1;
+            at = inner;
+        }
+        assert_eq!(levels, MAX_TABLE_NESTING as usize);
+        assert_eq!(table.rows[0].cells[0].plain_text(), "L0");
     }
 
     #[test]
