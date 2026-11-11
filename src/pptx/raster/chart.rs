@@ -110,6 +110,33 @@ struct Chart {
     secondary_max: Option<f64>,
     secondary_format: Option<String>,
     background: Option<Rgba>,
+    /// The text sizes (points) the chart declares: axes and labels, the legend, the title.
+    text_size: f32,
+    legend_size: f32,
+    title_size: f32,
+}
+
+/// Office's default chart text size (points) and title size.
+const TEXT_SIZE: f32 = 10.0;
+const TITLE_SIZE: f32 = 14.0;
+
+/// A declared text size kept within what a frame `height` points tall can hold: never past a sixth
+/// of it (but never under the default either), so a large declared size cannot leave the plot no
+/// room.
+fn text_points(declared: f32, height: f32) -> f32 {
+    declared.clamp(6.0, 40.0).min((height / 6.0).max(TEXT_SIZE))
+}
+
+/// The font size (points) the text properties (`txPr`) or rich text under `node` declare.
+fn declared_size(node: Option<Node>) -> Option<f32> {
+    node?
+        .descendants()
+        .filter(|n| {
+            n.tag_name().namespace() == Some(A) && matches!(n.tag_name().name(), "defRPr" | "rPr")
+        })
+        .find_map(|n| n.attribute("sz")?.parse::<f32>().ok())
+        .map(|hundredths| hundredths / 100.0)
+        .filter(|points| points.is_finite() && *points > 0.0)
 }
 
 fn cnode<'a, 'i>(node: Node<'a, 'i>, name: &str) -> Option<Node<'a, 'i>> {
@@ -572,6 +599,24 @@ fn read_chart(doc: &roxmltree::Document, colors: &Colors) -> Option<Chart> {
         secondary_format,
         secondary: secondary_plots,
         background,
+        text_size: declared_size(
+            area.children()
+                .find(|n| n.has_tag_name((C, "valAx")))
+                .and_then(|ax| cnode(ax, "txPr")),
+        )
+        .or_else(|| {
+            declared_size(
+                area.children()
+                    .find(|n| n.has_tag_name((C, "catAx")))
+                    .and_then(|ax| cnode(ax, "txPr")),
+            )
+        })
+        .or_else(|| declared_size(cnode(space, "txPr")))
+        .unwrap_or(TEXT_SIZE),
+        legend_size: declared_size(cnode(chart, "legend").and_then(|l| cnode(l, "txPr")))
+            .or_else(|| declared_size(cnode(space, "txPr")))
+            .unwrap_or(TEXT_SIZE),
+        title_size: declared_size(cnode(chart, "title")).unwrap_or(TITLE_SIZE),
     })
 }
 
@@ -800,7 +845,14 @@ impl<'a> Painter<'a> {
 
     fn draw_chart(&mut self, chart: &Chart, w: f32, h: f32, t: Transform) {
         let pt = EMU_PER_PT;
-        let size = 10.0 * pt;
+        let fit = |points: f32| text_points(points, h / pt) * pt;
+        let size = fit(chart.text_size);
+        let lsize = fit(chart.legend_size);
+        let label_size = size * 0.9;
+        let title_points = chart
+            .title_size
+            .clamp(6.0, 60.0)
+            .min((h / pt / 3.0).max(TITLE_SIZE));
         let pad = 6.0 * pt;
         if let Some(bg) = chart.background {
             self.rect(0.0, 0.0, w, h, bg, t);
@@ -808,8 +860,8 @@ impl<'a> Painter<'a> {
         let (mut left, mut top, mut right, mut bottom) = (pad, pad, w - pad, h - pad);
         if let Some(title) = &chart.title {
             // A title wider than the frame shrinks to fit, down to 60%.
-            let wide = self.text_width(title, 14.0 * pt).max(1.0);
-            let title_size = 14.0 * pt * ((w - 2.0 * pad) / wide).clamp(0.6, 1.0);
+            let wide = self.text_width(title, title_points * pt).max(1.0);
+            let title_size = title_points * pt * ((w - 2.0 * pad) / wide).clamp(0.6, 1.0);
             self.label(title, w / 2.0, top, title_size, INK, Align::Center, t);
             top += title_size * 1.6;
         }
@@ -839,21 +891,21 @@ impl<'a> Painter<'a> {
                 .collect()
         };
         if let (Some(side), false) = (chart.legend, entries.is_empty()) {
-            let swatch = size * 0.7;
-            let gap = size * 0.4;
+            let swatch = lsize * 0.7;
+            let gap = lsize * 0.4;
             let widths: Vec<f32> = entries
                 .iter()
-                .map(|(n, _)| self.text_width(n, size))
+                .map(|(n, _)| self.text_width(n, lsize))
                 .collect();
             if side == 'r' || side == 'l' {
-                let rows = entries.len() as f32 * size * 1.5;
+                let rows = entries.len() as f32 * lsize * 1.5;
                 let lw = swatch + gap + widths.iter().cloned().fold(0.0, f32::max);
                 let x0 = if side == 'r' { right - lw } else { left };
                 let y0 = top + ((bottom - top) - rows).max(0.0) / 2.0;
                 for (i, (name, color)) in entries.iter().enumerate() {
-                    let y = y0 + i as f32 * size * 1.5;
-                    self.rect(x0, y + size * 0.15, swatch, swatch, *color, t);
-                    self.label(name, x0 + swatch + gap, y, size, INK, Align::Left, t);
+                    let y = y0 + i as f32 * lsize * 1.5;
+                    self.rect(x0, y + lsize * 0.15, swatch, swatch, *color, t);
+                    self.label(name, x0 + swatch + gap, y, lsize, INK, Align::Left, t);
                 }
                 if side == 'r' {
                     right -= lw + pad;
@@ -861,36 +913,42 @@ impl<'a> Painter<'a> {
                     left += lw + pad;
                 }
             } else {
-                let total: f32 = widths.iter().map(|w| swatch + gap + w + size * 1.2).sum();
+                let total: f32 = widths.iter().map(|w| swatch + gap + w + lsize * 1.2).sum();
                 let mut x = ((left + right) - total).max(0.0) / 2.0 + left;
                 let y = if side == 'b' {
-                    bottom - size * 1.3
+                    bottom - lsize * 1.3
                 } else {
                     top
                 };
                 for ((name, color), width) in entries.iter().zip(&widths) {
-                    self.rect(x, y + size * 0.15, swatch, swatch, *color, t);
-                    self.label(name, x + swatch + gap, y, size, INK, Align::Left, t);
-                    x += swatch + gap + width + size * 1.2;
+                    self.rect(x, y + lsize * 0.15, swatch, swatch, *color, t);
+                    self.label(name, x + swatch + gap, y, lsize, INK, Align::Left, t);
+                    x += swatch + gap + width + lsize * 1.2;
                 }
                 if side == 'b' {
-                    bottom -= size * 1.8;
+                    bottom -= lsize * 1.8;
                 } else {
-                    top += size * 1.8;
+                    top += lsize * 1.8;
                 }
             }
         }
 
         if pie {
-            self.draw_pie(first, &chart.categories, (left, top, right, bottom), t);
+            self.draw_pie(
+                first,
+                &chart.categories,
+                (left, top, right, bottom),
+                label_size,
+                t,
+            );
             return;
         }
         if first.kind == Kind::Scatter {
-            self.draw_scatter(chart, (left, top, right, bottom), t);
+            self.draw_scatter(chart, (left, top, right, bottom), size, t);
             return;
         }
         if first.kind == Kind::Radar {
-            self.draw_radar(chart, (left, top, right, bottom), t);
+            self.draw_radar(chart, (left, top, right, bottom), size, t);
             return;
         }
 
@@ -1067,15 +1125,21 @@ impl<'a> Painter<'a> {
         // The plots, then the axis line at zero.
         for plot in &chart.plots {
             match plot.kind {
-                Kind::Bar => self.draw_bars(plot, n, percent, &val, &cat, horizontal, t),
-                Kind::Line | Kind::Area => self.draw_lines(plot, n, percent, &val, &cat, t),
+                Kind::Bar => {
+                    self.draw_bars(plot, n, percent, &val, &cat, horizontal, label_size, t)
+                }
+                Kind::Line | Kind::Area => {
+                    self.draw_lines(plot, n, percent, &val, &cat, label_size, t)
+                }
                 Kind::Pie | Kind::Scatter | Kind::Radar => {}
             }
         }
         for plot in chart.secondary.iter().filter(|_| !horizontal) {
             match plot.kind {
-                Kind::Bar => self.draw_bars(plot, n, false, &val2, &cat, false, t),
-                Kind::Line | Kind::Area => self.draw_lines(plot, n, false, &val2, &cat, t),
+                Kind::Bar => self.draw_bars(plot, n, false, &val2, &cat, false, label_size, t),
+                Kind::Line | Kind::Area => {
+                    self.draw_lines(plot, n, false, &val2, &cat, label_size, t)
+                }
                 Kind::Pie | Kind::Scatter | Kind::Radar => {}
             }
         }
@@ -1096,6 +1160,7 @@ impl<'a> Painter<'a> {
         val: &dyn Fn(f64) -> f32,
         cat: &dyn Fn(f32) -> f32,
         horizontal: bool,
+        size: f32,
         t: Transform,
     ) {
         let stacked = plot.grouping != Grouping::Clustered;
@@ -1108,7 +1173,6 @@ impl<'a> Painter<'a> {
         let gap = (plot.gap / 100.0).max(0.0);
         let width = 1.0 / (slots - (slots - 1.0) * overlap + gap);
         let group = width * (slots - (slots - 1.0) * overlap);
-        let size = 9.0 * EMU_PER_PT;
         // Labels go on once every bar is down, so no later bar covers one.
         let mut labels: Vec<(String, f32, f32, Align, Rgba)> = Vec::new();
         for i in 0..n {
@@ -1206,6 +1270,7 @@ impl<'a> Painter<'a> {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn draw_lines(
         &mut self,
         plot: &Plot,
@@ -1213,6 +1278,7 @@ impl<'a> Painter<'a> {
         percent: bool,
         val: &dyn Fn(f64) -> f32,
         cat: &dyn Fn(f32) -> f32,
+        size: f32,
         t: Transform,
     ) {
         let area = plot.kind == Kind::Area;
@@ -1278,7 +1344,6 @@ impl<'a> Painter<'a> {
                     }
                 }
                 if !area && series.labels.value {
-                    let size = 9.0 * EMU_PER_PT;
                     for p in run {
                         let text = series.labels.render(p.3);
                         self.label(&text, p.0, p.1 - size * 1.9, size, INK, Align::Center, t);
@@ -1290,9 +1355,8 @@ impl<'a> Painter<'a> {
 
     /// Radar series: one spoke per category from twelve o'clock, clockwise; a value is how far
     /// along its spoke the series' polygon reaches, on webs at the value axis's ticks.
-    fn draw_radar(&mut self, chart: &Chart, rect: (f32, f32, f32, f32), t: Transform) {
+    fn draw_radar(&mut self, chart: &Chart, rect: (f32, f32, f32, f32), size: f32, t: Transform) {
         let pt = EMU_PER_PT;
-        let size = 10.0 * pt;
         let series: Vec<(&Plot, &Series)> = chart
             .plots
             .iter()
@@ -1411,9 +1475,8 @@ impl<'a> Painter<'a> {
 
     /// Scatter series: a numeric x axis under a numeric y axis, markers at the points and, for
     /// the styles that have them, a line through them.
-    fn draw_scatter(&mut self, chart: &Chart, rect: (f32, f32, f32, f32), t: Transform) {
+    fn draw_scatter(&mut self, chart: &Chart, rect: (f32, f32, f32, f32), size: f32, t: Transform) {
         let pt = EMU_PER_PT;
-        let size = 10.0 * pt;
         let (mut left, top, right, mut bottom) = rect;
         let series: Vec<&Series> = chart
             .plots
@@ -1526,6 +1589,7 @@ impl<'a> Painter<'a> {
         plot: &Plot,
         categories: &[String],
         rect: (f32, f32, f32, f32),
+        size: f32,
         t: Transform,
     ) {
         let Some(series) = plot.series.first() else {
@@ -1597,7 +1661,6 @@ impl<'a> Painter<'a> {
                     } else {
                         radius * 0.65
                     };
-                    let size = 9.0 * EMU_PER_PT;
                     let ink = contrast(color);
                     self.label(
                         &parts.join(", "),
@@ -1689,6 +1752,63 @@ mod tests {
         let doc = roxmltree::Document::parse(&plain).unwrap();
         let chart = read_chart(&doc, &colors).unwrap();
         assert!(!chart.plots[0].series[0].labels.value);
+    }
+
+    #[test]
+    fn declared_text_sizes_are_read_and_kept_within_the_frame() {
+        let colors = Colors {
+            scheme: HashMap::new(),
+            map: HashMap::new(),
+        };
+        let read = |extra_space: &str, extra_chart: &str, axes: &str| {
+            let plot = format!(
+                r#"<c:barChart><c:barDir val="col"/>{}<c:axId val="1"/><c:axId val="2"/></c:barChart>{axes}"#,
+                series(0, "S", &["A"], &[1.0])
+            );
+            let part = chart_part(&plot, extra_chart).replace(
+                "</c:chart></c:chartSpace>",
+                &format!("</c:chart>{extra_space}</c:chartSpace>"),
+            );
+            let doc = roxmltree::Document::parse(&part).unwrap();
+            read_chart(&doc, &colors).unwrap()
+        };
+        let sz = |points: u32| {
+            format!(
+                r#"<c:txPr><a:p><a:pPr><a:defRPr sz="{}"/></a:pPr></a:p></c:txPr>"#,
+                points * 100
+            )
+        };
+        // Nothing declared: Office's defaults.
+        let chart = read("", "", "");
+        assert_eq!(
+            (chart.text_size, chart.legend_size, chart.title_size),
+            (10.0, 10.0, 14.0)
+        );
+        // The value axis sets the axes' size, the legend its own, the title its rich text's.
+        let chart = read(
+            "",
+            &format!(
+                r#"<c:title><c:tx><c:rich><a:p><a:r><a:rPr sz="2400"/><a:t>T</a:t></a:r></a:p></c:rich></c:tx></c:title><c:legend><c:legendPos val="b"/>{}</c:legend>"#,
+                sz(12)
+            ),
+            &format!(
+                r#"<c:valAx><c:axId val="2"/><c:scaling/>{}</c:valAx>"#,
+                sz(18)
+            ),
+        );
+        assert_eq!(
+            (chart.text_size, chart.legend_size, chart.title_size),
+            (18.0, 12.0, 24.0)
+        );
+        // The chart space's size stands for what no element declares.
+        let chart = read(&sz(14), "<c:legend><c:legendPos val=\"r\"/></c:legend>", "");
+        assert_eq!((chart.text_size, chart.legend_size), (14.0, 14.0));
+        // A frame that is too short for a large size keeps the text readable and the plot alive.
+        assert_eq!(text_points(18.0, 300.0), 18.0);
+        assert_eq!(text_points(18.0, 50.0), 10.0);
+        assert_eq!(text_points(18.0, 108.0), 18.0);
+        assert_eq!(text_points(2.0, 300.0), 6.0);
+        assert_eq!(text_points(90.0, 3000.0), 40.0);
     }
 
     use crate::pptx::raster::tests::{deck_full, pixel, render};

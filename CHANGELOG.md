@@ -62,7 +62,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   chart it describes, inside the chart's frame: clustered, stacked and percent-stacked columns and
   bars, lines with markers, areas, scatter and radar plots, and pies and doughnuts, with the title, the legend, the gridlines,
   the value axis (on round numbers, or the bounds the chart fixes) and the category labels, in the
-  series' own colors or the theme's accents. It is a stand-in, not PowerPoint's drawing -- layout,
+  series' own colors or the theme's accents, in the text sizes the chart declares for its axes, legend
+  and title (kept within what the frame can hold). It is a stand-in, not PowerPoint's drawing -- layout,
   fonts, trend lines and effects are not reproduced -- so a chart painted this way is
   counted in the new `SlideRasterGaps::approximated_charts`, and `charts` now counts only the charts
   that are not drawn: a kind this does not paint (bubble, stock, surface) or one with no
