@@ -55,8 +55,8 @@
 //! - `async`: Async I/O support with Tokio
 //! - `ffi`: C-ABI bindings for foreign language integration
 
-#[cfg(any(feature = "docx", feature = "pptx"))]
 mod cfb_open;
+#[cfg(any(feature = "docx", feature = "pptx"))]
 mod charts;
 #[cfg(any(feature = "doc", feature = "xls", feature = "ppt"))]
 mod codepage;
