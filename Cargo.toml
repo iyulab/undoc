@@ -1,6 +1,6 @@
 [workspace]
 members = [".", "cli", "undoc-wasm"]
-resolver = "2"
+resolver = "3"
 
 [package]
 name = "undoc"
