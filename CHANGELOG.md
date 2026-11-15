@@ -120,6 +120,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The Linux (glibc) library and command-line binary no longer require glibc 2.43.** 0.27.3 was
+  built on a runner image whose libm versions `acosf`, `atan2f` and `log10f` at GLIBC_2.43, so its Linux
+  library did not load on Ubuntu 24.04 or on the default .NET container images (glibc 2.39); the
+  releases before it asked for 2.35. The glibc builds now run on an image with glibc 2.35, and the release
+  stops when a binary asks for more than that. The requirement -- glibc 2.35 or newer; the musl archive
+  has none -- is stated in the README.
 - **Three files that crashed the reader no longer do.** Reading each of them ended the process -- the
   kind of failure a caller cannot catch. A `.xlsx` whose one million-character shared string is used by
   twelve thousand cells made an output of billions of bytes and died allocating it; a shared string is
