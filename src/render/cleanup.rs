@@ -200,11 +200,7 @@ fn is_page_number(line: &str) -> bool {
     }
 
     // Just a number alone (potential page number)
-    if line.len() <= 5 && is_number(line) {
-        return true;
-    }
-
-    false
+    line.len() <= 5 && is_number(line)
 }
 
 /// Check if line is a common header/footer.
@@ -245,11 +241,7 @@ fn is_toc_marker(line: &str) -> bool {
     }
 
     // Explicit TOC headers
-    if lower == "table of contents" || lower == "contents" {
-        return true;
-    }
-
-    false
+    lower == "table of contents" || lower == "contents"
 }
 
 /// Collapse 3+ consecutive newlines into a single blank line (`\n\n`).
