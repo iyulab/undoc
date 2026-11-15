@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-11-15
+
 ### Added
 
 - **An Excel 97-2003 workbook keeps its pictures.** The reader returned each sheet's cells only, so the
