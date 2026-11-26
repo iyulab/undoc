@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.29.0] - 2026-11-26
+
 ### Added
 
 - **Paragraphs a Word document styles as code come out as one fenced block.** A `.docx` paragraph whose
