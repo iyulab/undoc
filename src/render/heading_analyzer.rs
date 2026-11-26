@@ -370,6 +370,9 @@ impl HeadingAnalyzer {
 
     /// Make a heading decision for a single paragraph (Pass 2).
     fn decide_heading(&self, para: &Paragraph) -> HeadingDecision {
+        if para.code_block {
+            return HeadingDecision::None;
+        }
         let plain_text = para.plain_text();
         let trimmed = plain_text.trim();
 

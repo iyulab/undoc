@@ -1127,6 +1127,7 @@ impl DocxParser {
 
         // Parse numbering (list info)
         para.list_info = self.parse_list_info(xml);
+        para.code_block = is_code_paragraph(&self.styles, &para);
 
         Ok(para)
     }
@@ -1679,6 +1680,94 @@ const CODE_CHARACTER_STYLES: &[&str] = &[
     "HTMLSample",
     "HTMLTypewriter",
 ];
+
+/// Paragraph styles that mark code, by name or id compared without case or punctuation:
+/// `Source Code` (what pandoc writes, and reads back as a code block), Word's built-in
+/// `HTML Preformatted`, and a style a writer called `Code`.
+const CODE_PARAGRAPH_STYLES: &[&str] = &["sourcecode", "htmlpreformatted", "code"];
+
+/// Faces that set every character at one width.
+const MONOSPACED_FACES: &[&str] = &[
+    "andale mono",
+    "cascadia code",
+    "cascadia mono",
+    "consolas",
+    "courier",
+    "courier new",
+    "d2coding",
+    "dejavu sans mono",
+    "fira code",
+    "fira mono",
+    "ibm plex mono",
+    "inconsolata",
+    "jetbrains mono",
+    "liberation mono",
+    "lucida console",
+    "lucida sans typewriter",
+    "menlo",
+    "monaco",
+    "roboto mono",
+    "source code pro",
+    "ubuntu mono",
+];
+
+/// The code style a paragraph style is, or is based on.
+fn code_paragraph_style(styles: &StyleMap, id: &str) -> Option<&'static str> {
+    let squash = |s: &str| -> String {
+        s.chars()
+            .filter(|c| c.is_alphanumeric())
+            .flat_map(char::to_lowercase)
+            .collect()
+    };
+    let mut chain = Some(id);
+    for _ in 0..=10 {
+        let current = chain?;
+        let style = styles.styles.get(current);
+        let names = [Some(squash(current)), style.map(|s| squash(&s.name))];
+        if let Some(found) = CODE_PARAGRAPH_STYLES
+            .iter()
+            .find(|code| names.iter().flatten().any(|name| name == *code))
+        {
+            return Some(found);
+        }
+        chain = style.and_then(|s| s.based_on.as_deref());
+    }
+    None
+}
+
+/// Whether a paragraph is a line of code. The style has to say so and the text must not
+/// contradict it: writers keep `HTML Preformatted` on prose pasted from a web page and set it
+/// in a proportional face. `Source Code` may leave the face to the reader; the other two name
+/// styles whose text is code only when a monospaced face shows it.
+///
+/// A heading, a list item, a paragraph with a picture or a note reference stays what it is:
+/// a fenced block could not hold any of them.
+fn is_code_paragraph(styles: &StyleMap, para: &Paragraph) -> bool {
+    let Some(style) = para
+        .style_id
+        .as_deref()
+        .and_then(|id| code_paragraph_style(styles, id))
+    else {
+        return false;
+    };
+    if para.heading.is_heading()
+        || para.list_info.is_some()
+        || !para.images.is_empty()
+        || para.runs.iter().any(|run| run.note.is_some())
+    {
+        return false;
+    }
+    para.runs
+        .iter()
+        .filter(|run| !run.text.trim().is_empty())
+        .all(|run| match run.style.font.as_deref() {
+            _ if run.style.code => true,
+            Some(face) => MONOSPACED_FACES
+                .iter()
+                .any(|mono| face.eq_ignore_ascii_case(mono)),
+            None => style == "sourcecode",
+        })
+}
 
 /// Apply the character style a run names (`w:rStyle`) to its style: the style's run
 /// properties, inheritance resolved, as the base the run's own properties then override —

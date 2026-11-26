@@ -357,6 +357,12 @@ pub struct Paragraph {
     /// Indentation level
     #[serde(default, skip_serializing_if = "is_zero")]
     pub indent_level: u8,
+
+    /// A line of code: the writer gave the paragraph a style that marks code, and set none of
+    /// its text in a proportional face. Markdown writes consecutive code paragraphs as one
+    /// fenced block, their text and whitespace as written.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub code_block: bool,
 }
 
 fn is_default_alignment(a: &TextAlignment) -> bool {

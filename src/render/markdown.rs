@@ -150,8 +150,18 @@ fn render_section_impl(
         }
     }
 
+    let mut in_block = 0usize;
     for (block_idx, block) in section.content.iter().enumerate() {
+        if in_block > 0 {
+            in_block -= 1;
+            continue;
+        }
         match block {
+            Block::Paragraph(para) if para.code_block => {
+                let (code, blocks) = render_code_block(&section.content[block_idx..], options);
+                push_code_block(output, &code, options);
+                in_block = blocks - 1;
+            }
             Block::Paragraph(para) => {
                 let md = render_paragraph(para, options, None, resource_map);
                 if !md.is_empty() || options.include_empty_paragraphs {
@@ -316,8 +326,19 @@ fn to_markdown_with_analyzer(
         let mut para_idx = 0;
 
         // Render content blocks
+        let mut in_block = 0usize;
         for (block_idx, block) in section.content.iter().enumerate() {
+            if in_block > 0 {
+                in_block -= 1;
+                continue;
+            }
             match block {
+                Block::Paragraph(para) if para.code_block => {
+                    let (code, blocks) = render_code_block(&section.content[block_idx..], options);
+                    push_code_block(&mut output, &code, options);
+                    in_block = blocks - 1;
+                    para_idx += blocks;
+                }
                 Block::Paragraph(para) => {
                     // Get the pre-computed decision for this paragraph
                     let decision = section_decisions.and_then(|d| d.get(para_idx)).copied();
@@ -616,6 +637,68 @@ fn render_paragraph(
     }
 
     output
+}
+
+/// The text of a code paragraph: its runs as written, a line or page break as a new line.
+/// Tracked changes are shown or hidden as they are elsewhere.
+fn code_text(para: &Paragraph, options: &RenderOptions) -> String {
+    let mut text = String::new();
+    for run in &para.runs {
+        let hidden = matches!(
+            (&run.revision, &options.revision_handling),
+            (RevisionType::Deleted, RevisionHandling::AcceptAll)
+                | (RevisionType::Inserted, RevisionHandling::RejectAll)
+        );
+        if !hidden {
+            text.push_str(&run.text);
+        }
+        if ends_a_line(run) {
+            text.push('\n');
+        }
+    }
+    text
+}
+
+/// The consecutive code paragraphs that open `blocks` as one fenced block, and how many
+/// blocks they are. Blank lines at either end are not part of it; paragraphs with no text at
+/// all give an empty string.
+fn render_code_block(blocks: &[Block], options: &RenderOptions) -> (String, usize) {
+    let lines: Vec<String> = blocks
+        .iter()
+        .map_while(|block| match block {
+            Block::Paragraph(para) if para.code_block => Some(code_text(para, options)),
+            _ => None,
+        })
+        .collect();
+    let count = lines.len();
+    let text = lines.join("\n");
+    let lines: Vec<&str> = text.split('\n').collect();
+    let blank = |line: &&str| line.trim().is_empty();
+    let Some(first) = lines.iter().position(|line| !blank(line)) else {
+        return (String::new(), count);
+    };
+    let last = lines.iter().rposition(|line| !blank(line)).unwrap_or(first);
+    let body = lines[first..=last].join("\n");
+    // A fence one backtick longer than any run inside cannot be closed by the code.
+    let longest = body.split(|c| c != '`').map(str::len).max().unwrap_or(0);
+    let fence = "`".repeat(longest.max(2) + 1);
+    (format!("{fence}\n{body}\n{fence}"), count)
+}
+
+/// Append a code block, on lines of its own.
+fn push_code_block(output: &mut String, code: &str, options: &RenderOptions) {
+    if code.is_empty() {
+        return;
+    }
+    if !output.is_empty() && !output.ends_with('\n') {
+        output.push('\n');
+    }
+    output.push_str(code);
+    output.push_str(if options.paragraph_spacing {
+        "\n\n"
+    } else {
+        "\n"
+    });
 }
 
 /// True when the next block is another list paragraph — used to decide
@@ -1052,7 +1135,12 @@ fn render_cell_content(
         } else {
             options
         };
-        render_runs(&merged_para.runs, run_options, ctx, &mut para_text);
+        if para.code_block {
+            // A cell cannot hold a fenced block: each line of code is a code span.
+            para_text = markdown::code_span(&code_text(para, options), true);
+        } else {
+            render_runs(&merged_para.runs, run_options, ctx, &mut para_text);
+        }
 
         // A list item keeps its marker: a cell cannot hold a Markdown list, so the marker is
         // written as the item's first characters, as the text of a cell's list is read.

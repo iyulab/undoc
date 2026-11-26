@@ -19,7 +19,9 @@ pub fn clean_text(text: &str, options: &CleanupOptions) -> String {
         (None, text)
     };
 
-    let mut result = body.to_string();
+    // Code is data as the frontmatter is: no stage may rewrite its quotes, collapse its
+    // spaces or drop a line of it that looks like a page number.
+    let (mut result, code) = set_aside_code_blocks(body);
 
     if options.normalize_strings {
         result = normalize_unicode(&result);
@@ -46,10 +48,54 @@ pub fn clean_text(text: &str, options: &CleanupOptions) -> String {
         result = collapse_blank_lines(&result);
     }
 
+    for (index, block) in code.iter().enumerate() {
+        result = result.replacen(&code_placeholder(index), block, 1);
+    }
+
     match frontmatter {
         Some(frontmatter) => format!("{frontmatter}\n{result}"),
         None => result,
     }
+}
+
+/// The line standing for a code block while the stages run. U+0001 cannot occur in an XML
+/// document, is not whitespace and matches none of the line patterns.
+fn code_placeholder(index: usize) -> String {
+    format!("\u{1}code {index}\u{1}")
+}
+
+/// Replace every fenced code block with a placeholder line, returning the blocks in order. A
+/// fence left open is not a block, and its text is cleaned like any other.
+fn set_aside_code_blocks(text: &str) -> (String, Vec<String>) {
+    let fence_of = |line: &str| line.len() - line.trim_start_matches('`').len();
+    let lines: Vec<&str> = text.split('\n').collect();
+    let mut kept: Vec<String> = Vec::with_capacity(lines.len());
+    let mut code = Vec::new();
+    let mut at = 0;
+    while at < lines.len() {
+        let open = fence_of(lines[at]);
+        let close = (open >= 3 && !lines[at][open..].contains('`'))
+            .then(|| {
+                lines[at + 1..].iter().position(|line| {
+                    let line = line.trim_end();
+                    fence_of(line) >= open && fence_of(line) == line.len()
+                })
+            })
+            .flatten();
+        match close {
+            Some(offset) => {
+                let end = at + 1 + offset;
+                kept.push(code_placeholder(code.len()));
+                code.push(lines[at..=end].join("\n"));
+                at = end + 1;
+            }
+            None => {
+                kept.push(lines[at].to_string());
+                at += 1;
+            }
+        }
+    }
+    (kept.join("\n"), code)
 }
 
 /// Split a leading YAML frontmatter block off the text, if there is one.

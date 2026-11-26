@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Paragraphs a Word document styles as code come out as one fenced block.** A `.docx` paragraph whose
+  style is (or is based on) `Source Code`, `HTML Preformatted` or `Code` was written as an ordinary
+  paragraph: one blank-line-separated paragraph per line, leading spaces dropped, Markdown characters
+  escaped. Consecutive code paragraphs are now one fenced block with their lines and whitespace as
+  written; in a table cell each is a code span. The text decides too — a paragraph that sets any of its
+  text in a proportional face stays prose (documents keep `HTML Preformatted` on text pasted from a web
+  page), and `HTML Preformatted` and `Code` need a monospaced face to show. A monospaced face alone,
+  without such a style, does not make a block. The model gains `Paragraph::code_block`; a struct literal
+  that names every field of `Paragraph` has to set it.
+
+### Changed
+
+- **Cleanup leaves fenced code blocks as they are.** Its stages rewrote typographic quotes and dashes,
+  collapsed runs of spaces and dropped lines that look like page numbers, inside a block as outside it.
+
 ### Fixed
 
 - **A part that begins with more than one byte-order mark no longer panics or reads garbled.** Decoding
