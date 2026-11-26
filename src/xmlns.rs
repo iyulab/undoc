@@ -167,6 +167,10 @@ fn namespace_of(result: ResolveResult<'_>) -> Option<String> {
 }
 
 fn rewrite(xml: &str) -> Option<String> {
+    // The reader skips a leading byte-order mark without counting it in
+    // `buffer_position`, so the positions below would point short of the tag in any text
+    // that still starts with one.
+    let xml = xml.trim_start_matches('\u{feff}');
     let mut reader = NsReader::from_str(xml);
     reader.config_mut().allow_dangling_amp = true;
 
@@ -244,6 +248,21 @@ mod tests {
 
     const W: &str = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
     const R: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+
+    #[test]
+    fn a_byte_order_mark_left_in_the_text_does_not_shift_the_rewrite() {
+        // The reader skips a leading mark without counting it in its positions.
+        let part = format!(r#"<ns0:document xmlns:ns0="{W}"><ns0:t>café</ns0:t></ns0:document>"#);
+        let expected = canonical_prefixes(part.clone());
+        assert!(expected.starts_with("<w:document "), "{expected}");
+        for lead in ["\u{feff}", "\u{feff}\u{feff}"] {
+            assert_eq!(
+                canonical_prefixes(format!("{lead}{part}")),
+                expected,
+                "{lead:?}"
+            );
+        }
+    }
 
     #[test]
     fn conventional_parts_are_returned_untouched() {

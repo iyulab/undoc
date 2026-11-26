@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A part that begins with more than one byte-order mark no longer panics or reads garbled.** Decoding
+  removes one mark; when another was left at the front of a part whose namespace prefixes had to be
+  normalised, the rewrite cut the text three bytes short of each tag — a panic when a cut fell inside
+  a character, otherwise a part that failed to parse. Files with a single mark were not affected.
+  Present since 0.27.2.
+
 ## [0.28.0] - 2026-11-15
 
 ### Added

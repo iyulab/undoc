@@ -103,12 +103,12 @@ fn respell(xml: &str, w_prefix: &str, r_prefix: &str) -> String {
         .replace("xmlns:r=", &format!("xmlns:{r_prefix}="))
 }
 
-fn build(w_prefix: Option<&str>, r_prefix: &str) -> Vec<u8> {
+fn build(w_prefix: Option<&str>, r_prefix: &str, document_lead: &str) -> Vec<u8> {
     let part = |xml: String| match w_prefix {
         Some(prefix) => respell(&xml, prefix, r_prefix),
         None => xml,
     };
-    let document = part(document());
+    let document = format!("{document_lead}{}", part(document()));
     let styles = part(styles());
     let numbering = part(numbering());
 
@@ -129,7 +129,12 @@ fn build(w_prefix: Option<&str>, r_prefix: &str) -> Vec<u8> {
 }
 
 fn markdown(w_prefix: Option<&str>, r_prefix: &str) -> String {
-    let doc = parse_bytes(&build(w_prefix, r_prefix)).expect("document parses");
+    markdown_led_by("", w_prefix, r_prefix)
+}
+
+/// The same document with `lead` written in front of `word/document.xml`.
+fn markdown_led_by(lead: &str, w_prefix: Option<&str>, r_prefix: &str) -> String {
+    let doc = parse_bytes(&build(w_prefix, r_prefix, lead)).expect("document parses");
     to_markdown(&doc, &RenderOptions::default()).expect("renders")
 }
 
@@ -165,6 +170,20 @@ fn an_elementtree_style_prefix_reads_like_the_conventional_one() {
 #[test]
 fn the_main_namespace_as_the_default_namespace_reads_like_the_conventional_one() {
     assert_eq!(markdown(Some(""), "r"), markdown(None, "r"));
+}
+
+#[test]
+fn byte_order_marks_in_front_of_a_prefixed_part_do_not_change_what_is_read() {
+    let control = markdown(None, "r");
+    // Decoding removes one mark; a second one is still in the text whose prefixes are
+    // normalised.
+    for lead in ["\u{feff}", "\u{feff}\u{feff}", "\u{feff}\u{feff}\u{feff}"] {
+        assert_eq!(
+            markdown_led_by(lead, Some("ns0"), "ns1"),
+            control,
+            "{lead:?}"
+        );
+    }
 }
 
 #[test]
