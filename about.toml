@@ -1,0 +1,23 @@
+# What THIRD-PARTY-NOTICES lists: the crates compiled into the published binaries.
+# Generate with cargo-about; a licence not named here fails the generation.
+accepted = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "CDLA-Permissive-2.0",
+    "MPL-2.0",
+    "BSD-2-Clause",
+]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-unknown-linux-musl",
+    "x86_64-pc-windows-msvc",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "wasm32-unknown-unknown",
+]
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
