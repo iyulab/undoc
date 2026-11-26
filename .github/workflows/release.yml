@@ -13,7 +13,7 @@ on:
 
 jobs:
   release:
-    uses: iyulab/unparser-shared/.github/workflows/release-reusable.yml@main
+    uses: iyulab/unparser-shared/.github/workflows/release-reusable.yml@dc1e00162595b3e5b82f042563c29691298a3c12 # main
     with:
       package-name: undoc
       npm-readme: bindings/wasm/README.md

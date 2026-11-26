@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   pages:
-    uses: iyulab/unparser-shared/.github/workflows/pages-reusable.yml@main
+    uses: iyulab/unparser-shared/.github/workflows/pages-reusable.yml@dc1e00162595b3e5b82f042563c29691298a3c12 # main
     with:
       wasm-crate: undoc-wasm
     permissions:
