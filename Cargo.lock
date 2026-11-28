@@ -2402,7 +2402,6 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tiny-skia",
- "tokio",
  "unicode-normalization",
  "unicode-width",
  "unparser-shared",

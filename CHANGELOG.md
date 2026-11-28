@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- **The `async` feature.** It turned on a Tokio dependency and nothing else: the crate has no
+  asynchronous API. A manifest that names the feature has to drop it.
+
 ## [0.29.0] - 2026-11-26
 
 ### Added

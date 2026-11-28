@@ -52,7 +52,6 @@
 //! - `xls` (default): Excel 97-2003 binary workbook support
 //! - `ppt` (default): PowerPoint 97-2003 binary presentation support
 //! - `codepages` (default): decode 97-2003 document properties in any Windows code page
-//! - `async`: Async I/O support with Tokio
 //! - `ffi`: C-ABI bindings for foreign language integration
 
 mod cfb_open;

@@ -813,7 +813,6 @@ Complete document structure with metadata:
 | `refine` | Markdown shape-refinement pass (`RenderOptions::refine`) | Yes |
 | `raster` | Slide rendering to PNG (`PptxParser::render_slide`) — pure Rust (tiny-skia, skrifa); no bundled fonts | No |
 | `ffi` | C-ABI foreign function interface (includes `raster`: `undoc_render_section`) | No |
-| `async` | Async I/O with Tokio | No |
 
 ```bash
 cargo add undoc --features ffi

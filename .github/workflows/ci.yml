@@ -97,7 +97,7 @@ jobs:
       - name: Run tests
         # --workspace: without it only the root package is tested, so the cli and
         # wasm crates' own tests never run.
-        # --all-features: the ffi and async features carry tests of their own.
+        # --all-features: the ffi feature carries tests of its own.
         # Without this flag they compile in the release pipeline but are never
         # executed anywhere, which is how a feature-gated regression reaches a
         # published crate while CI stays green.

@@ -34,7 +34,6 @@ ppt = []
 # code pages (932, 949, 1251, ...). Without it those properties are left empty; UTF-16,
 # UTF-8, Windows-1252 and plain ASCII are decoded either way.
 codepages = ["dep:encoding_rs"]
-async = ["tokio"]
 # Slide rasterization (in progress): DrawingML geometry drawn from the ECMA-376 preset shape
 # definitions. Off by default.
 raster = ["pptx", "dep:tiny-skia", "dep:roxmltree", "dep:skrifa", "dep:zune-jpeg"]
@@ -93,9 +92,6 @@ flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 
 # Optional: Windows code pages for 97-2003 document properties (feature `codepages`)
 encoding_rs = { version = "0.8", optional = true }
-
-# Optional: Async
-tokio = { version = "1.42", features = ["rt", "fs"], optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }
